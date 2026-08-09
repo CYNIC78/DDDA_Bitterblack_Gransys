@@ -1,0 +1,33 @@
+# Build outputs
+Release/
+Debug/
+x64/
+*.dll
+*.exe
+*.exp
+*.lib           # игнорируем .lib в корневых и промежуточных папках...
+!MinHook/*.lib  # ...но сохраняем библиотеки MinHook (нужны для сборки!)
+*.pdb
+*.ilk
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.sln.docstates
+
+# Intermediate files
+obj/
+*.obj
+*.pch
+*.idb
+*.tlog
+BuildLog.htm
+
+# Generated logs
+*.log
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
