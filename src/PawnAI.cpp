@@ -144,90 +144,46 @@ static void ApplySanitaryCordon(float* incl) {
 }
 
 // ═══════════════════════════════════════════════════════════
-// 1.4 SMART UTILITARIAN
+// 1.4 SMART UTILITARIAN (v2.0: глубина знания!)
 // ═══════════════════════════════════════════════════════════
+//
+// Phase B: CombatIntel анализирует mStudyFlag ПОБИТОВО —
+// чем больше knowledge-флагов на врага, тем выше уверенность.
+//
+//  0 флагов = враг незнаком → Utilitarian подавлен
+//  1 флаг   = базовое знание → Utilitarian 35%
+//  2-3      = хорошее        → 55-70%
+//  4-5      = отличное       → 80-90%
+//  6+       = мастер         → 95%
+//
+// BestiaryData.h: 72 врага из pawn-knowledge репо.
 
-/**
- * Phase B: чтение mStudyFlag (322 байта) из памяти пешки.
- *
- * Твоя CT-таблица: mStudyFlag = pawn + 0x1616
- *   pawn = pBase + 0xA7000 + 0x7F0
- *
- * Каждый байт — битовая карта знаний по одному врагу.
- *   Байт != 0 → есть хоть какое-то знание.
- *
- * Goblin = индекс 0 (ты проверил свитком)
- * Skeleton = индекс 9 (ты проверил свитком)
- * Номера врагов растут примерно как emXXXX ID.
- */
 static int CountKnownEnemies() {
     if (!pBase || !*pBase) return 0;
-
     BYTE* study = *pBase + PLAYER_BASE + PAWN_OFFSET + MSTUDYFLAG_OFFSET;
     int known = 0;
-    for (int i = 0; i < MSTUDYFLAG_SIZE; i++) {
+    for (int i = 0; i < MSTUDYFLAG_SIZE; i++)
         if (study[i] != 0) known++;
-    }
     return known;
-}
-
-/**
- * Проверить знание КОНКРЕТНОГО врага по его emID.
- *
- * Маппинг (из твоих тестов):
- *   Goblin (em0000) → индекс 0
- *   Skeleton (em0500?) → индекс 9
- *
- * Для простоты пока используем эвристику:
- *   emID / 100 → примерный индекс в mStudyFlag
- *   (гоблин=0, волк=2, ящер=4, циклоп=6, химера=7, дракон=10...)
- *
- * Более точный маппинг — когда ты просканируешь больше врагов.
- */
-static int GetEnemyStudyIdx(int emId) {
-    // Грубая эвристика: em0500 → 5, em1000 → 10
-    // Но из твоих данных: скелет (em0500?) = индекс 9, а не 5.
-    // Значит нумерация НЕ совпадает с emID.
-
-    // Пока возвращаем -1 = "не знаем индекс"
-    // Реальный маппинг построим когда ты просканируешь 5-6 врагов
-    return -1;
-}
-
-static bool PawnKnowsEnemy(int emId) {
-    if (!pBase || !*pBase) return false;
-    int idx = GetEnemyStudyIdx(emId);
-    if (idx < 0 || idx >= MSTUDYFLAG_SIZE) return false;
-
-    BYTE* study = *pBase + PLAYER_BASE + PAWN_OFFSET + MSTUDYFLAG_OFFSET;
-    return study[idx] != 0;
-}
-
-static float GetUtilitarianConfidence() {
-    int known = CountKnownEnemies();
-
-    // 0 врагов известно → Utilitarian почти бесполезен
-    if (known == 0) return 0.2f;
-    // 1-5 → начальные знания
-    if (known <= 5)  return 0.35f;
-    // 6-15 → растущая компетенция
-    if (known <= 15) return 0.35f + (known - 5) * 0.025f;  // 0.375..0.60
-    // 16-40 → опытная пешка
-    if (known <= 40) return 0.60f + (known - 15) * 0.01f;  // 0.61..0.85
-    // 40+ → мастер
-    return 0.90f;
 }
 
 static void ApplySmartUtilitarian(float* incl) {
     if (!g_smartUtilEnabled) return;
 
-    // 🔥 ПРИОРИТЕТ: CombatIntel (реальные данные боя)
-    //    если врагов нет в бою → fallback на CountKnownEnemies
+    // CombatIntel v2 возвращает усреднённую глубину знания
     float conf = GetCombatUtilitarianConfidence();
-    if (conf == 0.5f)  // CombatIntel: нет боя → используем общую эвристику
-        conf = GetUtilitarianConfidence();
 
-    // Мало знаний → перенаправляем вес из Utilitarian в Scather+Challenger
+    // conf=0.5 = нет боя → используем общую эвристику
+    if (conf == 0.5f) {
+        int known = CountKnownEnemies();
+        if (known == 0)       conf = 0.20f;
+        else if (known <= 5)  conf = 0.35f;
+        else if (known <= 15) conf = 0.35f + (known-5)*0.025f;
+        else if (known <= 40) conf = 0.60f + (known-15)*0.01f;
+        else                  conf = 0.90f;
+    }
+
+    // Низкое знание → вес уходит в Scather+Challenger+Mitigator
     if (conf < 0.5f) {
         float excess = (0.5f - conf) * incl[I_UTILITARIAN];
         incl[I_UTILITARIAN] -= excess;
@@ -236,10 +192,12 @@ static void ApplySmartUtilitarian(float* incl) {
         incl[I_MITIGATOR]  += excess * 0.15f;
     }
 
-    // Мягкая коррекция к целевому уровню
     float target = conf * 850.0f;
     incl[I_UTILITARIAN] += (target - incl[I_UTILITARIAN]) * 0.02f;
 }
+
+// Убраны: GetEnemyStudyIdx, PawnKnowsEnemy, GetUtilitarianConfidence
+// — всё это теперь в CombatIntel.cpp + BestiaryData.h
 
 // ═══════════════════════════════════════════════════════════
 // ОБЩАЯ ОБРАБОТКА КАЖДЫЙ КАДР
@@ -280,8 +238,16 @@ void UpdatePawnAI() {
 
     SanitizeAllInclinations(incl);
 
-    if (g_presetsEnabled)
-        ApplyPresetSmooth(incl, g_presetIdx);
+    // 🔥 TACTICAL SWITCH: авто-смена пресета в бою
+    if (g_presetsEnabled) {
+        int actualPreset = g_presetIdx;
+        if (IsInCombat()) {
+            int cat = GetCombatEnemyCategory();
+            static int catToPreset[] = { 1, 5, 0, 3, 3 };
+            if (cat >= 0 && cat < 5) actualPreset = catToPreset[cat];
+        }
+        ApplyPresetSmooth(incl, actualPreset);
+    }
 
     WriteAllIncl(incl, 0);
 }
@@ -311,36 +277,50 @@ void RenderPawnAIUI() {
                           "No hardcoded numbers — adapts to pawn!");
 
     // --- 1.4 Smart Utilitarian ---
-    ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Phase 1.4: Smart Utilitarian");
+    ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Phase 1.4: Smart Utilitarian v2");
     if (ImGui::Checkbox("Enable", &g_smartUtilEnabled))
         config.setBool("pawnAI", "smartUtil", g_smartUtilEnabled);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Phase B: reads REAL mStudyFlag from memory!\n"
-                          "Counts known enemies → adjusts Utilitarian weight.");
+        ImGui::SetTooltip("Depth-based knowledge from BestiaryData.h + CombatIntel.\n"
+                          "Bit-counts in mStudyFlag = real knowledge level per enemy.\n"
+                          "72 enemy types from pawn-knowledge repo.");
 
     int known = CountKnownEnemies();
     float combatConf = GetCombatUtilitarianConfidence();
-    float totalConf = (combatConf != 0.5f) ? combatConf : GetUtilitarianConfidence();
+    float totalConf = (combatConf != 0.5f) ? combatConf : 0.5f;
     ImGui::SameLine();
     ImGui::ProgressBar(totalConf, ImVec2(80,0));
     ImGui::SameLine();
-    ImGui::TextDisabled("%d known", known);
+    ImGui::TextDisabled("%d types known", known);
     ImGui::SameLine();
     if (combatConf != 0.5f)
-        ImGui::TextColored(ImVec4(1,0.7f,0.3f,1), "combat:%.0f%%", combatConf*100);
+        ImGui::TextColored(ImVec4(1,0.7f,0.3f,1), "depth:%.0f%%", combatConf*100);
 
-    // --- mStudyFlag дамп ---
-    if (ImGui::TreeNode("mStudyFlag Debug")) {
+    // --- mStudyFlag дамп (ВСЕ 322 байта со скроллом!) ---
+    if (ImGui::TreeNode("mStudyFlag Debug (all 322 bytes)")) {
         ImGui::Text("Offset: pawn + 0x%X (%d bytes)", MSTUDYFLAG_OFFSET, MSTUDYFLAG_SIZE);
         ImGui::Text("Known enemies: %d / 322", known);
 
         if (pBase && *pBase) {
             BYTE* study = *pBase + PLAYER_BASE + PAWN_OFFSET + MSTUDYFLAG_OFFSET;
-            ImGui::Text("First 32 bytes:");
-            char hex[128] = {};
-            for (int i = 0; i < 32 && i < MSTUDYFLAG_SIZE; i++)
-                sprintf(hex + i*3, "%02X ", study[i]);
-            ImGui::TextUnformatted(hex);
+
+            // Скроллируемое окно — показывает ВСЕ 322 байта!
+            ImGui::BeginChild("mStudyScroll", ImVec2(0, 200), true);
+            for (int row = 0; row < MSTUDYFLAG_SIZE; row += 16) {
+                // Индекс строки
+                ImGui::Text("%03X:", row);
+                ImGui::SameLine(40);
+                for (int col = 0; col < 16 && (row+col) < MSTUDYFLAG_SIZE; col++) {
+                    BYTE v = study[row+col];
+                    if (v != 0)
+                        ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "%02X ", v);
+                    else
+                        ImGui::TextDisabled("%02X ", v);
+                    if (col < 15 && (row+col+1) < MSTUDYFLAG_SIZE)
+                        ImGui::SameLine();
+                }
+            }
+            ImGui::EndChild();
         }
 
         if (ImGui::Button("Rescan (use after scroll!)")) {
@@ -418,11 +398,10 @@ void Hooks::PawnAI() {
     g_smooth           = config.getFloat("pawnAI", "smooth", 0.1f);
 
     int known = CountKnownEnemies();
-    logFile << "PawnAI v2.0 initialized" << std::endl;
+    logFile << "PawnAI v2.1 initialized" << std::endl;
     logFile << "  stride=" << INCL_STRIDE
             << " mStudyFlag@+" << std::hex << MSTUDYFLAG_OFFSET << std::dec
-            << " knownEnemies=" << known
-            << " confidence=" << GetUtilitarianConfidence() << std::endl;
+            << " knownTypes=" << known << std::endl;
 
     InGameUIAdd(RenderPawnAIUI);
 }

@@ -67,7 +67,7 @@
       <Optimization>Disabled</Optimization>
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
-      <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;$(ProjectDir);$(ProjectDir)ImGui;$(ProjectDir)MinHook;$(ProjectDir)src;$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)ImGui;$(ProjectDir)MinHook;$(ProjectDir)src;$(DXSDK_DIR)Include;C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -124,7 +124,6 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\EnemyAI.cpp" />
     <ClCompile Include="src\CombatIntel.cpp" />
     <ClCompile Include="src\Nightmare.cpp" />
-    <ClCompile Include="src\CameraPlus.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -150,7 +149,6 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\EnemyAI.h" />
     <ClInclude Include="src\CombatIntel.h" />
     <ClInclude Include="src\Nightmare.h" />
-    <ClInclude Include="src\CameraPlus.h" />
     <!-- dinput8 -->
     <ClInclude Include="dinput8.h" />
     <ClInclude Include="d3d9.h" />

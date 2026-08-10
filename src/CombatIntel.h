@@ -4,5 +4,6 @@ namespace Hooks {
     void CombatIntel();
 }
 
-// Вызывается из PawnAI.cpp для получения реальной уверенности
 float GetCombatUtilitarianConfidence();
+bool  IsInCombat();             // true = в бою (ring buffer не пуст)
+int   GetCombatEnemyCategory(); // 0=small, 1=medium, 2=large, 3=flying, 4=mage, -1=нет

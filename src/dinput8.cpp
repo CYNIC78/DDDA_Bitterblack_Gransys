@@ -12,6 +12,7 @@
 #include "Nightmare.h"
 #include "CombatIntel.h"
 #include "CameraPlus.h"
+#include "TargetLock.h"
 
 typedef HRESULT(WINAPI *tDirectInput8Create)(HINSTANCE, DWORD, const IID&, LPVOID*, LPUNKNOWN);
 tDirectInput8Create oDirectInput8Create = nullptr;
@@ -46,6 +47,7 @@ void InitHooks()
         Hooks::EnemyAI();
         Hooks::Nightmare();
         Hooks::CameraPlus();    // Free camera + game pause
+        // Hooks::TargetLock(); // EXPERIMENTAL: requires correct Yaw address
     }
     else
     {
@@ -91,6 +93,7 @@ void Initialize()
 
 void Unitialize()
 {
+    Hooks::TargetLockShutdown();
     Hooks::CameraPlusShutdown();  // остановить поток полёта, восстановить скорость
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;
     logFile << "MH_DisableHook: " << MH_StatusToString(MH_DisableHook(MH_ALL_HOOKS)) << std::endl;
