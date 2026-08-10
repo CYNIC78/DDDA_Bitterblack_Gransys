@@ -3,6 +3,7 @@
 namespace Hooks
 {
     void PawnAI();
+    void PawnAI_Shutdown();
 }
 
 // Вспомогательные функции

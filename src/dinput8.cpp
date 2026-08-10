@@ -93,6 +93,7 @@ void Initialize()
 
 void Unitialize()
 {
+    Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
     Hooks::CameraPlusShutdown();  // остановить поток полёта, восстановить скорость
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;

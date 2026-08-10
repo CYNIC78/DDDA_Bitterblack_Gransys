@@ -61,8 +61,8 @@ static EnemyEntry g_bestiary[] = {
     { 23, 0xFF, -1, "Phantoms",             "Ghost"       },
     { 24, 0xFF, -1, "Phantasms",            "Ghost"       },
     { 25, 0xFF, -1, "Specters",             "Ghost"       },
-    { 26, 0xFF, -1, "Hostile Soldiers",     "Human"       },
-    { 27, 0xFF, -1, "Hostile Bandits",      "Human"       },
+    { 26, 0xE0, -1, "Hostile Soldiers",     "Human"       }, // FIXED: uHumanEnemy 0xE0 vtable 0x11EB494
+    { 27, 0xE0, -1, "Hostile Bandits",      "Human"       }, // FIXED: same, vtable disambiguation
     { 28, 0xFF, -1, "Enemy Wizard",         "Human"       },
     { 29, 0xFF, -1, "Cyclopes",             "Cyclops"     },
     { 30, 0xFF, -1, "Ogres",                "Ogre"        },
@@ -143,6 +143,7 @@ inline EnemyEntry* FindEnemyByMSIdx(int mIdx) {
 
 // Категория врага для TacticalSwitch (0=small, 1=medium, 2=large, 3=flying, 4=mage, 5=boss)
 inline int GetEnemyCategory(BYTE gid) {
+    if(gid==0xE0) return 1; // Human medium
     EnemyEntry* e = FindEnemyByGid(gid);
     if (!e || !e->family) return -1;
     // Определяем по семейству

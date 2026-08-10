@@ -143,7 +143,7 @@ static DWORD WINAPI HotkeyThread(LPVOID)
         if (ax && !ax_was) CapturePhys();
         ax_was = ax;
 
-        bool f5 = GetAsyncKeyState(VK_F5) & 0x8000;
+        bool f5 = (GetAsyncKeyState(VK_DELETE) & 0x8000) || (GetAsyncKeyState(VK_DECIMAL) & 0x8000); // был F5, теперь NumPad Del
         if (f5 && !f5_was) ToggleAutoAim();
         f5_was = f5;
     }
@@ -163,13 +163,13 @@ void RenderTargetUI()
     if (g_physReady)
         ImGui::TextColored(ImVec4(0.3f,1,0.3f,1), "Physics CAPTURED");
     else
-        ImGui::TextColored(ImVec4(1,0.5f,0.3f,1), "Press Alt+X to capture");
+        ImGui::TextColored(ImVec4(1,0.5f,0.3f,1), "Press Alt+X to capture (auto)");
 
     if (ImGui::Button("Capture (Alt+X)")) CapturePhys();
 
     ImGui::Separator();
 
-    if (ImGui::Checkbox("Auto-Aim (F5)", &g_autoAimOn))
+    if (ImGui::Checkbox("Auto-Aim (NumPad Del)", &g_autoAimOn))
         config.setBool("targetLock","autoAim", g_autoAimOn);
 
     ImGui::TextWrapped("Snaps melee attacks to camera direction. LMB/RMB.");
@@ -188,7 +188,7 @@ static LPBYTE pYawSig, pCamSig2;
 
 void Hooks::TargetLock()
 {
-    g_autoAimOn = config.getBool("targetLock","autoAim", false);
+    g_autoAimOn = config.getBool("targetLock","autoAim", false); // хоткей Numpad Del
 
     // Yaw: D9 5E 14 (fstp [esi+14])
     BYTE sY[] = { 0xD9, 0x5E, 0x14 };

@@ -20,7 +20,7 @@ static HANDLE g_flyThread = nullptr;
 static volatile bool g_flyThreadStop = false;
 
 // Кастомные хоткеи (из .ini)
-static int g_hkFreeCam = VK_F4;
+static int g_hkFreeCam = VK_MBUTTON; // был F4, теперь СКМ (средняя кнопка)
 static int g_hkPause   = VK_NUMPAD0;
 static int g_hkSpeedUp = VK_ADD;
 static int g_hkSpeedDn = VK_SUBTRACT;
@@ -165,7 +165,7 @@ void RenderCameraUI()
     if (!ImGui::CollapsingHeader("Camera Plus")) return;
     ImGui::PushID("CamPlus");
 
-    if (ImGui::Checkbox("Tactical Camera (F4)", &g_freeCam))
+    if (ImGui::Checkbox("Tactical Camera (MMB)", &g_freeCam))
         config.setBool("camera","freeCam",g_freeCam);
     ImGui::TextWrapped("Freezes in place, tracks player. Arrows to reposition.");
 
@@ -219,7 +219,7 @@ void Hooks::CameraPlus()
     g_noAutoCorrect = config.getBool("camera","noAutoCorrect",false);
 
     // Кастомные хоткеи из .ini (camera_keys)
-    g_hkFreeCam = config.getUInt("camera_keys","freeCam", VK_F4) & 0xFF;
+    g_hkFreeCam = config.getUInt("camera_keys","freeCam", VK_MBUTTON) & 0xFF;
     g_hkPause   = config.getUInt("camera_keys","pause",   VK_NUMPAD0) & 0xFF;
     g_hkSpeedUp = config.getUInt("camera_keys","speedUp", VK_ADD) & 0xFF;
     g_hkSpeedDn = config.getUInt("camera_keys","speedDn", VK_SUBTRACT) & 0xFF;
