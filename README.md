@@ -227,6 +227,8 @@ ddda-ai-overhaul/
 - **FluffyQuack** — ARCtool
 - **TsudaKageyu** — MinHook
 - **ocornut** — Dear ImGui
+- **arena.ai** — LLM model as coding assistant
+- **Gemini** — LLM model by Google for researches
 
 ## 📄 Лицензия
 
