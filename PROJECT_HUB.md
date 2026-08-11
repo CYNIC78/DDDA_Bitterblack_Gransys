@@ -61,9 +61,9 @@ pBase → *(сигнатура + 2)
 
 | Модуль | Статус | Описание |
 |---|---|---|
-| PawnAI v2.1 | ✅ | Санитарный кордон + Smart Utilitarian + 6 пресетов + Tactical Switch |
-| CombatIntel v2.1 | ✅ | 3 damage-хука, ring buffer, бестиарий 72 врага |
-| CameraPlus v2.2 | ✅ | Тактическая камера F4 + Free Fly + Пауза + Disable Auto-Correction |
+| PawnAI v2.8 | ✅ | Санитарный кордон + Smart Utilitarian + Custom Anchors (слайдеры-якоря + живые бары) + 6 пресетов + Tactical Switch |
+| CombatIntel v2.8 | ✅ | Универсальный хук урона (DDDA+374739), перехват пешек (42 хита), ring buffer, бестиарий 72 врага |
+| CameraPlus v2.2 | ✅ | Тактическая камера F4 + Free Fly + Пауза + Disable Auto-Correction (R&D: Camera Distance) |
 | EnemyAI | 🔜 | Статический .arc редактор (заготовка) |
 | Nightmare | 🔜 | Bitterblack Gransys (заготовка) |
 | TargetLock | 📋 | Авто-aim (отключён, нужен правильный Yaw-адрес) |

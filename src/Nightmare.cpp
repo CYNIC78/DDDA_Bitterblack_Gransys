@@ -318,7 +318,7 @@ void RenderNightmareUI()
     if (ImGui::Checkbox("Dark Weather (volcanic/fog)", &darkWeather))
         config.setBool("nightmare", "darkWeather", darkWeather);
 
-    if (ImGui::Checkbox("Replace Enemies (BBI→Gransys)", &replaceEnemies))
+    if (ImGui::Checkbox("Replace Enemies (BBI -> Gransys)", &replaceEnemies))
         config.setBool("nightmare", "replaceEnemies", replaceEnemies);
 
     ImGui::PopItemWidth();

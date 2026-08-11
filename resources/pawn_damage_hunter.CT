@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="46">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>1</ID>
+      <Description>"=== 1. ПРОВЕРКА АДРЕСОВ ПЕШЕК И ИГРОКА (pBase) ==="</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+aobscanmodule(pBaseSig, DDDA.exe, 8B 15 ?? ?? ?? ?? 33 DB 8B F8)
+{$lua}
+if syntaxcheck then return end
+local sig = getAddress('pBaseSig')
+if not sig or sig == 0 then print("pBaseSig not found"); return end
+local pBasePtr = readPointer(readInteger(sig + 2))
+if not pBasePtr or pBasePtr == 0 then print("pBase is NULL! Load save first."); return end
+
+local player   = pBasePtr + 0xA7000
+local mainPawn = player + 0x7F0
+local pawn1    = mainPawn + 0x1660
+local pawn2    = pawn1 + 0x1660
+
+print(string.format(">>> ИГРОК:        0x%X", player))
+print(string.format(">>> ГЛАВНАЯ ПЕШКА: 0x%X", mainPawn))
+print(string.format(">>> НАЕМНИК 1:     0x%X", pawn1))
+print(string.format(">>> НАЕМНИК 2:     0x%X", pawn2))
+{$asm}
+[DISABLE]
+</AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>2</ID>
+      <Description>"=== 2. СКАНИРОВАНИЕ ЭКШЕНОВ ПЕШЕК (cCmc из types.tsv) ==="</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+{$lua}
+if syntaxcheck then return end
+print("=== СКАНИРОВАНИЕ cCmc ЭКШЕНОВ ПЕШКИ ИЗ types.tsv ===")
+
+-- Адреса фабрик cCmc из types.tsv
+local cmc_actions = {
+  { name = "cCmcAtck (Основная атака пешки)",   caller = 0x132f51a, vt = 0x156e3dc },
+  { name = "cCmc100Slash (Сотня порезов)",       caller = 0x132f11a, vt = 0x156dd5c },
+  { name = "cCmcBowAttack (Выстрел из лука)",    caller = 0x132f59a, vt = 0x156e4ac },
+  { name = "cCmcClimbAttack (Атака в лазании)",  caller = 0x13308da, vt = 0x157004c },
+  { name = "cCmcBrandish (Взмахи мечом)",        caller = 0x132ed9a, vt = 0x156d7ac },
+  { name = "cCmcCatapult (Подбрасывание)",       caller = 0x1330a1a, vt = 0x1570254 },
+}
+
+for _, act in ipairs(cmc_actions) do
+  print(string.format("\nЭкшен: %s", act.name))
+  print(string.format("  Caller: 0x%08X  |  VTable: 0x%08X", act.caller, act.vt))
+  -- Читаем первые 32 байта вокруг caller
+  local dis = disassemble(act.caller)
+  print(string.format("  Ассемблер @ Caller: %s", dis or "???"))
+end
+
+print("\n=== ГОТОВО. Сделай лог и пришли мне! ===")
+{$asm}
+[DISABLE]
+</AssemblerScript>
+    </CheatEntry>
+    <CheatEntry>
+      <ID>3</ID>
+      <Description>"=== 3. ЛОВУШКА ДАМАГА (Хук на любое изменение здоровья) ==="</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+// Сигнатура чтения/записи здоровья (известная точка omni/Cielos)
+aobscanmodule(hpAccessSig, DDDA.exe, F3 0F 10 40 08)
+alloc(hpLogger, 1024, hpAccessSig)
+label(hpReturn)
+
+hpLogger:
+  // eax = health struct
+  // eax + 8 = current HP float
+  // eax + 0x1B4 = location / entity base
+  push eax
+  movss xmm0, [eax+08]
+  pop eax
+  jmp hpReturn
+
+hpAccessSig:
+  jmp hpLogger
+hpReturn:
+
+[DISABLE]
+hpAccessSig:
+  db F3 0F 10 40 08
+dealloc(hpLogger)
+</AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

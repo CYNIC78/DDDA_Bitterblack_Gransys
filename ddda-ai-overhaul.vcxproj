@@ -158,6 +158,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\SanitaryCordon.h" />
     <ClInclude Include="src\pawnai\PresetManager.h" />
     <ClInclude Include="src\pawnai\PawnAI_Common.h" />
+    <ClInclude Include="src\BestiaryData.h" />
     <ClInclude Include="src\Bestiary.Generated.h" />
     <ClInclude Include="src\EnemyTypes.Generated.h" />
     <ClInclude Include="src\CombatBus.h" />

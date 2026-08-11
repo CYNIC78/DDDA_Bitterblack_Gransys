@@ -1,4 +1,4 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "Hotkeys.h"
 
 INPUT keyInput = { INPUT_KEYBOARD, {} };

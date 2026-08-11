@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 #include <d3d9.h>
 
 namespace Hooks

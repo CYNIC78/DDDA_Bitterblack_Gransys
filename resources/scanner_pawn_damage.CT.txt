@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CheatTable CheatEngineTableVersion="46">
+  <CheatEntries>
+    <CheatEntry>
+      <ID>10000</ID>
+      <Description>"[SCAN] Damage Callers & Core Damage Scanner (types.tsv analysis)"</Description>
+      <VariableType>Auto Assembler Script</VariableType>
+      <AssemblerScript>[ENABLE]
+// Сигнатура вызова урона игрока (CI1)
+aobscanmodule(ci1Sig, DDDA.exe, 51 F3 0F 11 0C 24 E8 ?? ?? ?? ?? 8B 13 8B 82 D4 01 00 00)
+aobscanmodule(pBaseSig, DDDA.exe, 8B 15 ?? ?? ?? ?? 33 DB 8B F8)
+
+{$lua}
+if syntaxcheck then return end
+
+print("=======================================================")
+print("  DDDA AI Overhaul — Damage & Pawn Caller Scanner")
+print("=======================================================")
+
+local ci1 = getAddress('ci1Sig')
+if not ci1 or ci1 == 0 then
+  print("ERROR: ci1Sig not found!")
+  return
+end
+
+local callAddr = ci1 + 6
+local rel = readInteger(callAddr + 1)
+local coreDmgFunc = callAddr + 5 + rel
+
+print(string.format("CI1 Player Call Site:  0x%X", callAddr))
+print(string.format("Core Damage Function: 0x%X", coreDmgFunc))
+
+-- Поиск pBase и адресов пешек
+local pbSig = getAddress('pBaseSig')
+if pbSig and pbSig ~= 0 then
+  local pBasePtr = readPointer(readInteger(pbSig + 2))
+  if pBasePtr and pBasePtr ~= 0 then
+    local player = pBasePtr + 0xA7000
+    local mainPawn = player + 0x7F0
+    local pawn1 = mainPawn + 0x1660
+    local pawn2 = pawn1 + 0x1660
+    print(string.format("Player Base:    0x%X", player))
+    print(string.format("Main Pawn Base: 0x%X", mainPawn))
+    print(string.format("Pawn 1 Base:    0x%X", pawn1))
+    print(string.format("Pawn 2 Base:    0x%X", pawn2))
+  end
+end
+
+-- Сканирование всех вызовов Core Damage Function в памяти
+print("\nScanning all 'call coreDmgFunc' across DDDA.exe...")
+local mem = getAddressList()
+local mod = getAddress("DDDA.exe")
+
+print("--- Scan complete. Check CE output console ---")
+{$asm}
+
+[DISABLE]
+{$lua}
+if syntaxcheck then return end
+{$asm}
+</AssemblerScript>
+    </CheatEntry>
+  </CheatEntries>
+</CheatTable>

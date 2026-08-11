@@ -17,7 +17,7 @@ using std::string;
 
 #include "iniConfig.h"
 #include "dinput8.h"
-#include "ImGui\imgui.h"
+#include "ImGui/imgui.h"
 #include "InGameUI.h"
 #include "steam_api.h"
 #include "Hotkeys.h"
