@@ -9,15 +9,19 @@ DDDA_AI_Overhaul/          ← Мастер-папка всего проекта
 │   ├── PawnAI.cpp/.h      ← AI пешек: санитарный кордон, Smart Util, пресеты
 │   ├── CombatIntel.cpp/.h ← Боевая разведка: damage-хуки, ring buffer, бестиарий
 │   ├── CameraPlus.cpp/.h  ← Тактическая камера + пауза + Free Fly (F4)
-│   ├── EnemyAI.cpp/.h     ← Статический .arc редактор (заготовка)
-│   ├── Nightmare.cpp/.h   ← Bitterblack Gransys (заготовка)
+│   ├── EnemyAI.cpp/.h     ← ум врага (заготовка; LIVE, не .arc)
+│   ├── Nightmare.cpp/.h   ← Bitterblack Gransys (заготовка; политика мира)
 │   ├── TargetLock.cpp/.h  ← Авто-aim (ЭКСПЕРИМЕНТАЛЬНЫЙ, отключён)
 │   └── BestiaryData.h     ← 72 типа врагов из types.tsv + bestiary.py
 ├── docs/                  ← Документация
 │   ├── README.md          ← Пользовательский README
 │   ├── RESEARCH.md        ← Технический анализ архитектуры
 │   ├── BUILD_INSTRUCTIONS_RU.md ← Инструкция по сборке
-│   └── ARC_MAP.txt        ← Карта файлов game_main.arc
+│   ├── ARC_MAP.txt        ← Карта файлов game_main.arc
+│   ├── ROADMAP.md         ← север: LIVE / CATALOG / PACK, фазы 0–5
+│   ├── DEVTOOLS_VISION.md ← глаза (TypeAtlas + сканер + консоль)
+│   ├── TYPE_ATLAS.md      ← 4405 фабрик MT Framework (генератор)
+│   └── FIELD_MAP.md       ← подтверждённые оффсеты полей
 ├── resources/             ← Данные реверс-инжиниринга
 │   ├── types.tsv          ← Atvaark/DragonsDogma.Research: uEm→groupId
 │   ├── bestiary.py.txt    ← chrispurnell/pawn-knowledge: FlagID→bestiaryId
@@ -32,6 +36,17 @@ DDDA_AI_Overhaul/          ← Мастер-папка всего проекта
 ├── .gitignore             ← Исключения для git
 └── LICENSE                ← MIT
 ```
+
+## 🧭 Север проекта
+
+Мы — эмерджентный **рантайм**-мод. Диск — аптека, не игра.
+
+- [docs/ROADMAP.md](docs/ROADMAP.md) — кто мы, полки LIVE / CATALOG / PACK, фазы 0–5, что не делаем
+- [docs/DEVTOOLS_VISION.md](docs/DEVTOOLS_VISION.md) — глаза: атлас, сканер, консоль
+- [docs/TYPE_ATLAS.md](docs/TYPE_ATLAS.md) — 4405 фабрик
+- [docs/FIELD_MAP.md](docs/FIELD_MAP.md) — только подтверждённые поля
+
+Перегенерация атласа: `python tools/generate_type_atlas.py`
 
 ## 🔑 Ключевые оффсеты
 

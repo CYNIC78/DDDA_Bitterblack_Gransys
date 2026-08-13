@@ -27,13 +27,13 @@
  * │                     │          │ (нужен реверс enemy spawn func) │
  * └─────────────────────┴──────────┴─────────────────────────────────┘
  *
- * РЕКОМЕНДУЕМЫЙ ПЛАН (Фаза 2-3):
- *   Шаг 1. Реализовать вечную ночь + смену погоды (done below)
- *   Шаг 2. Найти флаг убийства Деймона в памяти
- *   Шаг 3. Статический подход: создать nightmare_game_main.arc
- *           с заменёнными спавнами через ARCtool -lot
- *   Шаг 4. Авто-своп .arc при триггере (или ручной в UI)
- *   Шаг 5. (Будущее) Динамический хук спавна
+ * ПЛАН (docs/ROADMAP.md фаза 2) — LIVE, не своп файла:
+ *   2.1 Ночь + погода в тике
+ *   2.2 Триггер Деймона (квест / смерть uEm7002)
+ *   2.3 CATALOG замен Goblin→Greater Goblin
+ *   2.4 Хук emId в cLayoutSetEnemy — ванильный LOT не трогаем
+ *   2.5 Деградация, если arc не загружен
+ *   2.6 PACK только если GPL отказывается создать тип
  */
 
 #include "stdafx.h"
@@ -155,20 +155,15 @@ static void ForceNightmareWeather()
 }
 
 // ============================================================
-// ЗАМЕНА МОНСТРОВ — статический подход + таблица маппинга
+// ЗАМЕНА МОНСТРОВ — CATALOG + будущий LIVE-хук emId
 // ============================================================
 
 /*
  * ТАБЛИЦА ЗАМЕН: Gransys → Bitterblack Isle
  *
- * Принцип: когда nightmareTriggered, мод сообщает игроку
- * заменить game_main.arc на nightmare-версию (или делает это сам).
- *
- * В nightmare_game_main.arc все спавны Gransys заменены
- * на BBI-аналоги через ARCtool -lot.
- *
- * Ниже — справочная таблица для ручного редактирования
- * LOT-файлов (stage100*.arc → scr/st100/etc/*.lot.txt)
+ * Это CATALOG. LIVE-хук emId читает её и подменяет тип
+ * в момент постановки. Файлы игрока не трогаем.
+ * Нет тёплого кузена / нет arc — оставляем ваниль, пишем лог.
  */
 
 struct EnemyMapping {
@@ -215,42 +210,8 @@ static const EnemyMapping nightmareReplacements[] = {
     { 0, nullptr, 0, nullptr }  // Терминатор
 };
 
-// ============================================================
-// ПРОВЕРКА ЦЕЛОСТНОСТИ .arc
-// ============================================================
-
-/*
- * Подход со статическим .arc:
- * 
- * 1. Мы поставляем ДВА файла game_main.arc:
- *    - game_main.arc           (оригинал или наши AI-правки)
- *    - nightmare_game_main.arc (версия с BBI-спавнами)
- *
- * 2. При активации Кошмара через UI:
- *    - Мод переименовывает файлы:
- *      game_main.arc → game_main_normal.arc
- *      nightmare_game_main.arc → game_main.arc
- *    - ИЛИ просто говорит игроку перезапустить игру с другим .arc
- *
- * 3. При деактивации — обратный своп.
- *
- * Минус: требует перезапуска игры (перезагрузки .arc).
- * Плюс: надёжно, не требует реверса спавн-функции.
- */
-
-static bool arcSwapInProgress = false;
-
-static void PerformArcSwap(bool toNightmare)
-{
-    // TODO: реальный своп файлов
-    // if (toNightmare) {
-    //     rename("nativePC/rom/game_main.arc", "nativePC/rom/game_main_normal.arc");
-    //     rename("nativePC/rom/nightmare_game_main.arc", "nativePC/rom/game_main.arc");
-    // } else {
-    //     rename("nativePC/rom/game_main.arc", "nativePC/rom/nightmare_game_main.arc");
-    //     rename("nativePC/rom/game_main_normal.arc", "nativePC/rom/game_main.arc");
-    // }
-}
+// PACK (sidecar .gpl / extra LOT) — только если хук emId упрётся в отказ зоны.
+// Не своп game_main.arc. См. ROADMAP 2.6.
 
 // ============================================================
 // PER-FRAME UPDATE
@@ -325,26 +286,13 @@ void RenderNightmareUI()
 
     ImGui::Separator();
 
-    // === Секция 5: ARC swap ===
-    ImGui::TextColored(ImVec4(1, 0.9f, 0.3f, 1), "ARC File Swap:");
+    // === Секция 5: политика замены, не своп файла ===
+    ImGui::TextColored(ImVec4(1, 0.9f, 0.3f, 1), "Enemy policy (not an .arc swap):");
     ImGui::TextWrapped(
-        "For full enemy replacement, a modified game_main.arc is needed.\n"
-        "1. Create nightmare_game_main.arc with ARCtool -lot\n"
-        "2. Place it in nativePC/rom/\n"
-        "3. Use button below (game restart required)"
+        "Replacement is a runtime hook on spawn-id plus a mapping table. "
+        "Vanilla LOT stays. A content pack is only for types the zone physically "
+        "refuses to create (ROADMAP 2.4-2.6). No restart, no game_main overwrite."
     );
-
-    if (ImGui::Button("Swap to Nightmare ARC (needs restart)"))
-    {
-        arcSwapInProgress = true;
-        PerformArcSwap(true);
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("Restore Normal ARC (needs restart)"))
-    {
-        arcSwapInProgress = false;
-        PerformArcSwap(false);
-    }
 
     ImGui::Separator();
 
@@ -372,11 +320,11 @@ void RenderNightmareUI()
     // === Секция 7: Техническая информация ===
     if (ImGui::TreeNode("Technical Status"))
     {
-        ImGui::BulletText("Night lock: IMPLEMENTED (needs hour offset verification)");
-        ImGui::BulletText("Weather: IMPLEMENTED (offset 0xB8780 verified)");
-        ImGui::BulletText("Daimon trigger: WIP (manual only, need quest flag offset)");
-        ImGui::BulletText("Enemy replace (static ARC): PLANNED (need LOT editing)");
-        ImGui::BulletText("Enemy replace (dynamic hook): FUTURE (need spawn func RE)");
+        ImGui::BulletText("Night lock: WIP (hour offset + tick not wired)");
+        ImGui::BulletText("Weather: LIVE write 0xB8780 (needs tick)");
+        ImGui::BulletText("Daimon trigger: manual override, auto TBD");
+        ImGui::BulletText("Enemy replace: CATALOG + emId hook (not .arc swap)");
+        ImGui::BulletText("PACK: only if GPL refuses the cousin type");
         ImGui::TreePop();
     }
 

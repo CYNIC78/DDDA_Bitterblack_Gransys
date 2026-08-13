@@ -130,6 +130,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\Nightmare.cpp" />
     <ClCompile Include="src\CameraPlus.cpp" />
     <ClCompile Include="src\TargetLock.cpp" />
+    <ClCompile Include="src\devtools\DevTools.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -167,6 +168,9 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\Nightmare.h" />
     <ClInclude Include="src\CameraPlus.h" />
     <ClInclude Include="src\TargetLock.h" />
+    <ClInclude Include="src\devtools\DevTools.h" />
+    <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
+    <ClInclude Include="src\TypeAtlas.Generated.h" />
     <!-- dinput8 -->
     <ClInclude Include="dinput8.h" />
     <ClInclude Include="d3d9.h" />

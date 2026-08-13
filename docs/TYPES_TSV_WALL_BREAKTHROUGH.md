@@ -147,4 +147,4 @@ int g_busId = CombatBus::Instance().Subscribe([](const CombatReport& r){
 
 ---
 
-**Следующий шаг:** добить `Bestiary.Complete.h` (соединить `groupId` из TSV + `bestiaryId/FlagID` из `bestiary.py` + `mStudyIdx` из наших тестов) и подключить `CombatBus` в `CombatIntel.cpp` / `PawnAI.cpp` как пример. Дальше — рефактор PawnAI на модули по этому образцу.
+**Следующий шаг (август):** Level 3 из этого документа — live scan менеджеров — разобран как отдельный трек DevTools: `docs/DEVTOOLS_VISION.md`. Карта всех 4405 фабрик: `docs/TYPE_ATLAS.md`. Подтверждённые поля: `docs/FIELD_MAP.md`.

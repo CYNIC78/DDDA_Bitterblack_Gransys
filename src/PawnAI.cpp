@@ -6,6 +6,7 @@
 #include "PawnAI.h"
 #include "CombatIntel.h"
 #include "CombatBus.h"
+#include "devtools/DevTools.h"
 #include "pawnai/PawnAI_Common.h"
 #include "pawnai/PawnAI_BusOrchestrator.h"
 
@@ -18,7 +19,8 @@ static bool  g_enabled = true;
 // Background tactical thread (150ms / ~6.7 Hz)
 void UpdatePawnAI(){
     if(!g_enabled || !pBase || !*pBase) return;
-    CombatIntel_Tick(); // Background combat sync with CombatBus
+    CombatIntel_Tick(); // hit path — stomps LastReport
+    DevTools::WorldScan_Tick(); // presence — LastWorld, not stomped
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
     g_orch.Tick(incl);
     WriteAllIncl(incl, 0);
@@ -176,10 +178,17 @@ void RenderPawnAIUI(){
 
     // Bus status
     auto &bus = CombatBus::Instance().LastReport();
+    const WorldReport& world = CombatBus::Instance().LastWorld();
     ImGui::Separator();
     ImGui::TextDisabled("Bus: %s | Types: %d (P:%d W:%d) Unk: %d Cat: %d Hits: %d",
         bus.inCombat ? "IN COMBAT" : "idle", bus.distinctTypes, bus.playerDistinct, bus.pawnDistinct,
         bus.unknownTypes, bus.dominantCategory, bus.pawnHits + bus.playerHits);
+    DWORD age = (world.timestampMs && GetTickCount() >= world.timestampMs)
+        ? (GetTickCount() - world.timestampMs) : 0;
+    ImVec4 wcol = (world.count > 0 && age < 500)
+        ? ImVec4(0.3f, 1, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1);
+    ImGui::TextColored(wcol, "World: %d units  %d goblins  cat %d  %u ms",
+        world.count, world.goblinCount, world.dominantCategory, age);
     ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Sanitary, SmartUtil, Anchors, Tactical",
         INCL_STRIDE, MSTUDYFLAG_OFFSET);
     ImGui::PopID();

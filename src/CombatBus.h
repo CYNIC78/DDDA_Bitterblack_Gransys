@@ -1,17 +1,14 @@
 #pragma once
 /**
  * CombatBus.h — ШИНА (мегафон тренера)
- * 
- * Идея (из твоих слов):
- *   CombatIntel = Тренер с мегафоном
- *   PawnAI-модули = Спортсмены, которые слушают bus и сами решают что делать
- * 
- * Это пробивает стену CheatEngine-одиночек: вместо одного монолитного PawnAI у нас
- * независимые модули-слушатели. Добавить новый модуль = подписаться на bus.
- * Никаких спагетти-вызовов.
- * 
- * Использование types.tsv здесь: bus передаёт богатый CombatReport, где gid уже
- * расшифрован через EnemyTypes.Generated.h (groupId + точный uEmName + vtableRVA).
+ *
+ * CombatIntel = тренер по УДАРУ. Publish() каждые 150 мс ЗАТИРАЕТ LastReport().
+ * WorldScan   = тренер по ПРИСУТСТВИЮ. PublishWorld() — второй канал, hit его не топчет.
+ *
+ * PawnAI-модули слушают bus и сами решают. Кривой модуль не роняет соседа.
+ *
+ * gid 0x61 в каталоге = Dragon. Live зайцы носят тот же байт (dump19/20).
+ * WorldReport.dominantCategory НИКОГДА не берёт GetEnemyCategory(0x61).
  */
 
 #include <stdint.h>
@@ -50,6 +47,25 @@ struct CombatReport {
     int      pawnEnemyCount;
 };
 
+// Presence before the first hit. Seeded by HUNT, refreshed by a cheap +0C rewalk.
+// kind is the instance-vt label (uEm0100 / uNpc / uEm8000). Never "Dragon".
+struct WorldPresence {
+    uintptr_t   ptr;
+    uint32_t    vt;
+    uint8_t     gid;
+    const char* kind;
+    float       x, y, z;
+    bool        fromScan;
+};
+
+struct WorldReport {
+    int      count;
+    int      goblinCount;
+    int      dominantCategory; // -1 none. Only uEm0100/uEm0101 publish a category (0=small).
+    uint32_t timestampMs;
+    WorldPresence units[32];
+};
+
 // ============ Шина ============
 
 class CombatBus {
@@ -69,7 +85,7 @@ public:
     }
     void Unsubscribe(int id){ if(id>=0 && id < (int)listeners.size()) listeners[id]=nullptr; }
 
-    // Опубликовать (вызывает только CombatIntel)
+    // Опубликовать удар (вызывает CombatIntel). Топчет lastReport.
     void Publish(const CombatReport& rpt){
         lastReport = rpt;
         for(auto &fn: listeners) if(fn) fn(rpt);
@@ -77,9 +93,14 @@ public:
 
     const CombatReport& LastReport() const { return lastReport; }
 
+    // Присутствие. Не зовёт hit-слушателей — TacticalSwitch читает LastWorld().
+    void PublishWorld(const WorldReport& w){ lastWorld = w; }
+    const WorldReport& LastWorld() const { return lastWorld; }
+
 private:
     std::vector<Listener> listeners;
     CombatReport lastReport{};
+    WorldReport  lastWorld{};
 };
 
 // ============ Хелпер для PawnAI-модулей ============

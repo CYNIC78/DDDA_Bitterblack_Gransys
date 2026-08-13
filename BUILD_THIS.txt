@@ -1,0 +1,22 @@
+Snapshot 30 — hot-ring poll + merge new camps
+
+Dump23 (zip 29):
+  Singles came back after World=0. Pack of 3 did not — killed at 0.
+  Poll started lastBand-2MB and walked UP to 0x40000000, skipping 0x10DD
+  for ~30s. meth4_uEm8600 live vt = 0x015BD9D0 (real catalog hare).
+
+30:
+  Poll only 0x10000000-0x18000000 (where every live actor has been).
+  Empty: 8MB/tick, full ring ~2.4s.
+  Have a list: keep polling 4MB/tick and MERGE new seeds. Do not stop.
+  Kind uEm8600 if [0]=0x015BD9D0.
+  CombatIntel.cpp untouched. 0x61 not remapped.
+
+Clean + Release|Win32. D:\Temp\test3. dll+ini only.
+
+SCAN, DUMP, HUNT once (dump24 photo).
+Walk to 0. Come back. Then walk to a FRESH pack of 3 you have not
+Hunted. World goblins must rise before you swing. No second Hunt.
+If the pack stays 0 for >5s while you stand in it — say so.
+
+Need dump24 world{} + actors[] after that pack is on screen.

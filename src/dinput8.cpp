@@ -13,6 +13,7 @@
 #include "CombatIntel.h"
 #include "CameraPlus.h"
 #include "TargetLock.h"
+#include "devtools/DevTools.h"
 
 typedef HRESULT(WINAPI *tDirectInput8Create)(HINSTANCE, DWORD, const IID&, LPVOID*, LPUNKNOWN);
 tDirectInput8Create oDirectInput8Create = nullptr;
@@ -47,6 +48,7 @@ void InitHooks()
         Hooks::EnemyAI();
         Hooks::Nightmare();
         Hooks::CameraPlus();    // Free camera + game pause
+        Hooks::DevTools();      // TypeAtlas + factory probe + address_map.json
         // Hooks::TargetLock(); // EXPERIMENTAL: requires correct Yaw address
     }
     else
