@@ -21,13 +21,19 @@ DDDA_AI_Overhaul/          ← Мастер-папка всего проекта
 │   ├── ROADMAP.md         ← север: LIVE / CATALOG / PACK, фазы 0–5
 │   ├── DEVTOOLS_VISION.md ← глаза (TypeAtlas + сканер + консоль)
 │   ├── TYPE_ATLAS.md      ← 4405 фабрик MT Framework (генератор)
-│   └── FIELD_MAP.md       ← подтверждённые оффсеты полей
+│   ├── FIELD_MAP.md       ← подтверждённые оффсеты полей
+│   └── ASSET_FORMATS.md   ← спецификация файлов em0100.arc (XFS вскрыт)
 ├── resources/             ← Данные реверс-инжиниринга
 │   ├── types.tsv          ← Atvaark/DragonsDogma.Research: uEm→groupId
 │   ├── bestiary.py.txt    ← chrispurnell/pawn-knowledge: FlagID→bestiaryId
 │   └── scanner_player_yaw.CT.txt ← Cheat Engine сканер Yaw
 ├── tools/                 ← Вспомогательные инструменты
-│   └── arctool_helper.py  ← Python-автоматизатор ARCtool
+│   ├── arctool_helper.py  ← Python-автоматизатор ARCtool
+│   ├── xfs_dump.py        ← парсер XFS: схема + значения (.prp/.shl/.ltg)
+│   ├── rst_dump.py        ← парсер .rst: maxHP + пороги нокдауна/флинча
+│   ├── lmt_dump.py        ← парсер .lmt: мотионы, кадры, длительность
+│   ├── generate_act_map.py ← 812 FSM-состояний врагов из TypeAtlas
+│   └── find_type.py       ← поиск рычагов в атласе по смыслу/размеру
 ├── MinHook/               ← MinHook (x86 hooking library)
 ├── ImGui/                 ← Dear ImGui (UI overlay)
 ├── ddda-ai-overhaul.vcxproj ← Проект Visual Studio (Release Win32)
@@ -45,6 +51,21 @@ DDDA_AI_Overhaul/          ← Мастер-папка всего проекта
 - [docs/DEVTOOLS_VISION.md](docs/DEVTOOLS_VISION.md) — глаза: атлас, сканер, консоль
 - [docs/TYPE_ATLAS.md](docs/TYPE_ATLAS.md) — 4405 фабрик
 - [docs/FIELD_MAP.md](docs/FIELD_MAP.md) — только подтверждённые поля
+- [docs/ASSET_FORMATS.md](docs/ASSET_FORMATS.md) — формат XFS: 72 поля гоблина с японскими именами Capcom, сигнатуры для скана
+
+Дамп файлов игры:
+
+```bash
+python3 tools/xfs_dump.py --values <файл.prp|.shl|.ltg>   # схема + значения (XFS)
+python3 tools/rst_dump.py <файл.rst>                      # HP и пороги сбивания
+python3 tools/lmt_dump.py <файл.lmt>                      # мотионы: id, кадры, длительность
+python3 tools/generate_act_map.py                         # -> src/ActMap.Generated.h
+python3 tools/find_type.py --em 0100 --cat taunt          # поиск рычагов в атласе
+python3 tools/find_type.py --size 320                     # найти тип по sizeof
+```
+
+**ActMap** — 812 FSM-состояний с именами (`cEm0100ActThreatHowl` = таунт гоблина,
+`cEm0100ActDie` = смерть). Смерть врага определяется состоянием, а не HP.
 
 Перегенерация атласа: `python tools/generate_type_atlas.py`
 

@@ -74,10 +74,20 @@
  *   hundreds of meters) — not a scanner leak. CombatIntel.cpp untouched.
  * Zip 31: first 256B is transform, not HP. Inspect +offset. HUNT stores
  *   +14 / +0x5BD0 / +0x6000. Do not treat +14 0x12 or +4C=0 as death.
+ * Zip 32 / cleanup: removed two subsystems this log had already closed.
+ *   POOL (FollowPool/CollectInside/ScanBlockForChars/BlockOccupied,
+ *     g_pool/g_ins + json blocks[]/inside[] + 2 UI trees) — sUnit+0x44 is
+ *     geometry workspaces, never uEm*. Closed in the Zip 11 notes above.
+ *   XREFS (ScanXrefs, g_xref, json xrefs[], 1 UI tree) — gold inst/fact are
+ *     .text immediates, not .data tables; it returned 0 every run (Zip 20).
+ *     ScanTextWrites is the tool that actually finds those writes — kept.
+ *   pWorld coverage kept: ScanRegionPtrs(512) is wider than the old
+ *     CollectInside(128) call it replaced. Do NOT re-add either subsystem.
  */
 #include "stdafx.h"
 #include "TypeAtlas.Generated.h"
 #include "EnemyTypes.Generated.h"
+#include "ActMap.Generated.h"
 #include "devtools/DevTools.h"
 #include "devtools/TypeCallers.Generated.h"
 #include "CombatBus.h"
@@ -499,30 +509,9 @@ static bool      g_hdrOk = false;
 static BYTE      g_worldHdr[128];
 static bool      g_worldHdrOk = false;
 
-struct PoolBlk {
-    uintptr_t   ptr, vt;
-    const char* name;
-    BYTE        head[32];
-    bool        headOk;
-    int         nInside, nChars;
-};
-static PoolBlk  g_pool[48];
-static int      g_nPool = 0;
-static int      g_poolLen = 0;   // real slot count, may be > dumped
-static uint32_t g_poolOff = 0;
-static uint32_t g_poolStride = 0;
-
-// Heap pointers found *inside* occupied pool blocks (the actual leads).
-struct InsidePtr {
-    int         block;
-    uint32_t    off;
-    uintptr_t   ptr, vt;
-    const char* name;
-    BYTE        head[32];
-    bool        headOk;
-};
-static InsidePtr g_ins[96];
-static int       g_nIns = 0;
+// Zip 32: pool subsystem removed. sUnit+0x44 len=50 stride 0x1FE0 was proven
+// to be geometry workspaces (tagged AABB 50505050 / D0D0D0D0), never uEm*.
+// Closed as a unit list in the Zip 11 header notes — do not re-add.
 
 static BYTE      g_setHdr[256];
 static bool      g_setHdrOk = false;
@@ -644,14 +633,6 @@ static const uintptr_t kNpcInst      = 0x015D2618u; // dump19: uNpc DTI vt - 0x3
 static const uintptr_t kEm8000Inst   = 0x015BB278u; // dump19 list, gid 0x61
 static bool IsBannedInst(uintptr_t vt); // body after ScanDti — TryGidScout calls it first
 
-struct XrefHit {
-    const char* tag;
-    uintptr_t   needle, slot;
-    BYTE        ctx[16];
-};
-static XrefHit   g_xref[48];
-static int       g_nXref = 0;
-
 struct DtiLink {
     const char* owner;
     uint32_t    off;
@@ -724,6 +705,23 @@ struct ActorDump {
     const char* kind;
     BYTE        win5b[16];
     BYTE        win60[64];
+    // Zip 32 — ActScan: current-action pointer inside the 29KB body.
+    uint32_t    actOff;      // offset where the Act* was found
+    uintptr_t   actPtr;      // the action object
+    uint32_t    actVtRva;    // its vtable RVA
+    const char* actName;     // "ThreatHowl" / "Die" / ...
+    const char* actCat;      // "taunt" / "death" / ...
+    int         actHits;     // how many ActMap-matching ptrs in the body
+    uint32_t    actOff2;     // second candidate (previous/queued action)
+    const char* actName2;
+    // Zip 33 — raw mode: vtable-bearing objects in the body, NO ActMap filter.
+    // ActMap holds factory vtables; live objects carry instance vtables.
+    // These are the real ones, harvested so we can build the bridge.
+    uint32_t    rawOff[40];
+    uint32_t    rawVt[40];
+    uint32_t    rawPtr[40];   // Zip 35: object address — embedded vs heap
+    char        rawName[40][40];   // Zip 34: real class name read from DTI
+    int         nRaw;
 };
 static ActorDump g_act[32];
 static int       g_nAct = 0;
@@ -918,107 +916,6 @@ static void ScanRegionPtrs(uintptr_t base, uint32_t bytes, const char* fromName,
     }
 }
 
-static void ScanBlockForChars(uintptr_t blk, uint32_t bytes, int* nInside, int* nChars)
-{
-    *nInside = 0;
-    *nChars = 0;
-    if (!blk || bytes < 8) return;
-    if (bytes > 0x1FE0) bytes = 0x1FE0;
-    uint32_t words = bytes / 4;
-    for (uint32_t i = 0; i < words; ++i) {
-        uintptr_t v = 0;
-        if (!RdPtr((void*)(blk + i * 4), &v) || !LooksHeap(v)) continue;
-        (*nInside)++;
-        Named n = NameOf(v);
-        if (n.name) {
-            HistAdd(n.name);
-            AddLive(v, n);
-            if (IsCharKind(n.kind)) (*nChars)++;
-        }
-    }
-}
-
-// Header of sUnit: +0x44 is a packed heap array, stride 0x1FE0 on the
-// 12.08 Steam dump. Follow every slot. Do NOT require a watched vtable —
-// that filter hid the whole array last time.
-static bool BlockOccupied(const BYTE* head)
-{
-    // Empty slots are 32 bytes of zero. Occupied: sentinels and/or a ptr at +0x18.
-    for (int i = 0; i < 32; ++i) if (head[i]) return true;
-    return false;
-}
-
-static void CollectInside(int block, uintptr_t blk, uint32_t span)
-{
-    if (!blk || span < 8) return;
-    if (span > 0x1FE0) span = 0x1FE0;
-    uint32_t words = span / 4;
-    for (uint32_t i = 0; i < words && g_nIns < 96; ++i) {
-        uintptr_t v = 0;
-        if (!RdPtr((void*)(blk + i * 4), &v) || !LooksHeap(v)) continue;
-        // de-dup same ptr (many lines share +0x18)
-        int exist = -1;
-        for (int k = 0; k < g_nIns; ++k) if (g_ins[k].ptr == v) { exist = k; break; }
-        if (exist >= 0) continue;
-        InsidePtr& ip = g_ins[g_nIns];
-        memset(&ip, 0, sizeof(ip));
-        ip.block = block;
-        ip.off = i * 4;
-        ip.ptr = v;
-        ip.headOk = Rd((void*)v, ip.head, 32);
-        if (ip.headOk) ip.vt = *(uint32_t*)ip.head;
-        Named n = NameOf(v);
-        ip.name = n.name;
-        if (!ip.name && ip.headOk) ip.name = TagName(ip.vt);
-        HistAdd(ip.name ? ip.name : n.name);
-        AddLive(v, n);
-        g_nIns++;
-    }
-}
-
-static void FollowPool(uintptr_t unit)
-{
-    g_nPool = 0;
-    g_nIns = 0;
-    g_poolLen = 0;
-    g_poolOff = 0;
-    g_poolStride = 0;
-    if (!unit) return;
-
-    uint32_t start = 0x44;
-    uintptr_t a = 0, b = 0;
-    if (!RdPtr((void*)(unit + start), &a) || !LooksHeap(a)
-        || !RdPtr((void*)(unit + start + 4), &b) || !LooksHeap(b) || b <= a) {
-        return;
-    }
-    g_poolOff = start;
-    g_poolStride = (uint32_t)(b - a);
-
-    uintptr_t prev = 0;
-    for (int i = 0; i < 256; ++i) {
-        uintptr_t p = 0;
-        if (!RdPtr((void*)(unit + start + (uint32_t)i * 4), &p)) break;
-        if (!LooksHeap(p)) break;
-        if (i > 0 && p != prev + g_poolStride) break;
-        prev = p;
-        g_poolLen++;
-
-        if (g_nPool < 48) {
-            PoolBlk& blk = g_pool[g_nPool];
-            memset(&blk, 0, sizeof(blk));
-            blk.ptr = p;
-            blk.headOk = Rd((void*)p, blk.head, 32);
-            if (blk.headOk) blk.vt = *(uint32_t*)blk.head;
-            Named n = NameOf(p);
-            blk.name = n.name;
-            uint32_t span = g_poolStride ? g_poolStride : 0x200;
-            ScanBlockForChars(p, span, &blk.nInside, &blk.nChars);
-            if (blk.headOk && BlockOccupied(blk.head))
-                CollectInside(g_nPool, p, span);
-            g_nPool++;
-        }
-    }
-}
 
 static void DumpHeader(uintptr_t addr)
 {
@@ -2029,59 +1926,6 @@ static void WalkDtiTree()
     }
 }
 
-static void ScanXrefs()
-{
-    g_nXref = 0;
-    if (!g_base || !g_imageSize) return;
-    // dump12: create_uPlayer sits in dozens of vtables and ate the cap.
-    static const uintptr_t kN[7] = {
-        kGoldGargInst, kGoldPlrInst, kGoldPawnInst,
-        kGoldGargFact, kGoldPlrFact, kGoldPawnFact,
-        kParentVt
-    };
-    static const char* kT[7] = {
-        "uEm0900.inst", "uPlayer.inst", "sPawn.inst",
-        "uEm0900.fact", "uPlayer.fact", "sPawn.fact",
-        "parent.015497F8"
-    };
-    int perTag[7] = {};
-    auto dos = (IMAGE_DOS_HEADER*)g_base;
-    auto nt  = (IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
-    auto sec = IMAGE_FIRST_SECTION(nt);
-    const int nsec = nt->FileHeader.NumberOfSections;
-    __try {
-        for (int si = 0; si < nsec && g_nXref < 48; ++si) {
-            if (sec[si].Characteristics & IMAGE_SCN_MEM_EXECUTE) continue;
-            uintptr_t s0 = g_base + sec[si].VirtualAddress;
-            uint32_t sz = sec[si].Misc.VirtualSize;
-            if (!sz) continue;
-            if (sec[si].VirtualAddress + sz > g_imageSize)
-                sz = g_imageSize - sec[si].VirtualAddress;
-            if (sz < 16) continue;
-            uint32_t* p = (uint32_t*)s0;
-            uint32_t n = sz / 4;
-            for (uint32_t i = 0; i < n && g_nXref < 48; ++i) {
-                uintptr_t val = p[i];
-                int hit = -1;
-                for (int k = 0; k < 7; ++k)
-                    if (val == kN[k]) { hit = k; break; }
-                if (hit < 0) continue;
-                if (perTag[hit] >= 4) continue;
-                perTag[hit]++;
-                XrefHit& x = g_xref[g_nXref];
-                memset(&x, 0, sizeof(x));
-                x.tag = kT[hit];
-                x.needle = kN[hit];
-                x.slot = s0 + (uintptr_t)i * 4;
-                uintptr_t ctxAt = (i >= 2) ? (x.slot - 8) : x.slot;
-                Rd((void*)ctxAt, x.ctx, 16);
-                g_nXref++;
-            }
-        }
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-    }
-}
-
 static void AddLead(const char* fromName, uintptr_t from, uint32_t off, uintptr_t ptr)
 {
     if (!ptr || g_nLead >= 32) return;
@@ -2377,6 +2221,193 @@ static void PublishWorldFromActors()
     CombatBus::Instance().PublishWorld(w);
 }
 
+// Zip 32 — ActScan.
+// Find the slot in the 29KB body that holds the current cEm*Act object.
+//
+// Cost matters: DumpActorsFrom also runs from WorldScan_Tick every 150 ms.
+// A naive dword-by-dword walk would issue ~14700 IsBadReadPtr calls per actor
+// per tick and tank the framerate. So:
+//   * the body is copied in 4KB chunks (8 guarded reads, not 7360), then
+//     scanned in our own buffer;
+//   * the full search runs only on HUNT (g_actFullScan). Once the offset is
+//     known, the tick path re-reads that ONE slot.
+// Zip 34: the action slot, proven by alive/dead diff on uEm0100 AND uEm8000.
+static const uint32_t kActSlot = 0x2DC8;
+static uint32_t g_actSlotOff  = 0;      // learned offset, sticky across ticks
+static bool     g_actFullScan = false;  // set by HUNT, cleared after use
+
+static const ActMap::Act* ActAt(uintptr_t body, uint32_t off, uintptr_t* outPtr, uint32_t* outRva)
+{
+    uintptr_t cand = 0;
+    if (!RdPtr((void*)(body + off), &cand)) return nullptr;
+    if (!LooksHeap(cand)) return nullptr;
+    uintptr_t vt = 0;
+    if (!RdPtr((void*)cand, &vt)) return nullptr;
+    if (!InImage(vt)) return nullptr;
+    uint32_t rva = (uint32_t)(vt - g_base);
+    const ActMap::Act* a = ActMap::FindByVt(rva);
+    if (!a) return nullptr;
+    if (outPtr) *outPtr = cand;
+    if (outRva) *outRva = rva;
+    return a;
+}
+
+// Zip 34 — resolve a live object's class name without the atlas.
+// MT Framework: every MtObject's vtable has GetDTI() early; the DTI card in
+// .data holds a char* name at +4 (Zip 14 note). So: object -> vtable -> scan
+// the first slots for a function that returns a .data pointer whose +4 is an
+// ASCII class name. Cheaper and exact vs. extrapolating the 0x48 lattice.
+static bool ReadCStr(uintptr_t va, char* out, int cap)
+{
+    if (!va || !InImage(va)) return false;
+    for (int i = 0; i < cap - 1; ++i) {
+        BYTE c = 0;
+        if (!Rd((void*)(va + i), &c, 1)) return false;
+        if (c == 0) { out[i] = 0; return i > 2; }
+        if (c < 0x20 || c > 0x7E) return false;
+        out[i] = (char)c;
+    }
+    out[cap - 1] = 0;
+    return true;
+}
+
+// A DTI card: [0] = MtDTI vtable (in .rdata), [4] = char* name (in image).
+static bool NameFromDti(uintptr_t dti, char* out, int cap)
+{
+    if (!dti || !InImage(dti)) return false;
+    uintptr_t np = 0;
+    if (!RdPtr((void*)(dti + 4), &np)) return false;
+    return ReadCStr(np, out, cap);
+}
+
+// Find the DTI for a live object by scanning its vtable for `mov eax, imm32;
+// ret` (B8 imm32 C3) — that is GetDTI in this build.
+static uintptr_t DtiOfObject(uintptr_t obj)
+{
+    uintptr_t vt = 0;
+    if (!RdPtr((void*)obj, &vt) || !InImage(vt)) return 0;
+    for (int slot = 0; slot < 12; ++slot) {
+        uintptr_t fn = 0;
+        if (!RdPtr((void*)(vt + slot * 4), &fn)) break;
+        if (!fn || !InExec(fn)) break;
+        BYTE code[8];
+        if (!Rd((void*)fn, code, sizeof(code))) continue;
+        int at = -1;
+        if (code[0] == 0xB8 && code[5] == 0xC3) at = 1;          // mov eax,imm; ret
+        else if (code[0] == 0xB8 && code[5] == 0xC2) at = 1;     // ret n
+        if (at < 0) continue;
+        uintptr_t imm = *(uint32_t*)(code + at);
+        char probe[40];
+        if (NameFromDti(imm, probe, sizeof(probe))) return imm;
+    }
+    return 0;
+}
+
+static bool NameOfLiveObject(uintptr_t obj, char* out, int cap)
+{
+    uintptr_t dti = DtiOfObject(obj);
+    if (!dti) { out[0] = 0; return false; }
+    return NameFromDti(dti, out, cap);
+}
+
+static void ScanActSlot(ActorDump& A)
+{
+    A.actOff = 0; A.actPtr = 0; A.actVtRva = 0;
+    A.actName = 0; A.actCat = 0; A.actHits = 0;
+    A.actOff2 = 0; A.actName2 = 0;
+    A.nRaw = 0;
+    if (!g_base) return;
+
+    // Fast path: we already know where it lives.
+    if (!g_actFullScan && g_actSlotOff) {
+        uintptr_t ptr = 0; uint32_t rva = 0;
+        if (const ActMap::Act* a = ActAt(A.ptr, g_actSlotOff, &ptr, &rva)) {
+            A.actOff = g_actSlotOff; A.actPtr = ptr; A.actVtRva = rva;
+            A.actName = a->name; A.actCat = a->category; A.actHits = 1;
+        }
+        return;
+    }
+
+    // Full search. Copy the body first: 8 guarded reads instead of thousands.
+    static BYTE  buf[0x7400];
+    static bool  ok[0x7400 / 0x1000 + 1];
+    const uint32_t kEnd = 0x7400, kChunk = 0x1000;
+    for (uint32_t c = 0, off = 0; off < kEnd; ++c, off += kChunk) {
+        uint32_t n = (off + kChunk <= kEnd) ? kChunk : (kEnd - off);
+        ok[c] = Rd((void*)(A.ptr + off), buf + off, n);
+    }
+
+    for (uint32_t off = 0x100; off + 4 <= kEnd; off += 4) {
+        if (!ok[off / kChunk]) continue;
+        uintptr_t cand = *(uintptr_t*)(buf + off);
+        if (!LooksHeap(cand)) continue;
+        uintptr_t vt = 0;
+        if (!RdPtr((void*)cand, &vt) || !InImage(vt)) continue;
+        uint32_t rva = (uint32_t)(vt - g_base);
+
+        // Zip 33: harvest every real vtable-bearing object, unfiltered.
+        // LooksLikeVtable = lives in .rdata and its first two slots point
+        // into .text — that is a genuine C++ object, Act or not.
+        if (A.nRaw < 40 && LooksLikeVtable(vt)) {
+            int dup = 0;
+            for (int r = 0; r < A.nRaw; ++r)
+                if (A.rawVt[r] == (uint32_t)vt) { dup = 1; break; }
+            if (!dup) {
+                A.rawOff[A.nRaw] = off;
+                A.rawVt[A.nRaw]  = (uint32_t)vt;
+                A.rawPtr[A.nRaw] = (uint32_t)cand;
+                // Zip 34: ask the object its own name. Atlas not involved.
+                if (!NameOfLiveObject(cand, A.rawName[A.nRaw], 40))
+                    A.rawName[A.nRaw][0] = 0;
+                A.nRaw++;
+            }
+        }
+
+        const ActMap::Act* a = ActMap::FindByVt(rva);
+        if (!a) continue;
+
+        A.actHits++;
+        if (!A.actPtr) {
+            A.actOff = off; A.actPtr = cand; A.actVtRva = rva;
+            A.actName = a->name; A.actCat = a->category;
+        } else if (!A.actOff2) {
+            A.actOff2 = off; A.actName2 = a->name;
+        }
+    }
+    if (A.actOff) g_actSlotOff = A.actOff;   // remember for the cheap path
+}
+
+// Zip 36 — probe the decision/motion objects hanging off the actor.
+// Confirmed live offsets (dumps 14.08): +0x2DC0 cActBank, +0x2DC8 current Act,
+// +0x2E64 cAICtrl (704B). We snapshot their headers so weights and rate fields
+// can be located by diffing calm vs. combat.
+struct SidecarDump {
+    uint32_t    off;
+    uintptr_t   ptr;
+    char        name[40];
+    BYTE        hex[384];
+    bool        ok;
+};
+static SidecarDump g_side[8];
+static int         g_nSide = 0;
+
+static void ProbeSidecars(uintptr_t body)
+{
+    g_nSide = 0;
+    static const uint32_t kOffs[] = { 0x2DC0, 0x2DC8, 0x2E64, 0x29AC, 0x322C, 0x2710, 0 };
+    for (int i = 0; kOffs[i] && g_nSide < 8; ++i) {
+        uintptr_t p = 0;
+        if (!RdPtr((void*)(body + kOffs[i]), &p) || !LooksHeap(p)) continue;
+        SidecarDump& S = g_side[g_nSide];
+        memset(&S, 0, sizeof(S));
+        S.off = kOffs[i];
+        S.ptr = p;
+        NameOfLiveObject(p, S.name, sizeof(S.name));
+        S.ok = Rd((void*)p, S.hex, sizeof(S.hex));
+        g_nSide++;
+    }
+}
+
 static void DumpActorsFrom(uintptr_t* seed, int ns)
 {
     g_nAct = 0;
@@ -2408,6 +2439,7 @@ static void DumpActorsFrom(uintptr_t* seed, int ns)
         { BYTE st = 0; if (Rd((void*)(p + 0x14), &st, 1)) A.st14 = st; }
         A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
         A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
+        ScanActSlot(A);
         if (A.vt == kGoblinInst) A.kind = "uEm0100";
         else if (A.vt == kNpcInst) A.kind = "uNpc";
         else if (A.vt == kEm8000Inst) A.kind = "uEm8000";
@@ -2757,8 +2789,7 @@ static void WriteDumpJson()
         "  \"pWorld\":{\"slot\":\"0x%08X\",\"obj\":\"0x%08X\",\"name\":\"%s\"},\n"
         "  \"sUnit\":{\"addr\":\"0x%08X\",\"claimed\":1700720,\"bytesInImage\":%u,\"fitsInImage\":%s,\"identify\":\"%s\"},\n"
         "  \"sSetManager\":{\"addr\":\"0x%08X\",\"claimed\":112976,\"bytesInImage\":%u},\n"
-        "  \"counts\":{\"moveLine\":%d,\"unitGroup\":%d,\"layout\":%d,\"live\":%d,\"headerPtrs\":%d,\"hunts\":%d,\"pool\":%d,\"poolLen\":%d,\"inside\":%d,\"heapMgrs\":%d,\"holders\":%d,\"derived\":%d,\"census\":%d,\"gids\":%d,\"facts\":%d,\"dti\":%d,\"xrefs\":%d,\"links\":%d,\"leads\":%d,\"tree\":%d,\"near\":%d,\"writes\":%d,\"nodes\":%d,\"ctors\":%d,\"actors\":%d},\n"
-        "  \"pool\":{\"off\":\"0x%X\",\"stride\":\"0x%X\",\"dumped\":%d,\"len\":%d},\n"
+        "  \"counts\":{\"moveLine\":%d,\"unitGroup\":%d,\"layout\":%d,\"live\":%d,\"headerPtrs\":%d,\"hunts\":%d,\"heapMgrs\":%d,\"holders\":%d,\"derived\":%d,\"census\":%d,\"gids\":%d,\"facts\":%d,\"dti\":%d,\"links\":%d,\"leads\":%d,\"tree\":%d,\"near\":%d,\"writes\":%d,\"nodes\":%d,\"ctors\":%d,\"actors\":%d},\n"
         "  \"embed\":{\"bytes\":%u,\"moveLine\":%d,\"unitGroup\":%d,\"layout\":%d},\n"
         "  \"hunt\":{\"ms\":%u,\"regions\":%d,\"bytes\":%u,\"keys\":%d},\n",
         (unsigned)g_base, (unsigned)ImageEnd(), g_dumpMs,
@@ -2767,8 +2798,7 @@ static void WriteDumpJson()
         (unsigned)g_sUnit, g_sUnitInImg, g_sUnitFits ? "true" : "false",
         g_sUnitId ? g_sUnitId : "",
         (unsigned)g_sSet, g_sSetInImg,
-        g_nMoveLine, g_nUnitGroup, g_nLayout, g_nLives, g_nDptrs, g_nHunts, g_nPool, g_poolLen, g_nIns, g_nMgrs, g_nHold, g_nDer, g_nCen, g_nGid, g_nFact, g_nDti, g_nXref, g_nDlink, g_nLead, g_nTree, g_nNear, g_nWr, g_nNode, g_nCtor, g_nAct,
-        g_poolOff, g_poolStride, g_nPool, g_poolLen,
+        g_nMoveLine, g_nUnitGroup, g_nLayout, g_nLives, g_nDptrs, g_nHunts, g_nMgrs, g_nHold, g_nDer, g_nCen, g_nGid, g_nFact, g_nDti, g_nDlink, g_nLead, g_nTree, g_nNear, g_nWr, g_nNode, g_nCtor, g_nAct,
         g_embedBytes, g_nMoveLine, g_nUnitGroup, g_nLayout,
         g_huntMs, g_huntRegions, g_huntBytes, g_nHvt);
 
@@ -2799,32 +2829,6 @@ static void WriteDumpJson()
         if (g_win[i].ok) {
             for (int b = 0; b < 64; ++b)
                 fprintf(f, "%02X%s", g_win[i].hex[b], b == 63 ? "" : " ");
-        }
-        fputs("\"}\n", f);
-    }
-    fputs("  ],\n  \"blocks\":[\n", f);
-    for (int i = 0; i < g_nPool; ++i) {
-        fprintf(f,
-            "    %s{\"i\":%d,\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"name\":\"%s\",\"inside\":%d,\"chars\":%d,\"head\":\"",
-            i ? "," : " ", i, (unsigned)g_pool[i].ptr, (unsigned)g_pool[i].vt,
-            g_pool[i].name ? g_pool[i].name : "",
-            g_pool[i].nInside, g_pool[i].nChars);
-        if (g_pool[i].headOk) {
-            for (int b = 0; b < 32; ++b)
-                fprintf(f, "%02X%s", g_pool[i].head[b], b == 31 ? "" : " ");
-        }
-        fputs("\"}\n", f);
-    }
-    fputs("  ],\n  \"inside\":[\n", f);
-    for (int i = 0; i < g_nIns; ++i) {
-        fprintf(f,
-            "    %s{\"block\":%d,\"off\":\"0x%X\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"name\":\"%s\",\"head\":\"",
-            i ? "," : " ", g_ins[i].block, g_ins[i].off,
-            (unsigned)g_ins[i].ptr, (unsigned)g_ins[i].vt,
-            g_ins[i].name ? g_ins[i].name : "");
-        if (g_ins[i].headOk) {
-            for (int b = 0; b < 32; ++b)
-                fprintf(f, "%02X%s", g_ins[i].head[b], b == 31 ? "" : " ");
         }
         fputs("\"}\n", f);
     }
@@ -2962,15 +2966,6 @@ static void WriteDumpJson()
                 g_dti[i].cands[c].callee);
         fputs("]}\n", f);
     }
-    fputs("  ],\n  \"xrefs\":[\n", f);
-    for (int i = 0; i < g_nXref; ++i) {
-        fprintf(f, "    %s{\"tag\":\"%s\",\"needle\":\"0x%08X\",\"slot\":\"0x%08X\",\"ctx\":\"",
-            i ? "," : " ", g_xref[i].tag ? g_xref[i].tag : "",
-            (unsigned)g_xref[i].needle, (unsigned)g_xref[i].slot);
-        for (int b = 0; b < 16; ++b)
-            fprintf(f, "%02X%s", g_xref[i].ctx[b], b == 15 ? "" : " ");
-        fputs("\"}\n", f);
-    }
     fputs("  ],\n  \"links\":[\n", f);
     for (int i = 0; i < g_nDlink; ++i) {
         fprintf(f, "    %s{\"owner\":\"%s\",\"off\":\"0x%X\",\"ptr\":\"0x%08X\",\"name\":\"%s\",\"head\":\"",
@@ -3035,12 +3030,17 @@ static void WriteDumpJson()
     }
     fputs("  ],\n  \"actors\":[\n", f);
     for (int i = 0; i < g_nAct; ++i) {
-        fprintf(f, "    %s{\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"kind\":\"%s\",\"gid\":\"0x%02X\",\"st14\":\"0x%02X\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"next\":\"0x%08X\",\"prev\":\"0x%08X\",\"subVt\":\"0x%08X\",\"fat29\":%s,\"win5b\":\"",
+        fprintf(f, "    %s{\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"kind\":\"%s\",\"gid\":\"0x%02X\",\"st14\":\"0x%02X\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"next\":\"0x%08X\",\"prev\":\"0x%08X\",\"subVt\":\"0x%08X\",\"fat29\":%s,\"actOff\":\"0x%04X\",\"actPtr\":\"0x%08X\",\"actVt\":\"0x%07X\",\"act\":\"%s\",\"actCat\":\"%s\",\"actHits\":%d,\"actOff2\":\"0x%04X\",\"act2\":\"%s\",\"win5b\":\"",
             i ? "," : " ", (unsigned)g_act[i].ptr, (unsigned)g_act[i].vt,
             g_act[i].kind ? g_act[i].kind : "?",
             g_act[i].gid, g_act[i].st14, g_act[i].x, g_act[i].y, g_act[i].z,
             (unsigned)g_act[i].next, (unsigned)g_act[i].prev,
-            (unsigned)g_act[i].subVt, g_act[i].fat29 ? "true" : "false");
+            (unsigned)g_act[i].subVt, g_act[i].fat29 ? "true" : "false",
+            g_act[i].actOff, (unsigned)g_act[i].actPtr, g_act[i].actVtRva,
+            g_act[i].actName ? g_act[i].actName : "-",
+            g_act[i].actCat  ? g_act[i].actCat  : "-",
+            g_act[i].actHits,
+            g_act[i].actOff2, g_act[i].actName2 ? g_act[i].actName2 : "-");
         if (g_act[i].win5bOk) {
             for (int b = 0; b < 16; ++b)
                 fprintf(f, "%02X%s", g_act[i].win5b[b], b == 15 ? "" : " ");
@@ -3049,6 +3049,21 @@ static void WriteDumpJson()
         if (g_act[i].win60Ok) {
             for (int b = 0; b < 64; ++b)
                 fprintf(f, "%02X%s", g_act[i].win60[b], b == 63 ? "" : " ");
+        }
+        fputs("\",\"raw\":[", f);
+        for (int r = 0; r < g_act[i].nRaw; ++r)
+            fprintf(f, "%s{\"off\":\"0x%04X\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"name\":\"%s\"}",
+                r ? "," : "", g_act[i].rawOff[r], g_act[i].rawPtr[r],
+                g_act[i].rawVt[r], g_act[i].rawName[r]);
+        fputs("]}\n", f);
+    }
+    fputs("  ],\n  \"sidecars\":[\n", f);
+    for (int i = 0; i < g_nSide; ++i) {
+        fprintf(f, "    %s{\"off\":\"0x%04X\",\"ptr\":\"0x%08X\",\"name\":\"%s\",\"hex\":\"",
+            i ? "," : " ", g_side[i].off, (unsigned)g_side[i].ptr, g_side[i].name);
+        if (g_side[i].ok) {
+            for (int b = 0; b < 384; ++b)
+                fprintf(f, "%02X%s", g_side[i].hex[b], b == 383 ? "" : " ");
         }
         fputs("\"}\n", f);
     }
@@ -3135,7 +3150,6 @@ static void HuntLive()
     ApplyDtiToFacts();
     ScanDtiLinks();
     WalkDtiTree();
-    ScanXrefs();
     ScanNearFactory();
     ScanTextWrites();
     DumpGoldCtors();
@@ -3234,7 +3248,17 @@ static void HuntLive()
     CollectLeads();
     DumpGidNodes();
     FilterFakeLives();
+    g_actFullScan = true;    // Zip 32: HUNT does the wide search
     DumpActors();
+    g_actFullScan = false;
+    // Zip 36: snapshot decision objects of the first enemy that is not a hare.
+    for (int i = 0; i < g_nAct; ++i) {
+        if (g_act[i].kind && strcmp(g_act[i].kind, "uEm8600")
+            && strcmp(g_act[i].kind, "uEm8000") && g_act[i].ptr) {
+            ProbeSidecars(g_act[i].ptr);
+            break;
+        }
+    }
     for (int i = 0; i < g_nLives && g_nLead < 32; ++i) {
         BYTE probe = 0;
         if (Rd((void*)(g_lives[i].ptr + 0x73BF), &probe, 1))
@@ -3247,7 +3271,7 @@ static void HuntLive()
     logFile << "DevTools: hunt " << g_huntMs << " ms live=" << g_nLives
             << " census=" << g_nCen << " derived=" << g_nDer
             << " mgrs=" << g_nMgrs << " gids=" << g_nGid
-            << " cands/xrefs/leads=" << g_nXref << "/" << g_nLead << std::endl;
+            << " leads=" << g_nLead << std::endl;
     WriteDumpJson();
 }
 
@@ -3269,8 +3293,6 @@ static void DumpAnatomy()
     g_hdrOk = false;
     g_worldHdrOk = false;
     g_setHdrOk = false;
-    g_nPool = 0;
-    g_nIns = 0;
     g_nWin = 0;
     g_nMgrs = 0;
     g_nHold = 0;
@@ -3282,7 +3304,6 @@ static void DumpAnatomy()
     g_nGid = 0;
     g_nFact = 0;
     g_nDti = 0;
-    g_nXref = 0;
     g_nDlink = 0;
     g_nLead = 0;
     g_nTree = 0;
@@ -3291,9 +3312,6 @@ static void DumpAnatomy()
     g_nNode = 0;
     g_nCtor = 0;
     // Keep g_nAct. DUMP is sUnit anatomy. Zeroing it killed WorldScan until the next HUNT.
-    g_poolLen = 0;
-    g_poolOff = 0;
-    g_poolStride = 0;
     memset(g_hdr, 0, sizeof(g_hdr));
     memset(g_worldHdr, 0, sizeof(g_worldHdr));
     memset(g_setHdr, 0, sizeof(g_setHdr));
@@ -3329,12 +3347,9 @@ static void DumpAnatomy()
         ScanRegionPtrs(g_sUnit, 512, "sUnit", 512);
         g_embedBytes = g_sUnitInImg;
         ScanEmbedded(g_sUnit, g_sUnitInImg, "sUnit");
-        FollowPool(g_sUnit);
         DumpWindow(0xD0C);   // MoveLine+8 target (sUnit-relative)
         DumpWindow(0x1954);  // sUnit+0x14 target
     }
-    if (g_pWorldObj) CollectInside(-1, g_pWorldObj, 128);
-
     if (g_sSet) {
         Named nset = NameOf(g_sSet);
         HistAdd(nset.name ? nset.name : "sSetManager");
@@ -3369,9 +3384,7 @@ static void DumpAnatomy()
             << " hunts=" << g_nHunts
             << " heapMgrs=" << g_nMgrs
             << " holders=" << g_nHold
-            << " huntMs=" << g_huntMs
-            << " pool=" << g_nPool
-            << " stride=0x" << std::hex << g_poolStride << std::dec << std::endl;
+            << " huntMs=" << g_huntMs << std::endl;
     for (int i = 0; i < g_nHist; ++i)
         logFile << "  hist " << g_hist[i].name << " x" << g_hist[i].n << std::endl;
     for (int i = 0; i < g_nLives; ++i)
@@ -3482,34 +3495,7 @@ static void RenderDevToolsUI()
             g_huntMs, g_huntRegions, g_huntBytes / 1048576.0f, g_nHvt,
             g_nLives, g_nMgrs, g_nCen, g_nDer);
         ImGui::TextWrapped(
-            "Pool +44 stride 0x%X  %d / %d slots = geometry tags, not units. "
-            "Green names below are heap objects whose first dword is a known vtable.",
-            g_poolStride, g_nPool, g_poolLen);
-
-        if (ImGui::TreeNode("sUnit heap pool (the 0x1FE0 array)")) {
-            if (!g_nPool) ImGui::TextDisabled("no pool — unexpected, paste json");
-            for (int i = 0; i < g_nPool; ++i) {
-                char lab[96];
-                sprintf_s(lab, "[%02d] %08X  vt %08X  %-16s in=%d ch=%d##pb%d",
-                    i, (unsigned)g_pool[i].ptr, (unsigned)g_pool[i].vt,
-                    g_pool[i].name ? g_pool[i].name : "?",
-                    g_pool[i].nInside, g_pool[i].nChars, i);
-                if (ImGui::SmallButton(lab)) SetInspect(g_pool[i].ptr);
-            }
-            ImGui::TreePop();
-        }
-        if (ImGui::TreeNode("Pointers inside occupied blocks")) {
-            if (!g_nIns) ImGui::TextDisabled("none — occupied blocks had no heap ptrs");
-            for (int i = 0; i < g_nIns; ++i) {
-                char lab[112];
-                sprintf_s(lab, "b%02d +0x%X  %08X  vt %08X  %-16s##ip%d",
-                    g_ins[i].block, g_ins[i].off, (unsigned)g_ins[i].ptr,
-                    (unsigned)g_ins[i].vt,
-                    g_ins[i].name ? g_ins[i].name : "?", i);
-                if (ImGui::SmallButton(lab)) SetInspect(g_ins[i].ptr);
-            }
-            ImGui::TreePop();
-        }
+            "Green names below are heap objects whose first dword is a known vtable.");
 
         if (ImGui::TreeNode("Histogram (what the pointers actually are)")) {
             if (!g_nHist) ImGui::TextDisabled("nothing identified — paste the json anyway");
@@ -3617,16 +3603,6 @@ static void RenderDevToolsUI()
             ImGui::TextDisabled("inst = UNIQUE vtable across types. Shared parent is left 0.");
             ImGui::TreePop();
         }
-        if (ImGui::TreeNode("Xrefs (gold fact/inst dwords in the image)")) {
-            if (!g_nXref) ImGui::TextDisabled("none - HUNT first. Looking for known gargoyle/player/pawn vts.");
-            for (int i = 0; i < g_nXref; ++i) {
-                char lab[96];
-                sprintf_s(lab, "%-16s @ %08X##xr%d",
-                    g_xref[i].tag ? g_xref[i].tag : "?", (unsigned)g_xref[i].slot, i);
-                if (ImGui::SmallButton(lab)) SetInspect(g_xref[i].slot);
-            }
-            ImGui::TreePop();
-        }
         if (ImGui::TreeNode("DTI links (+08/+0C/+10/+14)")) {
             if (!g_nDlink) ImGui::TextDisabled("none - HUNT first");
             for (int i = 0; i < g_nDlink; ++i) {
@@ -3704,7 +3680,52 @@ static void RenderDevToolsUI()
                         g_act[i].gid, g_act[i].st14, (unsigned)g_act[i].ptr,
                         g_act[i].x, g_act[i].y, g_act[i].z, i);
                     if (ImGui::SmallButton(lab)) SetInspect(g_act[i].ptr);
+                    // Zip 32 — live action state
+                    if (g_act[i].actName) {
+                        bool dead = g_act[i].actCat && !strcmp(g_act[i].actCat, "death");
+                        bool tnt  = g_act[i].actCat && !strcmp(g_act[i].actCat, "taunt");
+                        ImGui::SameLine();
+                        ImGui::TextColored(
+                            dead ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+                                 : tnt ? ImVec4(1.0f, 0.85f, 0.30f, 1.0f)
+                                       : ImVec4(0.55f, 0.95f, 0.55f, 1.0f),
+                            "%s (%s) @+%04X x%d",
+                            g_act[i].actName, g_act[i].actCat ? g_act[i].actCat : "?",
+                            g_act[i].actOff, g_act[i].actHits);
+                        if (g_act[i].actName2) {
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("| 2nd %s @+%04X",
+                                g_act[i].actName2, g_act[i].actOff2);
+                        }
+                    } else {
+                        // Zip 34: no atlas match, but the object names itself.
+                        const char* dtiName = 0;
+                        for (int r = 0; r < g_act[i].nRaw; ++r)
+                            if (g_act[i].rawOff[r] == kActSlot && g_act[i].rawName[r][0]) {
+                                dtiName = g_act[i].rawName[r]; break;
+                            }
+                        ImGui::SameLine();
+                        if (dtiName) {
+                            bool dead = strstr(dtiName, "Die") || strstr(dtiName, "Dead");
+                            bool tnt  = strstr(dtiName, "Howl") || strstr(dtiName, "Threat")
+                                     || strstr(dtiName, "Dance");
+                            ImGui::TextColored(
+                                dead ? ImVec4(1.0f, 0.35f, 0.35f, 1.0f)
+                                     : tnt ? ImVec4(1.0f, 0.85f, 0.30f, 1.0f)
+                                           : ImVec4(0.55f, 0.95f, 0.55f, 1.0f),
+                                "%s @+%04X", dtiName, kActSlot);
+                        } else if (g_act[i].nRaw) {
+                            ImGui::TextColored(ImVec4(0.6f, 0.8f, 1.0f, 1.0f),
+                                "%d raw vt (see json)", g_act[i].nRaw);
+                        } else {
+                            ImGui::TextDisabled("act=? (press HUNT)");
+                        }
+                    }
                 }
+                ImGui::Text("act slot: 0x%04X %s", g_actSlotOff,
+                    g_actSlotOff ? "(locked, cheap re-read each tick)" : "(unknown — press HUNT)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("re-search act slot")) { g_actSlotOff = 0; g_actFullScan = true; RewalkActors(); g_actFullScan = false; }
             } else {
                 ImGui::TextDisabled("list empty — polling hot heap 0x10000000-0x18000000, 8MB/tick.");
             }
@@ -3806,7 +3827,9 @@ static void RenderDevToolsUI()
 
 void Hooks::DevTools()
 {
-    g_enabled = config.getBool("devtools", "enabled", true);
+    // Дефолт OFF: игроку DevTools не нужен, а WorldScan_Tick стоит 150 мс-обхода.
+    // Для разработки включается в ddda_ai_overhaul.ini: [devtools] enabled = on
+    g_enabled = config.getBool("devtools", "enabled", false);
     g_base = (uintptr_t)GetModuleHandle(nullptr);
 
     if (g_base) {

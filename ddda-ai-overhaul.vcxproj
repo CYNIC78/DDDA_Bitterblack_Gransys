@@ -171,6 +171,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\devtools\DevTools.h" />
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\TypeAtlas.Generated.h" />
+    <ClInclude Include="src\ActMap.Generated.h" />
     <!-- dinput8 -->
     <ClInclude Include="dinput8.h" />
     <ClInclude Include="d3d9.h" />

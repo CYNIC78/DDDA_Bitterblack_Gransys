@@ -108,7 +108,9 @@ static bool IsPartyMember(void* ptr) {
         uintptr_t modBase = (uintptr_t)GetModuleHandle(nullptr);
         if (vtable >= modBase && vtable < modBase + 0x2000000) {
             uint32_t rva = (uint32_t)(vtable - modBase);
-            if (rva == 0x11E4F34 || rva == 0x11CEF40 || rva == 0x157852C) {
+            // uPawnIntel: 0x117852C — RVA (в атласе VA 0x158CA54, база 0x400000).
+            // Раньше здесь стояло 0x157852C — это VA, ветка была мёртвой.
+            if (rva == 0x11E4F34 || rva == 0x11CEF40 || rva == 0x117852C) {
                 return true; // Это Игрок или Пешка!
             }
         }
