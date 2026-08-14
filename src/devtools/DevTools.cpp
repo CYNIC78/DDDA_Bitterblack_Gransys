@@ -69,8 +69,11 @@
  *   and stamps +0x2D = 0x61. List dies when all seeds unload — tick stuck at 0.
  * Zip 29 / dump23: singles reseeded. Pack of 3 missed — poll started at
  *   lastBand-2MB and walked UP past 0x10DD. meth4_uEm8600 writes 0x015BD9D0.
- * Zip 30: hot ring 0x10000000-0x18000000, 8MB/tick, keep polling while
- *   g_nAct>0 and merge new seeds. CombatIntel.cpp untouched.
+ * Zip 30 / dump24: hot ring 0x10000000-0x18000000. Packs and singles
+ *   register without a second Hunt. Engine unload is hysteretic (LOS +
+ *   hundreds of meters) — not a scanner leak. CombatIntel.cpp untouched.
+ * Zip 31: first 256B is transform, not HP. Inspect +offset. HUNT stores
+ *   +14 / +0x5BD0 / +0x6000. Do not treat +14 0x12 or +4C=0 as death.
  */
 #include "stdafx.h"
 #include "TypeAtlas.Generated.h"
@@ -715,10 +718,12 @@ static int       g_nCtor = 0;
 
 struct ActorDump {
     uintptr_t   ptr, vt, next, prev, subVt;
-    uint8_t     gid;
+    uint8_t     gid, st14;
     float       x, y, z;
-    bool        fat29, subOk;
+    bool        fat29, subOk, win5bOk, win60Ok;
     const char* kind;
+    BYTE        win5b[16];
+    BYTE        win60[64];
 };
 static ActorDump g_act[32];
 static int       g_nAct = 0;
@@ -2400,6 +2405,9 @@ static void DumpActorsFrom(uintptr_t* seed, int ns)
             A.subOk = RdPtr((void*)(p + 0x6150), &A.subVt);
         BYTE probe = 0;
         A.fat29 = Rd((void*)(p + 0x73BF), &probe, 1);
+        { BYTE st = 0; if (Rd((void*)(p + 0x14), &st, 1)) A.st14 = st; }
+        A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
+        A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
         if (A.vt == kGoblinInst) A.kind = "uEm0100";
         else if (A.vt == kNpcInst) A.kind = "uNpc";
         else if (A.vt == kEm8000Inst) A.kind = "uEm8000";
@@ -2511,6 +2519,9 @@ static uintptr_t PollSeedSlice(uint32_t budget)
 
 void DevTools::WorldScan_Tick()
 {
+    // Presence only. Engine keeps uEm* on the list and on screen far
+    // past the spawn sphere. World=0 means the 29KB body is gone.
+    // Do not invent a distance despawn.
     if (!g_enabled) return;
     if (!InWorld()) return;
     static DWORD last = 0;
@@ -3023,13 +3034,24 @@ static void WriteDumpJson()
         fputs("\"}\n", f);
     }
     fputs("  ],\n  \"actors\":[\n", f);
-    for (int i = 0; i < g_nAct; ++i)
-        fprintf(f, "    %s{\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"kind\":\"%s\",\"gid\":\"0x%02X\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"next\":\"0x%08X\",\"prev\":\"0x%08X\",\"subVt\":\"0x%08X\",\"fat29\":%s}\n",
+    for (int i = 0; i < g_nAct; ++i) {
+        fprintf(f, "    %s{\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"kind\":\"%s\",\"gid\":\"0x%02X\",\"st14\":\"0x%02X\",\"x\":%.2f,\"y\":%.2f,\"z\":%.2f,\"next\":\"0x%08X\",\"prev\":\"0x%08X\",\"subVt\":\"0x%08X\",\"fat29\":%s,\"win5b\":\"",
             i ? "," : " ", (unsigned)g_act[i].ptr, (unsigned)g_act[i].vt,
             g_act[i].kind ? g_act[i].kind : "?",
-            g_act[i].gid, g_act[i].x, g_act[i].y, g_act[i].z,
+            g_act[i].gid, g_act[i].st14, g_act[i].x, g_act[i].y, g_act[i].z,
             (unsigned)g_act[i].next, (unsigned)g_act[i].prev,
             (unsigned)g_act[i].subVt, g_act[i].fat29 ? "true" : "false");
+        if (g_act[i].win5bOk) {
+            for (int b = 0; b < 16; ++b)
+                fprintf(f, "%02X%s", g_act[i].win5b[b], b == 15 ? "" : " ");
+        }
+        fputs("\",\"win60\":\"", f);
+        if (g_act[i].win60Ok) {
+            for (int b = 0; b < 64; ++b)
+                fprintf(f, "%02X%s", g_act[i].win60[b], b == 63 ? "" : " ");
+        }
+        fputs("\"}\n", f);
+    }
     fputs("  ],\n  \"gids\":[\n", f);
 
 
@@ -3362,7 +3384,9 @@ static void DumpAnatomy()
 // ─── UI ──────────────────────────────────────────────────────
 static char g_filter[64] = "sEnemy";
 static char g_inspectBuf[16] = "";
+static char g_inspOffBuf[12] = "0";
 static uintptr_t g_inspect = 0;
+static uint32_t  g_inspOff = 0;
 static int g_sel = -1;
 
 static void HexDump(const void* ptr, uint32_t bytes)
@@ -3675,9 +3699,9 @@ static void RenderDevToolsUI()
                 ImGui::TextDisabled("json = photo on HUNT. Rows tick. Empty list polls heap, no Hunt.");
                 for (int i = 0; i < g_nAct; ++i) {
                     char lab[112];
-                    sprintf_s(lab, "%-8s gid=%02X  %08X  %.0f %.0f %.0f##ac%d",
+                    sprintf_s(lab, "%-8s gid=%02X st=%02X  %08X  %.0f %.0f %.0f##ac%d",
                         g_act[i].kind ? g_act[i].kind : "?",
-                        g_act[i].gid, (unsigned)g_act[i].ptr,
+                        g_act[i].gid, g_act[i].st14, (unsigned)g_act[i].ptr,
                         g_act[i].x, g_act[i].y, g_act[i].z, i);
                     if (ImGui::SmallButton(lab)) SetInspect(g_act[i].ptr);
                 }
@@ -3718,15 +3742,39 @@ static void RenderDevToolsUI()
         g_inspect = (uintptr_t)strtoul(g_inspectBuf, nullptr, 16);
     }
     ImGui::PopItemWidth();
+    ImGui::SameLine();
+    ImGui::TextUnformatted("+");
+    ImGui::SameLine();
+    ImGui::PushItemWidth(70);
+    if (ImGui::InputText("##off", g_inspOffBuf, sizeof(g_inspOffBuf),
+            ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue)) {
+        g_inspOff = (uint32_t)strtoul(g_inspOffBuf, nullptr, 16);
+    }
+    ImGui::PopItemWidth();
+    ImGui::SameLine();
+    if (ImGui::SmallButton("head")) { g_inspOff = 0; memcpy(g_inspOffBuf, "0", 2); }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+5BD0")) { g_inspOff = 0x5BD0; memcpy(g_inspOffBuf, "5BD0", 5); }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+6000")) { g_inspOff = 0x6000; memcpy(g_inspOffBuf, "6000", 5); }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("+6150")) { g_inspOff = 0x6150; memcpy(g_inspOffBuf, "6150", 5); }
     if (g_inspect) {
         Named hit = NameOf(g_inspect);
         if (hit.name)
-            ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Identify: %s  kind=%u  gid=0x%02X  vtRVA=0x%X",
+            ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Identify: %s  kind=%u  watchGid=0x%02X  vtRVA=0x%X",
                 hit.name, hit.kind, hit.gid, hit.rva);
         else
             ImGui::TextDisabled("Identify: vtable not in atlas (or unreadable)");
-        const TypeAtlas::Info* ta = TypeAtlas::FindByName(hit.name ? hit.name : "");
-        HexDump((void*)g_inspect, ta && ta->size ? (ta->size > 256 ? 256 : ta->size) : 64);
+        BYTE b2d = 0, st14 = 0;
+        float f4c = 0.f;
+        Rd((void*)(g_inspect + 0x2D), &b2d, 1);
+        Rd((void*)(g_inspect + 0x14), &st14, 1);
+        Rd((void*)(g_inspect + 0x4C), &f4c, 4);
+        ImGui::Text("body +14=%02X  +2D=%02X  +4C=%.3f   showing +0x%X",
+            st14, b2d, f4c, g_inspOff);
+        ImGui::TextDisabled("watchGid is the atlas/watch table, not +2D. First 256B = transform.");
+        HexDump((void*)(g_inspect + g_inspOff), 256);
     }
 
     ImGui::Separator();

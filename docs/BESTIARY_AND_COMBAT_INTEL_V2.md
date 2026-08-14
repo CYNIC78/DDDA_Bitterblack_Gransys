@@ -71,3 +71,4 @@ Dump22: `meth4_uEm8000` **сам** пишет `[0]=0x015BB278` и `+0x2D=0x61`. 
 
 `CombatIntel.cpp` не трогаем. Identity зайца — WorldScan / instance vt, не gid. WorldReport (zip 27) этих шести **не** публикует как Dragon / boss: `KindCategory("uEm8000") = -1`.
 
+Dump24 (zip 30): снова 4+6+3 NPC, `world.cat=0`. Полл закрыт. Лагерные зайцы по-прежнему заводской `uEm8000`.

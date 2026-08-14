@@ -1,22 +1,22 @@
-Snapshot 30 — hot-ring poll + merge new camps
+Snapshot 31 — Inspect +offset, life windows. HP not in first 256B.
 
-Dump23 (zip 29):
-  Singles came back after World=0. Pack of 3 did not — killed at 0.
-  Poll started lastBand-2MB and walked UP to 0x40000000, skipping 0x10DD
-  for ~30s. meth4_uEm8600 live vt = 0x015BD9D0 (real catalog hare).
+Dump25 + live/dead Inspect of 0x10E07320:
+  First 256B = transform. No HP float.
+  +14 0x11/0x12 = alert (live goblins in dump19-22 were already 0x12).
+  +4C 1.0 only in close Inspect; every HUNT live has +4C=0.
+  Corpse stays uEm0100 gid 5 on +0C.
+  Identify gid=0x00 is WatchAdd(...,0), not +2D.
 
-30:
-  Poll only 0x10000000-0x18000000 (where every live actor has been).
-  Empty: 8MB/tick, full ring ~2.4s.
-  Have a list: keep polling 4MB/tick and MERGE new seeds. Do not stop.
-  Kind uEm8600 if [0]=0x015BD9D0.
-  CombatIntel.cpp untouched. 0x61 not remapped.
+31:
+  Inspect: +offset field, buttons head / +5BD0 / +6000 / +6150.
+  Shows body +14 +2D +4C. watchGid labelled as watch table.
+  HUNT actors[] add st14, win5b (+0x5BD0), win60 (+0x6000).
+  Live rows show st=.
+  CombatIntel.cpp untouched. 0x61 not remapped. No corpse filter yet.
 
 Clean + Release|Win32. D:\Temp\test3. dll+ini only.
 
-SCAN, DUMP, HUNT once (dump24 photo).
-Walk to 0. Come back. Then walk to a FRESH pack of 3 you have not
-Hunted. World goblins must rise before you swing. No second Hunt.
-If the pack stays 0 for >5s while you stand in it — say so.
-
-Need dump24 world{} + actors[] after that pack is on screen.
+SCAN, DUMP, HUNT once (dump26).
+Inspect one live goblin: head, +5BD0, +6000.
+Kill. Same ptr, same three windows.
+Paste all six hex blocks + dump26.
