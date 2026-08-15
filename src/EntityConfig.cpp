@@ -242,7 +242,7 @@ void ForceReload(){ Load(); }
 // ------------------------------------------------------------------ Tick ----
 void Tick()
 {
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     if (s_lastCheck && now - s_lastCheck < 500) return;   // не чаще 2 раз в секунду
     s_lastCheck = now;
 

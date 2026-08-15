@@ -5,6 +5,12 @@ extern iniConfig config;
 extern BYTE **pBase;
 extern BYTE **pWorld;
 
+// 64-битный тик без переполнения каждые 49.7 дней.
+// Возвращает DWORD (младшие 32 бита) для совместимости с существующими
+// полями timestampMs. Игровой сессии хватает, а переполнение не принесёт
+// catastrophic failure — только устаревшие записи в ринге.
+inline DWORD MsNow() { return (DWORD)GetTickCount64(); }
+
 template<class T = void> T* GetBasePtr(int offset) { return (T*)(*pBase + offset); }
 template<class T = void> T* GetWorldPtr(std::initializer_list<int> offsets)
 {

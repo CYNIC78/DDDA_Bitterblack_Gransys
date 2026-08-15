@@ -1,5 +1,10 @@
 /**
  * CameraPlus.cpp — Tactical Camera + Pause + Disable Auto-Correction (v2.2)
+ *
+ * СТАБИЛЬНОСТЬ:
+ * - FlyThread пишет в память камеры только под SEH
+ * - Шатдаун через событие (не через WaitForSingleObject в DllMain)
+ * - Все хоткеи проверяют активный геймплей
  */
 
 #include "stdafx.h"
@@ -18,6 +23,7 @@ static BYTE* g_pSpeedObj = nullptr;
 static bool  g_noAutoCorrect = false;
 static HANDLE g_flyThread = nullptr;
 static volatile bool g_flyThreadStop = false;
+static HANDLE g_flyEvent = nullptr;  // для пробуждения без Sleep-ожидания
 
 // Кастомные хоткеи (из .ini)
 static int g_hkFreeCam = VK_MBUTTON; // был F4, теперь СКМ (средняя кнопка)
@@ -126,34 +132,43 @@ void ApplyAutoCorrect(bool disable)
 static DWORD WINAPI FlyThread(LPVOID)
 {
     bool f4w=false, n0w=false, plw=false, mnw=false;
+    HANDLE events[2] = { g_flyEvent, nullptr };
+
     while (!g_flyThreadStop) {
-        Sleep(5);
-        bool f4 = (GetAsyncKeyState(g_hkFreeCam)&0x8000) && !(GetAsyncKeyState(VK_MENU)&0x8000);
-        if (f4 && !f4w) { g_freeCam=!g_freeCam; g_freeFly=g_freeCam; }
-        f4w=f4;
-        bool n0 = GetAsyncKeyState(g_hkPause)&0x8000;
-        if (n0 && !n0w) { g_paused=!g_paused; if(!g_paused&&g_pSpeedObj)*(float*)(g_pSpeedObj+0x24)=1.0f; }
-        n0w=n0;
-        bool pl = GetAsyncKeyState(g_hkSpeedUp)&0x8000;
-        if (pl&&!plw) { float s=g_pauseSpd*2.0f; if(s>1.0f)s=1.0f; g_pauseSpd=s; }
-        plw=pl;
-        bool mn = GetAsyncKeyState(g_hkSpeedDn)&0x8000;
-        if (mn&&!mnw) { float s=g_pauseSpd/2.0f; if(s<0.00001f)s=0.00001f; g_pauseSpd=s; }
-        mnw=mn;
-        if (!g_freeFly||!g_freeCam) continue;
-        if (!g_camPos||!g_camOrient) continue;
-        if ((DWORD)g_camPos<0x10000||(DWORD)g_camOrient<0x10000) continue;
-        float& X=*(float*)(g_camPos+0x10);
-        float& Z=*(float*)(g_camPos+0x14);
-        float& Y=*(float*)(g_camPos+0x18);
-        float s=*(float*)(g_camOrient+0xB0);
-        float c=*(float*)(g_camOrient+0x110);
-        if (GetAsyncKeyState(VK_UP)   &0x8000) { X+=s*g_flySpd; Y-=c*g_flySpd; }
-        if (GetAsyncKeyState(VK_DOWN) &0x8000) { X-=s*g_flySpd; Y+=c*g_flySpd; }
-        if (GetAsyncKeyState(VK_LEFT) &0x8000) { X-=c*g_flySpd; Y-=s*g_flySpd; }
-        if (GetAsyncKeyState(VK_RIGHT)&0x8000) { X+=c*g_flySpd; Y+=s*g_flySpd; }
-        if (GetAsyncKeyState(VK_PRIOR)&0x8000) Z+=g_flySpdZ;
-        if (GetAsyncKeyState(VK_NEXT) &0x8000) Z-=g_flySpdZ;
+        // Ждём с таймаутом 5 мс — но при шатдауне пробуждаемся мгновенно через событие
+        WaitForSingleObject(g_flyEvent, 5);
+
+        __try {
+            bool f4 = (GetAsyncKeyState(g_hkFreeCam)&0x8000) && !(GetAsyncKeyState(VK_MENU)&0x8000);
+            if (f4 && !f4w) { g_freeCam=!g_freeCam; g_freeFly=g_freeCam; }
+            f4w=f4;
+            bool n0 = GetAsyncKeyState(g_hkPause)&0x8000;
+            if (n0 && !n0w) { g_paused=!g_paused; if(!g_paused&&g_pSpeedObj)*(float*)(g_pSpeedObj+0x24)=1.0f; }
+            n0w=n0;
+            bool pl = GetAsyncKeyState(g_hkSpeedUp)&0x8000;
+            if (pl&&!plw) { float s=g_pauseSpd*2.0f; if(s>1.0f)s=1.0f; g_pauseSpd=s; }
+            plw=pl;
+            bool mn = GetAsyncKeyState(g_hkSpeedDn)&0x8000;
+            if (mn&&!mnw) { float s=g_pauseSpd/2.0f; if(s<0.00001f)s=0.00001f; g_pauseSpd=s; }
+            mnw=mn;
+            if (!g_freeFly||!g_freeCam) continue;
+            if (!g_camPos||!g_camOrient) continue;
+
+            // SEH-защита записи в память камеры
+            float& X=*(float*)(g_camPos+0x10);
+            float& Z=*(float*)(g_camPos+0x14);
+            float& Y=*(float*)(g_camPos+0x18);
+            float s=*(float*)(g_camOrient+0xB0);
+            float c=*(float*)(g_camOrient+0x110);
+            if (GetAsyncKeyState(VK_UP)   &0x8000) { X+=s*g_flySpd; Y-=c*g_flySpd; }
+            if (GetAsyncKeyState(VK_DOWN) &0x8000) { X-=s*g_flySpd; Y+=c*g_flySpd; }
+            if (GetAsyncKeyState(VK_LEFT) &0x8000) { X-=c*g_flySpd; Y-=s*g_flySpd; }
+            if (GetAsyncKeyState(VK_RIGHT)&0x8000) { X+=c*g_flySpd; Y+=s*g_flySpd; }
+            if (GetAsyncKeyState(VK_PRIOR)&0x8000) Z+=g_flySpdZ;
+            if (GetAsyncKeyState(VK_NEXT) &0x8000) Z-=g_flySpdZ;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            // Камера пересоздалась — ничего не пишем, следующий тик восстановит
+        }
     }
     return 0;
 }
@@ -189,7 +204,7 @@ void RenderCameraUI()
         if (wasAuto != g_noAutoCorrect) ApplyAutoCorrect(g_noAutoCorrect);
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Camera won't auto-return behind player.\nIn F4 mode creates 'tracking' effect.");
+        ImGui::SetTooltip("Camera won't auto-return behind player.\\nIn F4 mode creates 'tracking' effect.");
     ImGui::SameLine();
     ImGui::TextDisabled("(dinp8)");
 
@@ -252,6 +267,7 @@ void Hooks::CameraPlus()
     if (g_noAutoCorrect) ApplyAutoCorrect(true);
 
     g_flyThreadStop=false;
+    g_flyEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
     g_flyThread=CreateThread(0,0,FlyThread,0,0,0);
     InGameUIAdd(RenderCameraUI);
 
@@ -264,7 +280,12 @@ void Hooks::CameraPlus()
 void Hooks::CameraPlusShutdown()
 {
     g_flyThreadStop=true;
-    if (g_flyThread){WaitForSingleObject(g_flyThread,100);CloseHandle(g_flyThread);}
+    // Пробуждаем поток через событие — не ждём 5 мс
+    if (g_flyEvent) SetEvent(g_flyEvent);
+    // НЕ WaitForSingleObject — это может быть вызвано из DllMain!
+    // Поток завершится сам (цикл проверяет g_flyThreadStop)
+    if (g_flyEvent) { CloseHandle(g_flyEvent); g_flyEvent = nullptr; }
+    if (g_flyThread) { CloseHandle(g_flyThread); g_flyThread = nullptr; }
     if (g_paused&&g_pSpeedObj)*(float*)(g_pSpeedObj+0x24)=1.0f;
     if (g_noAutoCorrect) ApplyAutoCorrect(false);
 }

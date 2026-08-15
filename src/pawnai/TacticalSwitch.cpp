@@ -23,25 +23,50 @@ void TacticalSwitch::onReport(const ::CombatReport& r){
     }
 }
 
-int TacticalSwitch::GetActivePreset(int userPreset) const {
-    if (!enabled) return userPreset;
+// Ситуативная поправка к базе. Категория врага → дельта.
+// 0=small, 1=medium, 2=large, 3=flying, 4=mage, 5=boss
+void TacticalSwitch::GetDelta(const float* base, float* delta) const {
+    if (!enabled || !base || !delta) return;
 
     int cat = lastCategory; // hit path (CombatIntel). May be 5 if a hare was punched.
 
-    const WorldReport& w = CombatBus::Instance().LastWorld();
-    DWORD now = GetTickCount();
+    WorldReport w = CombatBus::Instance().LastWorld();
+    DWORD now = MsNow();
     bool worldFresh = (w.count > 0 && w.timestampMs != 0 && (now - w.timestampMs) < 3000);
     if (worldFresh && w.dominantCategory >= 0) {
         // Presence before the first swing. World category never uses gid 0x61.
         if (cat < 0) cat = w.dominantCategory;
     }
 
-    if (cat < 0) return userPreset;
-    // 0=small (CrowdCtrl=1), 1=medium (Balanced=5), 2=large (BossKiller=0),
-    // 3=flying (RangedHunter=3), 4=mage (RangedHunter=3), 5=boss (BossKiller=0)
-    static const int map[6] = { 1, 5, 0, 3, 3, 0 };
-    if (cat < 6) return map[cat];
-    return userPreset;
+    if (cat < 0) return;
+
+    switch (cat) {
+    case 0: // small (hordes) — давить массу рядом
+        delta[I_MITIGATOR]  += 150.f;
+        delta[I_SCATHER]    += 60.f;
+        break;
+    case 1: // medium (skeletons, saurians, humans)
+        delta[I_CHALLENGER] += 100.f;
+        delta[I_SCATHER]    += 60.f;
+        break;
+    case 2: // large (cyclops, ogres, golems)
+        delta[I_SCATHER]    += 150.f;
+        delta[I_CHALLENGER] += 100.f;
+        break;
+    case 3: // flying (harpies, griffins)
+        delta[I_CHALLENGER] += 150.f;
+        break;
+    case 4: // mage (wights, liches)
+        delta[I_CHALLENGER] += 120.f;
+        delta[I_UTILITARIAN]+= 80.f;
+        break;
+    case 5: // boss (dragon, hydra, daimon)
+        delta[I_SCATHER]    += 150.f;
+        delta[I_CHALLENGER] += 150.f;
+        break;
+    default:
+        break;
+    }
 }
 
 }

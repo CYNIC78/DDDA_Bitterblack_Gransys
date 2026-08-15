@@ -29,17 +29,22 @@ void SmartUtilitarian::onReport(const ::CombatReport& r){
     targetUtil = conf * 850.f;
 }
 
-void SmartUtilitarian::Process(float* incl){
-    if(!enabled || !incl) return;
-    // Низкое знание → переливаем
+// Поправка к ЦЕЛИ (base), а не запись в incl[].
+void SmartUtilitarian::GetDelta(const float* base, float* delta){
+    if(!enabled || !base || !delta) return;
+
+    // Низкое знание → переливаем Utilitarian в боевые
     if(lastConfidence < 0.5f){
-        float excess = (0.5f - lastConfidence) * incl[I_UTILITARIAN];
-        incl[I_UTILITARIAN] -= excess;
-        incl[I_SCATHER]    += excess * 0.55f;
-        incl[I_CHALLENGER] += excess * 0.30f;
-        incl[I_MITIGATOR]  += excess * 0.15f;
+        float excess = (0.5f - lastConfidence) * base[I_UTILITARIAN];
+        delta[I_UTILITARIAN] -= excess;
+        delta[I_SCATHER]    += excess * 0.55f;
+        delta[I_CHALLENGER] += excess * 0.30f;
+        delta[I_MITIGATOR]  += excess * 0.15f;
     }
-    incl[I_UTILITARIAN] += (targetUtil - incl[I_UTILITARIAN]) * smooth;
+
+    // Знание подтягивает Utilitarian к targetUtil (плавно, чтобы не рвать)
+    float want = targetUtil - base[I_UTILITARIAN];
+    delta[I_UTILITARIAN] += want * smooth;
 }
 
 }

@@ -11,8 +11,7 @@ const InclPreset PresetManager::presets[COUNT] = {
     { "Tactical Sup",  "Support, healing and utility (Medicant + Util)",     {300.0f, 900.0f, 350.0f, 400.0f, 800.0f, 700.0f, 450.0f, 300.0f, 300.0f, 600.0f} },
     { "Ranged Hunter", "Mages and ranged snipers (Challenger + Util)",        {650.0f, 350.0f, 450.0f, 900.0f, 750.0f, 350.0f, 350.0f, 350.0f, 250.0f, 700.0f} },
     { "Explorer",      "Exploration and scouting out of combat (Pioneer)",   {300.0f, 300.0f, 300.0f, 300.0f, 550.0f, 350.0f, 400.0f, 850.0f, 800.0f, 400.0f} },
-    { "Balanced",      "Versatile generalist profile",                       {700.0f, 500.0f, 500.0f, 600.0f, 800.0f, 450.0f, 450.0f, 400.0f, 400.0f, 600.0f} },
-    { "Custom Anchor", "User-defined custom inclination anchors",            {750.0f, 400.0f, 500.0f, 700.0f, 750.0f, 350.0f, 350.0f, 400.0f, 250.0f, 700.0f} }
+    { "Balanced",      "Versatile generalist profile",                       {700.0f, 500.0f, 500.0f, 600.0f, 800.0f, 450.0f, 450.0f, 400.0f, 400.0f, 600.0f} }
 };
 
 static const char* s_iniKeys[I_COUNT] = {
@@ -20,68 +19,86 @@ static const char* s_iniKeys[I_COUNT] = {
     "guardian", "nexus", "pioneer", "acquisitor", "skillUse"
 };
 
-void PresetManager::Init(int idx, float sm) {
-    presetIdx = (idx >= 0 && idx < COUNT) ? idx : 5;
-    smooth = (sm > 0.0f && sm <= 1.0f) ? sm : 0.10f;
+void PresetManager::Init() {
+    // По умолчанию — Balanced в ползунки. LoadConfig() поверх прочитает ini.
+    LoadPreset(5);
     LoadConfig();
 }
 
-void PresetManager::LoadConfig() {
+// Пресет = снапшот. Копируем значения в ползунки — ползунки всегда правда.
+void PresetManager::LoadPreset(int idx) {
+    if (idx < 0 || idx >= COUNT) idx = 5;
+    lastPresetIdx = idx;
     for (int i = 0; i < I_COUNT; i++) {
-        customAnchor[i] = config.getFloat("customAnchor", s_iniKeys[i], presets[6].v[i]);
-        if (customAnchor[i] < 0.0f) customAnchor[i] = 0.0f;
-        if (customAnchor[i] > 1000.0f) customAnchor[i] = 1000.0f;
+        anchor[i] = presets[idx].v[i];
     }
+    SaveConfig();
+}
+
+void PresetManager::LoadConfig() {
+    // Старые ключи [customAnchor] остаются читаемыми — это и есть якоря.
+    for (int i = 0; i < I_COUNT; i++) {
+        anchor[i] = config.getFloat("customAnchor", s_iniKeys[i], anchor[i]);
+        if (anchor[i] < 0.0f) anchor[i] = 0.0f;
+        if (anchor[i] > 1000.0f) anchor[i] = 1000.0f;
+    }
+    lastPresetIdx = config.getInt("pawnAI", "lastPreset", 5);
+    if (lastPresetIdx < 0 || lastPresetIdx >= COUNT) lastPresetIdx = 5;
 }
 
 void PresetManager::SaveConfig() {
     for (int i = 0; i < I_COUNT; i++) {
-        config.setFloat("customAnchor", s_iniKeys[i], customAnchor[i]);
+        config.setFloat("customAnchor", s_iniKeys[i], anchor[i]);
     }
-    config.setInt("pawnAI", "preset", presetIdx);
+    config.setInt("pawnAI", "lastPreset", lastPresetIdx);
     config.setFloat("pawnAI", "smooth", smooth);
 }
 
 void PresetManager::CaptureLive(const float* liveIncl) {
     if (!liveIncl) return;
     for (int i = 0; i < I_COUNT; i++) {
-        customAnchor[i] = liveIncl[i];
-        if (customAnchor[i] < 0.0f) customAnchor[i] = 0.0f;
-        if (customAnchor[i] > 1000.0f) customAnchor[i] = 1000.0f;
+        anchor[i] = liveIncl[i];
+        if (anchor[i] < 0.0f) anchor[i] = 0.0f;
+        if (anchor[i] > 1000.0f) anchor[i] = 1000.0f;
     }
-    presetIdx = 6; // Automatically activate custom anchor mode
     SaveConfig();
 }
 
 void PresetManager::ResetDefaultAnchor() {
-    for (int i = 0; i < I_COUNT; i++) {
-        customAnchor[i] = presets[5].v[i]; // Balanced defaults
-    }
-    presetIdx = 6;
-    SaveConfig();
+    LoadPreset(5);  // Balanced
 }
 
-void PresetManager::ApplyInstant(float* incl, int idx) {
-    if (!incl || idx < 0 || idx >= COUNT) return;
-    const float* target = (idx == 6) ? customAnchor : presets[idx].v;
+void PresetManager::ApplyInstant(float* incl) {
+    if (!incl) return;
     for (int i = 0; i < I_COUNT; i++) {
-        incl[i] = target[i];
+        incl[i] = anchor[i];
     }
 }
 
-void PresetManager::ApplySmooth(float* incl, int idx) {
-    if (!incl || idx < 0 || idx >= COUNT) return;
-    const float* target = (idx == 6) ? customAnchor : presets[idx].v;
+void PresetManager::ApplySmooth(float* incl, const float* target) {
+    if (!incl || !target) return;
     float factor = (smooth > 0.0f) ? smooth : 0.05f;
     if (factor > 1.0f) factor = 1.0f;
     for (int i = 0; i < I_COUNT; i++) {
         incl[i] += (target[i] - incl[i]) * factor;
+        if (incl[i] < 0.0f) incl[i] = 0.0f;
+        if (incl[i] > 1000.0f) incl[i] = 1000.0f;
     }
 }
 
-void PresetManager::OnTick(float* incl, int activePreset) {
-    if (!enabled || !incl) return;
-    ApplySmooth(incl, activePreset);
+void PresetManager::GetBaseTarget(float* out) const {
+    if (!out) return;
+    for (int i = 0; i < I_COUNT; i++) out[i] = anchor[i];
+}
+
+bool PresetManager::IsModified() const {
+    const float* base = presets[lastPresetIdx].v;
+    for (int i = 0; i < I_COUNT; i++) {
+        float d = anchor[i] - base[i];
+        if (d < 0) d = -d;
+        if (d > 0.5f) return true;   // больше половины пункта — считаем modified
+    }
+    return false;
 }
 
 }

@@ -32,7 +32,6 @@ static char s_status[192] = "idle";
 static bool SafeRead(const void* src, void* dst, size_t n)
 {
     if (!src) return false;
-    if (IsBadReadPtr(src, n)) return false;
     __try {
         memcpy(dst, src, n);
         return true;
@@ -301,7 +300,6 @@ void ReadCharParam()
 static bool SafeWrite(void* dst, const void* src, size_t n)
 {
     if (!dst) return false;
-    if (IsBadWritePtr(dst, n)) return false;
     __try {
         memcpy(dst, src, n);
         return true;

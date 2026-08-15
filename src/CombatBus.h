@@ -2,6 +2,13 @@
 /**
  * CombatBus.h — ШИНА (мегафон тренера)
  *
+ * ПОТОКОБЕЗОПАСНОСТЬ:
+ * - Шина защищена SRWLOCK (читателей много, писатель один)
+ * - Publish/PublishWorld пишут под эксклюзивной блокировкой
+ * - LastReport/LastWorld читают под разделяемой блокировкой
+ * - Слушатели вызываются тоже под эксклюзивом — subscriber обязан
+ *   не делать долгих операций в колбэке
+ *
  * CombatIntel = тренер по УДАРУ. Publish() каждые 150 мс ЗАТИРАЕТ LastReport().
  * WorldScan   = тренер по ПРИСУТСТВИЮ. PublishWorld() — второй канал, hit его не топчет.
  *
@@ -86,26 +93,49 @@ public:
     }
 
     // Подписаться (модуль PawnAI вызывает в своём Hooks::XXX())
-    // Возвращает id для отписки
     int Subscribe(Listener fn) {
+        AcquireSRWLockExclusive(&m_lock);
         listeners.push_back(fn);
-        return (int)listeners.size()-1;
+        int id = (int)listeners.size()-1;
+        ReleaseSRWLockExclusive(&m_lock);
+        return id;
     }
-    void Unsubscribe(int id){ if(id>=0 && id < (int)listeners.size()) listeners[id]=nullptr; }
+    void Unsubscribe(int id){
+        AcquireSRWLockExclusive(&m_lock);
+        if(id>=0 && id < (int)listeners.size()) listeners[id]=nullptr;
+        ReleaseSRWLockExclusive(&m_lock);
+    }
 
     // Опубликовать удар (вызывает CombatIntel). Топчет lastReport.
     void Publish(const CombatReport& rpt){
+        AcquireSRWLockExclusive(&m_lock);
         lastReport = rpt;
         for(auto &fn: listeners) if(fn) fn(rpt);
+        ReleaseSRWLockExclusive(&m_lock);
     }
 
-    const CombatReport& LastReport() const { return lastReport; }
+    CombatReport LastReport() const {
+        AcquireSRWLockShared(&m_lock);
+        CombatReport r = lastReport;
+        ReleaseSRWLockShared(&m_lock);
+        return r;
+    }
 
     // Присутствие. Не зовёт hit-слушателей — TacticalSwitch читает LastWorld().
-    void PublishWorld(const WorldReport& w){ lastWorld = w; }
-    const WorldReport& LastWorld() const { return lastWorld; }
+    void PublishWorld(const WorldReport& w){
+        AcquireSRWLockExclusive(&m_lock);
+        lastWorld = w;
+        ReleaseSRWLockExclusive(&m_lock);
+    }
+    WorldReport LastWorld() const {
+        AcquireSRWLockShared(&m_lock);
+        WorldReport w = lastWorld;
+        ReleaseSRWLockShared(&m_lock);
+        return w;
+    }
 
 private:
+    mutable SRWLOCK m_lock = SRWLOCK_INIT;
     std::vector<Listener> listeners;
     CombatReport lastReport{};
     WorldReport  lastWorld{};

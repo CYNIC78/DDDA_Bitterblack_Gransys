@@ -106,9 +106,13 @@ void Initialize()
 
 void Unitialize()
 {
+    // ВАЖНО: эта функция вызывается из DllMain(DLL_PROCESS_DETACH).
+    // В DllMain запрещено: WaitForSingleObject, FreeLibrary, работа с кучей.
+    // Поэтому Shutdown-функции модулей ТОЛЬКО выставляют флаги и сигналят событиям.
+    // Потоки сами завершатся после флага.
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
-    Hooks::CameraPlusShutdown();  // остановить поток полёта, восстановить скорость
+    Hooks::CameraPlusShutdown();  // останавливает поток, НО без Wait (через событие)
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;
     logFile << "MH_DisableHook: " << MH_StatusToString(MH_DisableHook(MH_ALL_HOOKS)) << std::endl;
     logFile << "MH_Uninitialize: " << MH_StatusToString(MH_Uninitialize()) << std::endl;

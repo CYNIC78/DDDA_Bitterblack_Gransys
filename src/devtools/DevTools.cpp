@@ -261,7 +261,7 @@ static void ScanImage()
     g_scanned = false;
     if (!g_base || !g_imageSize) return;
 
-    DWORD t0 = GetTickCount();
+    DWORD t0 = MsNow();
 
     for (int i = 0; kManagers[i] && g_nScans < 32; ++i) {
         const TypeAtlas::Info* t = TypeAtlas::FindByName(kManagers[i]);
@@ -310,7 +310,7 @@ static void ScanImage()
         logFile << "DevTools: scan exception" << std::endl;
     }
 
-    g_scanMs = GetTickCount() - t0;
+    g_scanMs = MsNow() - t0;
     g_scanned = true;
 
     logFile << "DevTools: image scan " << g_scanMs << " ms, imageSize=0x"
@@ -2242,7 +2242,7 @@ static void PublishWorldFromActors()
     if (g_nAct && g_act[0].ptr)
         g_lastBand = g_act[0].ptr & ~0xFFFFFu;
     WorldReport w{};
-    w.timestampMs = GetTickCount();
+    w.timestampMs = MsNow();
     w.dominantCategory = -1;
     int best = -1;
     for (int i = 0; i < g_nAct && w.count < 32; ++i) {
@@ -2824,7 +2824,7 @@ void DevTools::WorldScan_Tick()
     if (!g_enabled) return;
     if (!InWorld()) return;
     static DWORD last = 0;
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     if (last && now - last < 150) return;
     last = now;
     if (g_nAct)
@@ -2900,7 +2900,7 @@ static void HeapHunt()
     if (!g_nExec) InitSections();
     BuildHuntTable();
 
-    DWORD t0 = GetTickCount();
+    DWORD t0 = MsNow();
     uintptr_t addr = 0x00010000;
     MEMORY_BASIC_INFORMATION mbi;
     memset(&mbi, 0, sizeof(mbi));
@@ -2963,7 +2963,7 @@ static void HeapHunt()
         }
         addr = next;
     }
-    g_huntMs = GetTickCount() - t0;
+    g_huntMs = MsNow() - t0;
 }
 
 static void NoteHolder(const char* where, uintptr_t base, uint32_t off, uintptr_t live, const char* name)
@@ -3070,7 +3070,7 @@ static void WriteDumpJson()
         g_huntMs, g_huntRegions, g_huntBytes, g_nHvt);
 
     {
-        const WorldReport& wr = CombatBus::Instance().LastWorld();
+        WorldReport wr = CombatBus::Instance().LastWorld();
         fprintf(f, "  \"world\":{\"count\":%d,\"goblins\":%d,\"cat\":%d,\"ms\":%u},\n",
             wr.count, wr.goblinCount, wr.dominantCategory, wr.timestampMs);
     }
@@ -3504,7 +3504,7 @@ static void HuntLive()
     if (g_sUnit && !g_sUnitInImg) g_sUnitInImg = BytesInImage(g_sUnit, 1700720);
     if (g_sSet && !g_sSetInImg)   g_sSetInImg  = BytesInImage(g_sSet, 112976);
 
-    DWORD t0 = GetTickCount();
+    DWORD t0 = MsNow();
     g_nLives = 0;
     g_nMgrs = 0;
     g_nHold = 0;
@@ -3532,7 +3532,7 @@ static void HuntLive()
             AddLead("fat29", g_lives[i].ptr, 0x73C0, g_lives[i].ptr);
     }
     FindHolders();
-    g_huntMs = GetTickCount() - t0;
+    g_huntMs = MsNow() - t0;
     g_dumped = true;
 
     logFile << "DevTools: hunt " << g_huntMs << " ms live=" << g_nLives
@@ -3586,7 +3586,7 @@ static void DumpAnatomy()
     if (!g_base) return;
     if (!g_nWatch) BuildWatch();
 
-    DWORD t0 = GetTickCount();
+    DWORD t0 = MsNow();
 
     if (pWorld && RdPtr(pWorld, &g_pWorldObj) && g_pWorldObj) {
         Named nw = NameOf(g_pWorldObj);
@@ -3638,7 +3638,7 @@ static void DumpAnatomy()
 
     HuntHeapSingletons();
 
-    g_dumpMs = GetTickCount() - t0;
+    g_dumpMs = MsNow() - t0;
     g_dumped = true;
 
     logFile << "DevTools: dump " << g_dumpMs << " ms"
@@ -4014,8 +4014,8 @@ static void RenderDevToolsUI()
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Live characters")) {
-            const WorldReport& wr = CombatBus::Instance().LastWorld();
-            DWORD now = GetTickCount();
+            WorldReport wr = CombatBus::Instance().LastWorld();
+            DWORD now = MsNow();
             DWORD age = (wr.timestampMs && now >= wr.timestampMs) ? (now - wr.timestampMs) : 0;
             if (g_nAct) {
                 ImGui::Text("world %d  goblins %d  cat %d  age %u ms",

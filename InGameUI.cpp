@@ -59,7 +59,24 @@ void renderDDDAFixUI(bool getsInput)
 }
 
 LPBYTE pInGameUI, oInGameUI;
-SHORT WINAPI HGetAsyncKeyState(int vKey) { return ImGui::IsAnyItemActive() ? 0 : GetAsyncKeyState(vKey); }
+// Перехват GetAsyncKeyState: не глушим весь ввод, а только клавиши,
+// которые ImGui реально захватил (текстовый ввод, навигация по меню).
+// WASD/стрелки/мышь продолжают работать, даже если ползунок активен.
+SHORT WINAPI HGetAsyncKeyState(int vKey) {
+    // Если ни один ImGui-виджет не активен — пропускаем всё
+    if (!ImGui::GetIO().WantCaptureKeyboard) return GetAsyncKeyState(vKey);
+    // Если активен текстовый ввод — глушим только клавиши, которые
+    // конфликтуют с набором текста: Enter, Esc, Tab, Backspace
+    if (ImGui::GetIO().WantTextInput) {
+        if (vKey == VK_RETURN || vKey == VK_ESCAPE || vKey == VK_TAB || vKey == VK_BACK) return 0;
+        return GetAsyncKeyState(vKey);
+    }
+    // Виджет активен (слайдер, комбобокс) — глушим только клавиши
+    // навигации (стрелки, Enter, Esc), остальное пропускаем
+    if (vKey == VK_UP || vKey == VK_DOWN || vKey == VK_LEFT || vKey == VK_RIGHT ||
+        vKey == VK_RETURN || vKey == VK_ESCAPE || vKey == VK_TAB) return 0;
+    return GetAsyncKeyState(vKey);
+}
 void __declspec(naked) HInGameUI()
 {
 	__asm	mov		ebp, HGetAsyncKeyState;

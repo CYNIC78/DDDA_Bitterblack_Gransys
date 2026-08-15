@@ -3,12 +3,79 @@
 [![Game](https://img.shields.io/badge/Game-Dragon's%20Dogma%20Dark%20Arisen-blue)](https://store.steampowered.com/app/367500)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20(Steam%2FGOG)-lightgrey)]()
 [![License](https://img.shields.io/badge/License-MIT-green)]()
+[![Status](https://img.shields.io/badge/Status-Development-orange)]()
 
 **AI Overhaul для Dragon's Dogma: Dark Arisen** — улучшение интеллекта пешек и монстров без читов.
 
 Основан на архитектуре [ddda-dinput8](https://github.com/kubik-jaroslav/ddda-dinput8), но **не является чит-модом**. Все изменения направлены только на геймплейные улучшения AI и удобство игры.
 
-Мод работает на Steam и GoG версиях игры. Поддерживает цепочку с оригинальным динпут8 через `loadLibrary`.
+---
+
+## 🧠 Философия
+
+Мы — **эмерджентный рантайм-мод**. Не чит и не пак файлов.
+
+```
+Умеем в рантайме — делаем в рантайме. Диск — аптека, не игра.
+```
+
+**Три полки:**
+| Полка | Что это | Пример |
+|---|---|---|
+| **LIVE** | Читаем/пишем процесс. Эмерджентно, обратимо, без рестарта | Инклинации, mStudyFlag, хук урона, погода, пауза, камера |
+| **CATALOG** | Мёртвые таблицы, которые LIVE читает как политику | types.tsv → TypeAtlas, bestiary.py → BestiaryData |
+| **PACK** | Файлы, без которых движок не умеет инстанциировать объект | sidecar .gpl / LOT для типов, которых нет в зоне |
+
+**Четыре вопроса для любой фичи:**
+1. Можем **увидеть** это живым? → Atlas / Scan / хук.
+2. Можем **изменить** живым? → запись поля / подмена аргумента.
+3. Движок **отказывается создать** объект? → тогда PACK.
+4. PACK никогда не включает себя сам. Его включает LIVE-политика.
+
+---
+
+## 🏗 Архитектура
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  CombatBus  (шина событий — мегафон тренера)             │
+│  CombatIntel ──Publish──► CombatBus ──Subscribe──► PawnAI│
+│  WorldScan   ──PublishWorld──► (не топчет hit)           │
+└──────────────────────────┬──────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────┐
+│  PawnAI Orchestrator  (тик 150 мс, модули в SEH)         │
+│  ├── SanitaryCordon    — динамический потолок мусора     │
+│  ├── SmartUtilitarian  — знание → вес Utilitarian        │
+│  ├── PresetManager     — 7 профилей + custom + lerp      │
+│  └── TacticalSwitch    — категория врага → пресет        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Ключевые принципы
+
+- **Модульность с изоляцией**: каждый модуль работает в своём SEH-блоке.
+  Падение одного **не роняет** соседей и не роняет игру.
+- **Шина, а не прямой вызов**: модули подписываются на CombatBus,
+  а не вызывают друг друга.
+- **Глаза, нервы, органы**: TypeAtlas + WorldScan = глаза,
+  CombatBus = нервы, PawnAI/EnemyAI/Nightmare = органы.
+- **Потокобезопасность**: шина защищена SRWLOCK,
+  запись в память — через `__try/__except`.
+
+---
+
+## ✅ Текущий статус модулей
+
+| Модуль | Версия | Статус | Описание |
+|---|---|---|---|
+| **PawnAI** | v2.8 | ✅ Работает | Санитарный кордон + Smart Utilitarian + Custom Anchors (слайдеры-якоря + живые бары) + 7 пресетов + Tactical Switch |
+| **CombatIntel** | v2.8 | ✅ Работает | Универсальный хук урона (3 сигнатуры игрока + 1 универсальный health write), ring buffer 64 слота, debounce суб-тиков, бестиарий 72 врага |
+| **CameraPlus** | v2.2 | ✅ Работает | Тактическая камера (F4/MMB) + Free Fly + Пауза + Disable Auto-Correction |
+| **EntityConfig** | v1.0 | ✅ Работает | `ddda_entities.ini` — трёхуровневый конфиг ([default]→[class.*]→[emXXXX]) с hot-reload по mtime. Масштаб (+0x60/64/68), поводок (таймеры возврата), разброс на особь |
+| **EnemyAI** | stub | 🔜 Заготовка | UI-слайдеры без биндинга. Ждёт `cThinkMgr`/`cCharParamEnemy` |
+| **Nightmare** | stub | 🔜 Заготовка | UI + ручной триггер + политика замен. Ждёт час ночи + хук emId |
+| **DevTools** | v0.6 | 🔧 Dev only | TypeAtlas (4405 фабрик) + WorldScan + Inspector + Dump/HUNT. Включается `[devtools] enabled = on` |
 
 ---
 
@@ -16,11 +83,16 @@
 
 | Клавиша | Действие |
 |---|---|
-| **F12** | Открыть меню настройки |
-| **F4** | Тактическая камера (toggle) |
+| **F12** | Открыть меню настройки (ImGui-оверлей) |
+| **F4 / MMB** | Тактическая камера (toggle) |
 | **Стрелки + PgUp/PgDn** | Ручное перемещение камеры (в режиме F4) |
 | **Num 0** | Пауза игры (toggle) |
 | **Num + / Num -** | Ускорить/замедлить скорость паузы |
+| **F5** | Сохранить игру (штатный сейв) |
+| **F9** | Чекпоинт |
+| **M / J / U / K** | Быстрое открытие карты/журнала/экипировки/статуса |
+
+*Все хоткеи настраиваются в секции `[hotkeys]` конфига.*
 
 ---
 
@@ -29,120 +101,113 @@
 ### Быстрая установка (готовый DLL)
 
 1. Скачай последний релиз со [страницы Releases](https://github.com/YOUR_USER/ddda-ai-overhaul/releases)
-2. Скопируй **оба файла** в корневую папку игры (где `DDDA.exe`):
-   - `dinput8.dll`
-   - `ddda_ai_overhaul.ini`
+2. Скопируй **файлы** в корневую папку игры (где `DDDA.exe`):
+   - `dinput8.dll` — основной мод
+   - `ddda_ai_overhaul.ini` — конфиг
+   - `ddda_entities.ini` — настройки мутаций врагов (опционально)
 3. Если у тебя уже установлен другой `dinput8.dll` — переименуй его в `dinput8_OLD.dll`
+   и пропиши в `ddda_ai_overhaul.ini`: `loadLibrary = dinput8_OLD.dll`
 4. Запусти игру
 5. Нажми **F12** для открытия меню настройки
 
 ### Сборка из исходников
 
-См. [BUILD_INSTRUCTIONS_RU.md](BUILD_INSTRUCTIONS_RU.md)
+```
+1. Открыть ddda-ai-overhaul.sln в Visual Studio (2017/2019/2022)
+2. Выбрать Release | Win32
+3. Ctrl+Shift+B
+4. dinput8.dll в Release/
+```
 
----
-
-## 🧠 Возможности
-
-### Pawn AI Overhaul (v2.0)
-
-| Функция | Описание |
-|---|---|
-| **Санитарный кордон** | «Мусорные» инклинации (Guardian, Nexus, Acquisitor) автоматически ограничиваются. Порог — динамический: 3-я по величине полезная инклинация. Никаких хардкод-чисел |
-| **Smart Utilitarian** | Вес Utilitarian адаптируется под реальные знания пешки о врагах. В бою сверяется с `mStudyFlag` — если враг незнаком, вес перенаправляется в Scather + Challenger |
-| **Пресеты** | 6 готовых профилей поведения: Boss Killer, Crowd Control, Tactical Support, Ranged Hunter, Explorer, Balanced |
-| **Плавные переходы** | Инклинации меняются мягко, без резких скачков, сохраняя «естественность» AI |
-
-### Combat Intel (боевая разведка)
-
-| Функция | Описание |
-|---|---|
-| **Damage-хуки** | Перехватывает ВСЕ события урона (3 сигнатуры: игрок, пешка, другое) |
-| **Ring buffer** | Отслеживает какие враги находятся в бою прямо сейчас |
-| **Сверка с mStudyFlag** | Для каждого типа врага проверяет — знает ли его пешка |
-
-### 📷 Camera Plus — Тактическая камера + Пауза
-
-| Функция | Описание |
-|---|---|
-| **Тактическая камера (F4)** | Камера застывает в пространстве, но продолжает следить за ГГ. Идеально для скриншотов и тактического обзора |
-| **Ручной полёт** | Стрелки + PgUp/PgDn перемещают камеру в любом направлении |
-| **Пауза игры (Num0)** | Мгновенная заморозка игрового мира. Num+/Num- регулируют скорость (0.00001 = пауза, 0.1 = slow-mo) |
-| **Безопасный toggle** | Все хоткеи на MinHook и GetAsyncKeyState — не конфликтуют с F12, Alt+F4 работает штатно |
-
-### Enemy AI Overhaul (в работе)
-
-Живые параметры think врагов (агрессия, цели, веса) — слой поверх ванили, без замены `.arc` игрока.
-
-### Nightmare: Bitterblack Gransys (в работе)
-
-После убийства Деймона Грансис становится «большим Островом» — ночь, погода и политика замены монстров в **рантайме**. Файлы игры не подменяются. То, чего движок физически не умеет создать в зоне, подключается отдельно и только по флагу модуля.
-
----
-
-## 🎮 Как пользоваться
-
-1. Запусти игру, загрузи сейв
-2. Нажми **F12** — откроется меню настройки
-3. Вкладки:
-   - **Pawn AI Overhaul v2.0** — все настройки инклинаций и санитарного кордона
-   - **Combat Intel** — просмотр активных врагов в бою
-   - **Camera Plus** — тактическая камера, free fly, пауза
-   - **Enemy AI Overhaul** — ум врагов (в работе)
-   - **Nightmare: Bitterblack Gransys** — Кошмар, выключен по умолчанию
-
-Все настройки сохраняются в `ddda_ai_overhaul.ini` автоматически.
+Подробная инструкция: [BUILD_INSTRUCTIONS.md](docs/BUILD_INSTRUCTIONS_RU.md)
 
 ---
 
 ## ⚙️ Конфигурация
 
-Файл `ddda_ai_overhaul.ini` — все настройки с комментариями:
+### `ddda_ai_overhaul.ini` — настройки мода
 
 ```ini
 [pawnAI]
-enabled = on          # мастер-выключатель
-presetsEnabled = on   # использовать пресеты инклинаций
-sanitary = on         # санитарный кордон
-smartUtil = on        # Smart Utilitarian
-preset = 5            # пресет (0-5)
-smooth = 0.1          # плавность переходов
+enabled = on          # мастер-выключатель AI пешек
+presetsEnabled = on   # пресеты инклинаций
+sanitary = on         # санитарный кордон (режет мусорные инклинации)
+smartUtil = on        # Smart Utilitarian (адаптация под знание)
+tactical = on         # авто-смена пресета под категорию врага
+preset = 5            # 0-6 (6 = Custom Anchor)
+smooth = 0.1          # плавность лерпа (0.01..1.0)
 
 [camera]
-freeCam = off          # тактическая камера (F4)
-detach = off           # отвязка камеры
-freeFly = off          # ручной полёт
-flySpeed = 2.0         # скорость стрелок
-flySpeedZ = 2.0        # скорость PgUp/PgDn
-pause = off            # пауза (Num0)
-pauseSpeed = 0.0001    # скорость паузы
+freeCam = off         # тактическая камера
+freeFly = off         # ручной полёт
+flySpeed = 2.0        # скорость перемещения
+pause = off           # пауза
+pauseSpeed = 0.0001   # скорость паузы
+noAutoCorrect = off   # отключить авто-коррекцию камеры
 
 [combatIntel]
 enabled = on          # боевая разведка
-timeout = 5           # секунд до выхода врага из боя
-
-[enemyAI]
-enabled = on          # ум врагов (рантайм, когда поля найдены)
 
 [nightmare]
-enabled = off         # Кошмар (выключен по умолчанию)
+enabled = off         # модуль Кошмара (выключен по умолчанию)
 
 [inGameUI]
 enabled = on          # оверлей F12
+
+[devtools]
+enabled = off         # режим разработчика (только для моддера)
 ```
+
+### `ddda_entities.ini` — мутации врагов (горячая перезагрузка)
+
+Трёхуровневая система: `[default]` → `[class.small/large/boss]` → `[em0100]`.
+
+```ini
+[global]
+enabled = on
+allowWrites = off      # ВКЛЮЧАТЬ ОСОЗНАННО! По умолчанию только чтение.
+
+[default]
+; Множители для всех врагов (1.0 = ванилла)
+speedMin = 1.0
+speedMax = 1.0
+scaleMin = 1.0
+scaleMax = 1.0
+scaleJitter = 0.0       # неуниформность W/H/D
+
+[class.small]
+scaleMin = 0.85
+scaleMax = 1.15
+scaleJitter = 0.1
+
+[em0100]
+sightRadius = 0          # 0 = ваниль (1500)
+sightAngle = 90          # расширяем конус 60° → 90°
+speedMin = 1.0
+speedMax = 1.2
+leashScale = 0.8         # короче поводок
+```
+
+*Файл создаётся автоматически при первом запуске с комментариями.*
+*Изменения подхватываются через ~1 сек после сохранения (hot-reload).*
 
 ---
 
-## 🔧 Как это работает (технически)
+## 🧰 Что под капотом
 
-Мод использует технику **прокси-DLL**: игра загружает `dinput8.dll` для DirectInput, а мы подменяем её своей DLL, которая:
+### Технические детали
 
-1. Экспортирует `DirectInput8Create` и пробрасывает вызов в настоящую системную DLL
-2. При загрузке ищет в памяти игры сигнатуры для нахождения ключевых структур данных (`pBase`, `pWorld`)
-3. Через [MinHook](https://github.com/TsudaKageyu/minhook) перехватывает нужные функции
-4. [Dear ImGui](https://github.com/ocornut/imgui) рендерит оверлей поверх игры (F12)
+- **Прокси-DLL**: `dinput8.dll` — подмена системной DLL с пробросом вызовов
+- **MinHook**: перехват функций (x86 detours)
+- **Dear ImGui + D3D9**: оверлей поверх игры
+- **Сигнатурный поиск**: нахождение `pBase`, `pWorld` и других структур
+- **TypeAtlas**: 4405 фабрик MT Framework с именами, RVA, размерами
+- **DTI (MT Framework)**: каждый живой объект сам сообщает своё имя класса — 
+  идентификация не по захардкоженным vtable, а через систему RTTI движка
+- **FieldMap**: 72 поля характеристик врага (XFS-формат Capcom с японскими именами)
+- **ActMap**: 812 FSM-состояний с именами (смерть по состоянию, а не по HP)
 
-### Документированные оффсеты
+### Ключевые оффсеты
 
 ```
 pBase → *(сигнатура + 2)
@@ -152,76 +217,91 @@ pBase → *(сигнатура + 2)
 │   │   └── +0x1616: mStudyFlag (322 байта)
 │   ├── +0x7F0+0x1660: Пешка 1
 │   └── +0x7F0+0x1660×2: Пешка 2
-├── +0xB8780: Погода
+├── +0xB8780: Погода (0=ясно, 1=облачно, 2=туман, 3=вулкан)
 └── +0xB33A8: Флаг пост-игры
+
+Тело uEm* (29632 байт):
+├── +0x40/44/48: XYZ координаты
+├── +0x60/64/68: Масштаб W/H/D (живой, каждый кадр)
+├── +0x2DC0: cActBank (банк действий)
+├── +0x2DC8: Текущий Act (FSM-состояние, стабильный адрес)
+├── +0x2E64: cAICtrl (704 B — принятие решений)
+├── +0x5870: cCharParamEnemy (таймеры поводка, масштаб)
+└── +0x73C0: Размер тела
 ```
 
 ---
 
-## 📊 Дорожная карта
+## 📚 Документация
 
-Живой север: [docs/ROADMAP.md](docs/ROADMAP.md). Коротко:
-
-```
-✅ Нерв пешки: пресеты, кордон, Smart Utilitarian, Tactical Switch, шина
-✅ Камера + пауза
-🟡 Глаза (TypeAtlas сгенерен, сканер мира ещё нет)
-🔜 Политика мира (Nightmare: ночь/погода LIVE, замена через хук emId)
-🔜 Ум врага (живые поля think, не своп .arc)
-📋 PACK только если движок отказывается создать объект
-```
-
-Мы не чит и не пак файлов. Что умеем в рантайме — делаем в рантайме.
+| Файл | О чём |
+|---|---|
+| [PROJECT_HUB.md](PROJECT_HUB.md) | Карта проекта, модули, ключевые оффсеты |
+| [ROADMAP.md](docs/ROADMAP.md) | **Живой север** — фазы 0-5, полки, «правило четырёх вопросов» |
+| [ARCHITECTURE_VISION.md](docs/ARCHITECTURE_VISION.md) | Философия: 3 слоя, FSM сверху, ini-архитектура |
+| [RESEARCH.md](docs/RESEARCH.md) | Технический анализ архитектуры DDDA и dinput8 |
+| [MUTATION_ARCHITECTURE.md](docs/MUTATION_ARCHITECTURE.md) | Act-объекты, placement new, cAICtrl, карта врага |
+| [DEVTOOLS_VISION.md](docs/DEVTOOLS_VISION.md) | TypeAtlas, WorldScan, DevConsole — глаза проекта |
+| [FIELD_MAP.md](docs/FIELD_MAP.md) | Подтверждённые оффсеты и структуры |
+| [ASSET_FORMATS.md](docs/ASSET_FORMATS.md) | Формат XFS, sn2-сенсоры, rst, lmt |
+| [BUILD_INSTRUCTIONS_RU.md](docs/BUILD_INSTRUCTIONS_RU.md) | Сборка в Visual Studio |
 
 ---
 
-## ⚠️ Предупреждения
+## 🧭 Север проекта
+
+Подробно: [ROADMAP.md](docs/ROADMAP.md). Кратко:
+
+```
+Фаза 0 — Глаза (бедный REFramework)
+  ✅ TypeAtlas (4405 имён)
+  ✅ WorldScan (присутствие до удара)
+  🔜 Inspector + DevConsole
+  🔜 Singleton resolve (sEnemyManager, sUnit)
+
+Фаза 1 — Нервная система пешки
+  ✅ Sanitary Cordon, Smart Utilitarian, Presets, Tactical Switch
+  🔜 Пешки 1 и 2
+  🔜 Политики, не пресеты
+
+Фаза 2 — Политика мира (Nightmare)
+  🔜 Ночь + погода в тике
+  🔜 Триггер Деймона
+  🔜 Хук emId — замена на лету
+
+Фаза 3 — Ум врага (LIVE)
+  🔜 cThinkMgr / cCharParamEnemy
+  🔜 Поля агрессии, цели, таймеры
+  🔜 AIPlActParam — веса из XML в память
+
+Фаза 4 — PACK (только когда движок отказался)
+  🔜 sidecar .gpl / LOT для отсутствующих типов
+
+Фаза 5 — Открытый каркас для сообщества
+```
+
+---
+
+## ⚠️ Известные ограничения
 
 - **Инклинации через dinput8**: установка ВСЕХ инклинаций в 1000 ломает AI пешки. Наш мод использует градиентные значения.
 - **Совместимость с другими dinput8-модами**: можно использовать через `loadLibrary` в `[main]` секции .ini
-- **Онлайн**: изменение статов пешки может привести к бану; изменение AI-параметров через `.arc` — безопасно
-
----
-
-## 📂 Структура проекта
-
-```
-ddda-ai-overhaul/
-├── src/                    # Исходный код модулей
-│   ├── dinput8.cpp         # Точка входа DLL
-│   ├── PawnAI.cpp/.h       # AI пешек
-│   ├── EnemyAI.cpp/.h      # AI врагов
-│   ├── CombatIntel.cpp/.h  # Боевая разведка
-│   ├── CameraPlus.cpp/.h   # Тактическая камера + пауза
-│   └── Nightmare.cpp/.h    # Bitterblack Gransys
-├── d3d9.cpp/h              # D3D9 хук (ImGui)
-├── InGameUI.cpp/h          # UI-фреймворк
-├── iniConfig.cpp/h         # INI-парсер
-├── Hotkeys.cpp/h           # Горячие клавиши
-├── stdafx.cpp/h            # Прекомпилируемый заголовок
-├── dinput8.def             # Экспорты DLL
-├── MinHook/                # Библиотека MinHook
-├── ImGui/                  # Dear ImGui
-├── ddda_ai_overhaul.ini    # Конфигурация
-├── ddda-ai-overhaul.vcxproj # Проект VS
-├── arctool_helper.py       # Python-автоматизатор ARCtool
-├── ARC_MAP.txt             # Карта файлов game_main.arc
-├── RESEARCH.md             # Технический анализ
-└── BUILD_INSTRUCTIONS_RU.md # Инструкция по сборке
-```
+- **Онлайн**: изменение статов пешки может привести к бану; изменение AI-параметров — безопасно
+- **Не альфа**: мод в активной разработке, архитектура стабильна, но код — proof-of-concept.
+  Мы строим платформу для рантайм-модификаций, а не готовый продукт.
 
 ---
 
 ## 🙏 Благодарности
 
 - **kubik-jaroslav** — автор [ddda-dinput8](https://github.com/kubik-jaroslav/ddda-dinput8)
-- **Cielos** — автор Cheat Engine таблицы с адресами
-- **Lefein (Lefein_Noel)** — автор World Difficulty, пионер AI-моддинга DDDA
+- **Cielos** — Cheat Engine таблица с адресами
+- **Atvaark** — [DragonsDogma.Research](https://github.com/Atvaark/DragonsDogma.Research) (types.tsv)
+- **chrispurnell** — pawn-knowledge (bestiary.py)
+- **Lefein (Lefein_Noel)** — World Difficulty, пионер AI-моддинга DDDA
 - **FluffyQuack** — ARCtool
 - **TsudaKageyu** — MinHook
 - **ocornut** — Dear ImGui
-- **arena.ai** — LLM model as coding assistant
-- **Gemini** — LLM model by Google for researches
 
 ## 📄 Лицензия
 

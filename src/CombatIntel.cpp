@@ -116,7 +116,7 @@ static bool IsInActiveGameplay() {
     if (!pBase || !*pBase) return false;
     __try {
         BYTE* pPlayer = *pBase + PLAYER_BASE;
-        if (IsBadReadPtr(pPlayer, 0x1000)) return false;
+        // SEH сам обработает Page Fault — IsBadReadPtr не нужна
         UINT16 level = *(UINT16*)(pPlayer + 0xDD0);
         if (level == 0) return false; // Экран загрузки / главное меню
         float maxHp = *(float*)(pPlayer + 0x96C + 4);
@@ -133,7 +133,7 @@ static bool IsInActiveGameplay() {
  * uPlayerBase VTable RVA: 0x11CEF40
  */
 static bool IsPartyMember(void* ptr) {
-    if (!ptr || IsBadReadPtr(ptr, 0x20)) return true;
+    if (!ptr) return true;
     __try {
         // ГЛАВНЫЙ путь — спросить у игры имя класса.
         //
@@ -173,7 +173,7 @@ static bool IsPartyMember(void* ptr) {
  * 3. Проверяет cand[0x2D] и VTable в исполняемом коде DDDA.exe
  */
 static bool IsValidEnemyCharacter(BYTE* cand, BYTE* healthPtr, BYTE* outGid) {
-    if (!cand || cand == healthPtr || IsBadReadPtr(cand, 0x40)) return false;
+    if (!cand || cand == healthPtr) return false;
     __try {
         if (IsPartyMember(cand)) return false;
 
@@ -328,7 +328,7 @@ static void OnDamageInternal(BYTE* targetBase, DamageSource src) {
     if (body)
         DevTools::NameOfLiveObjectSafe(body, kindBuf, sizeof(kindBuf));
 
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     int srcIdx = (src == SRC_PLAYER) ? 0 : 1;
 
     EnterCriticalSection(&g_lock);
@@ -363,7 +363,7 @@ static void OnDamageInternal(BYTE* targetBase, DamageSource src) {
 }
 
 void __stdcall MarkPlayerAttack() {
-    g_lastPlayerAttackTick = GetTickCount();
+    g_lastPlayerAttackTick = MsNow();
 }
 
 // Caller-хуки игрока: только выставляют точную временную метку атаки игрока!
@@ -403,7 +403,7 @@ void __declspec(naked) HDmg3()
 void __stdcall OnDamage_UniversalHealthWrite(BYTE* targetBase) {
     if (!targetBase || !IsInActiveGameplay()) return;
     
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     uintptr_t targetPtr = (uintptr_t)targetBase;
 
     // 1. Дебаунс дубликатов sub-writes (mHPCurrent vs mHPRecoverable) на одной сущности (120 мс)
@@ -472,7 +472,7 @@ static bool PawnKnowsGroup(BYTE gid)
 static void AnalyzeCombat(int* total, int* unknown, float* avgKnowledge)
 {
     *total = 0; *unknown = 0; *avgKnowledge = 0.0f;
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     bool seen[256] = {};
     float sumK = 0.0f;
 
@@ -504,7 +504,7 @@ static void AnalyzeCombat(int* total, int* unknown, float* avgKnowledge)
 static void PublishToBus()
 {
     CombatReport r{};
-    r.timestampMs = GetTickCount();
+    r.timestampMs = MsNow();
 
     int total = 0, unknown = 0;
     float avgK = 0.0f;
@@ -523,7 +523,7 @@ static void PublishToBus()
 
     r.dominantCategory = GetCombatEnemyCategory();
 
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     bool seen[256] = {};
     bool seenPawn[256] = {};
     bool seenPlayer[256] = {};
@@ -619,7 +619,7 @@ static void PublishToBus()
 void CombatIntel_Tick()
 {
     if (!g_enabled) return;
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     if (now - g_lastPublishTick < 150) return;
     g_lastPublishTick = now;
 
@@ -641,7 +641,7 @@ float GetCombatUtilitarianConfidence()
 
 bool IsInCombat()
 {
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     EnterCriticalSection(&g_lock);
     for (int i = 0; i < RING_SIZE; i++) {
         if (g_ring[i].timestamp != 0 && (now - g_ring[i].timestamp) < (DWORD)(COMBAT_TIMEOUT_SEC * 1000)) {
@@ -656,7 +656,7 @@ bool IsInCombat()
 int GetCombatEnemyCategory()
 {
     int bestCat = -1;
-    DWORD now = GetTickCount();
+    DWORD now = MsNow();
     EnterCriticalSection(&g_lock);
     for (int i = 0; i < RING_SIZE; i++) {
         if (g_ring[i].timestamp == 0) continue;
@@ -681,7 +681,7 @@ void RenderCombatIntelUI()
     int total, unknown; float avgK;
     AnalyzeCombat(&total, &unknown, &avgK);
     float conf = GetCombatUtilitarianConfidence();
-    auto &bus = CombatBus::Instance().LastReport();
+    auto bus = CombatBus::Instance().LastReport();
 
     if (bus.inCombat || total > 0) {
         ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.35f, 1.0f), "[ACTIVE] IN COMBAT");
@@ -707,7 +707,7 @@ void RenderCombatIntelUI()
     ImGui::Separator();
 
     if (ImGui::TreeNode("Damage Ring Buffer")) {
-        DWORD now = GetTickCount();
+        DWORD now = MsNow();
         EnterCriticalSection(&g_lock);
         for (int i = 0; i < RING_SIZE; i++) {
             if (g_ring[i].timestamp == 0) continue;
