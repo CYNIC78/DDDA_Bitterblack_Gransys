@@ -1,22 +1,54 @@
-Snapshot 31 — Inspect +offset, life windows. HP not in first 256B.
+Build 39 — Player/Main Pawn live trace (read-only, safe hotkeys)
 
-Dump25 + live/dead Inspect of 0x10E07320:
-  First 256B = transform. No HP float.
-  +14 0x11/0x12 = alert (live goblins in dump19-22 were already 0x12).
-  +4C 1.0 only in close Inspect; every HUNT live has +4C=0.
-  Corpse stays uEm0100 gid 5 on +0C.
-  Identify gid=0x00 is WatchAdd(...,0), not +2D.
+Собрать:
+  Visual Studio → Release | Win32 → Build Solution
 
-31:
-  Inspect: +offset field, buttons head / +5BD0 / +6000 / +6150.
-  Shows body +14 +2D +4C. watchGid labelled as watch table.
-  HUNT actors[] add st14, win5b (+0x5BD0), win60 (+0x6000).
-  Live rows show st=.
-  CombatIntel.cpp untouched. 0x61 not remapped. No corpse filter yet.
+Проверить в F12:
+  build 39-party-live-trace-hotkeys
 
-Clean + Release|Win32. D:\Temp\test3. dll+ini only.
+Настройки:
+  [devtools] enabled = on
+  [pawnAI]   enabled = on
 
-SCAN, DUMP, HUNT once (dump26).
-Inspect one live goblin: head, +5BD0, +6000.
-Kill. Same ptr, same three windows.
-Paste all six hex blocks + dump26.
+Перед тестом:
+  1. Оставить только главную пешку.
+  2. Загрузиться вне Рифта/города, рядом со слабым противником.
+  3. Тест ничего не пишет в память персонажей.
+
+Запуск:
+  1. F12 → DevTools → Player + Main Pawn recon.
+  2. Нажать "Find both + start live trace" один раз.
+  3. Дождаться двух строк: Arisen uPlayer и Main Pawn uCmc.
+  4. Закрыть F12. CSV уже записывается автоматически.
+
+Короткий тест ГГ:
+  1. Стоять 3 секунды.
+  2. Бежать БЕЗ спринта 3 секунды.
+  3. Спринтовать 4–5 секунд, чтобы заметно потратить stamina.
+  4. Остановиться на 5 секунд (stamina восстанавливается).
+  5. Позволить слабому врагу ОДИН раз ударить ГГ.
+  6. Отойти и спокойно постоять 3 секунды.
+  7. Нажать клавишу - один раз — это остановит и закроет CSV.
+
+Важно:
+  - Используются физические клавиши - и = рядом с Backspace.
+  - Клавиша - включает/выключает live trace.
+  - Клавиша = делает резервный snapshot; в этом тесте нажимать её НЕ НУЖНО.
+  - F9/F10 инструмент больше не использует.
+  - Пешку заставлять спринтовать НЕ НУЖНО.
+  - Если враг ударить не смог, всё равно завершить клавишей - и прислать результат.
+
+Прислать из DDDA_AI_Overhaul:
+  ddda_party_live_001.csv
+  ddda_party_recon_001.json
+  ddda_ai_overhaul.log
+
+Контрольные значения исходного сейва:
+  ГГ: HP 331/498, stamina 600
+  Главная пешка: HP 327/505, stamina 595
+
+Что проверяет Build 39:
+  - повторяемость Wait/Run/Dash и кандидатов raw enum/flag;
+  - 128-байтные окна pBase-записей игрока и пешки;
+  - живые DTI-объекты с именами Stamina/Health/Status;
+  - изменение HP и stamina во времени без exact-value scan тела.

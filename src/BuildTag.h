@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "34-pack-fix"
+#define MOD_BUILD_TAG "39-party-live-trace-hotkeys"

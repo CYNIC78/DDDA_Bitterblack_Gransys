@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Source snapshots in builds/ must not recursively contain older build zips.
+builds/ export-ignore

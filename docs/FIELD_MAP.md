@@ -48,11 +48,12 @@ VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(
 
 ## Живые юниты (`u*`, первый dword = vtable инстанса)
 
-| Тип | VTable RVA | Size | Поле | Оффсет | Статус |
+| Тип | Factory vt RVA / live vt VA | Size | Поле | Оффсет | Статус |
 |---|---|---:|---|---|---|
-| `uPlayer` | `0x11E4F34` | 23056 | (идентификация) | `*(void**)obj` | ✅ `IsPartyMember` |
-| `uPlayerBase` | `0x11CEF40` | 22608 | (идентификация) | | ✅ |
-| `uPawnIntel` | `0x117852C` | 56 | (идентификация пешки) | | ✅ (хардкод `0x157852C` как VA? проверить: в CombatIntel сравнивается RVA `0x157852C` — **подозрительно**, это VA не RVA. Техдолг.) |
+| `uPlayer` (ГГ) | `0x11E4F34` / `0x015C9D70` | 23056 (`0x5A10`) | (идентификация) | `*(void**)obj` | ✅ build 37, DTI |
+| `uCmc` (главная пешка) | `0x11E42CC` / `0x015C9108` | 22752 (`0x58E0`) | (идентификация) | `*(void**)obj` | ✅ build 37, DTI |
+| `uPlayerBase` | `0x11CEF40` / shared stub | 22608 | (базовый тип) | | ✅ TypeAtlas |
+| `uPawnIntel` | `0x117852C` | 56 | компонент пешки, не её live body | | ✅ RVA в `CombatIntel` исправлен на `0x117852C` |
 | любой `uEm*` | см. `EnemyTypes.Generated.h` | ~29–33 КБ | TypeId / groupId | `obj[0x2D]` | ✅ совпадает с TSV col 5 у **боевых** (гоблин=5). Фауна dump19: live `+0x2D=0x61` при зайцах на экране — каталог врёт телу, не наоборот |
 | health-obj (не юнит) | — | — | current HP float | `+0x08` | ✅ хук `movss [edi+08]` |
 | health → владелец | — | — | кандидатные ptr | `+0x1B4, +0x14, +0x18` | 🧪 приоритетный перебор в `ResolveGidFromEntity` |
@@ -62,19 +63,18 @@ VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(
 | camera orient | — | — | sin / cos yaw | `+0xB0` / `+0x110` | 🧪 TargetLock |
 | camera orient | — | — | (хук читает) | `+0x114, +0x110, +0x150` | 🧪 CameraPlus |
 
-### Техдолг: `IsPartyMember` и `0x157852C`
+### Action/FSM игрока и главной пешки — build 37
 
-В `CombatIntel.cpp`:
+Одинаковый layout подтверждён на `uPlayer` и `uCmc`:
 
-```cpp
-if (rva == 0x11E4F34 || rva == 0x11CEF40 || rva == 0x157852C)
-```
+| Оффсет | Поле | Проверка |
+|---:|---|---|
+| `+0x2DC0` | ptr на `cActionManager::cActBank` | DTI |
+| `+0x2DC8` | ptr на текущий `cPlAct*` | ГГ: Wait/Run/Dash; пешка: Run |
+| `+0x2DE8` | дубликат current Act ptr | три снимка |
+| `+0x2E64` | ptr на `cAICtrl` | DTI |
 
-`0x11E4F34` = RVA `uPlayer` (vt VA `0x15E4F34` − `0x400000`). Ок.
-`0x11CEF40` = RVA `uPlayerBase` / общий stub `0x15CEF40`. Ок, но слишком широкий.
-`0x157852C` = **VA** `uPawnIntel`, не RVA. RVA был бы `0x117852C`.
-Либо это мёртвая ветка, либо сравнение никогда не ловит пешку по этому числу.
-Проверить в инспекторе, когда DevTools встанет.
+Act-буфер стабилен, меняется только vtable: `cPlActWait` → `cPlActRun` → `cPlActDash`. Подробности и сырые кандидаты флага спринта: `PLAYER_PAWN_IN_MEMORY.md`.
 
 ---
 

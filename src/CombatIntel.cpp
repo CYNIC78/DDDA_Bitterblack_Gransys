@@ -146,7 +146,9 @@ static bool IsPartyMember(void* ptr) {
         // Имя класса от DTI закрывает всё семейство разом.
         char nm[40];
         if (DevTools::NameOfLiveObjectSafe(ptr, nm, sizeof(nm))) {
-            if (strstr(nm, "Pawn") || strstr(nm, "uPlayer"))
+            // Build 37: ГГ = uPlayer, главная пешка = uCmc. uPawnIntel —
+            // лишь маленький компонент, а не live body пешки.
+            if (strstr(nm, "Pawn") || strstr(nm, "uPlayer") || !strcmp(nm, "uCmc"))
                 return true;                  // свой: игрок или пешка
         }
 

@@ -93,6 +93,7 @@
 #include "devtools/DevTools.h"
 #include "devtools/TypeCallers.Generated.h"
 #include "CombatBus.h"
+#include "ModPaths.h"
 #include <stdio.h>
 
 extern BYTE *codeBase, *codeEnd, *dataBase, *dataEnd;
@@ -2416,6 +2417,847 @@ static bool NameOfLiveObject(uintptr_t obj, char* out, int cap)
     return NameFromDti(dti, out, cap);
 }
 
+// ─── Player + Main Pawn recon (temporary, read-only) ────────────────────────
+//
+// This is deliberately separate from the enemy HUNT path:
+//   * uPlayer is 0x5A10 bytes, not the 0x73C0 enemy body;
+//   * enemy +0x2DC8 must not be assumed to be the player Act slot;
+//   * we only need the Arisen and the main pawn for controlled experiments.
+//
+// FIND performs one dynamic DTI heap census: each distinct live vtable is
+// named once by the game itself. No Steam/GOG-specific uPlayer vtable is
+// hardcoded. Later '=' captures reuse the two addresses, so taking a snapshot
+// while running does not repeat the heap hunt.
+static const uint32_t kPartyBodySize       = 0x5A10; // max: uPlayer = 23056
+static const uint32_t kCmcBodySize         = 0x58E0; // TypeAtlas: uCmc = 22752
+static const uint32_t kPawnManagerSize     = 5512;
+static const int      kPartyMaxBodies      = 24; // uCmc also exists on non-party actors; rank after scan
+static const int      kPartyMaxChildren    = 96;
+static const int      kPartyChildHeadSize  = 384;
+static const int      kPartyMaxValueHits   = 96;
+static const int      kPartyVtCacheSize    = 8192;   // power of two
+static const int      kPartyMaxNearTypes   = 32;
+static const int      kPartyMaxRuntimeProbes = 24;
+static const int      kPartyRuntimeProbeBytes = 32;
+
+// Test-save values supplied with build 35. We search both int32 and float
+// representations. They are clues only: an offset is not documented until a
+// controlled HP/stamina change confirms it.
+struct PartyKnownValue {
+    const char* label;
+    int32_t     value;
+};
+static const PartyKnownValue kPartyKnownValues[] = {
+    { "player_hp_current", 331 },
+    { "player_hp_max",     498 },
+    { "player_stamina",    600 },
+    { "pawn_hp_current",   327 },
+    { "pawn_hp_max",       505 },
+    { "pawn_stamina",      595 }
+};
+static const int kPartyKnownValueCount = sizeof(kPartyKnownValues) / sizeof(kPartyKnownValues[0]);
+
+enum PartyVtKind { PVK_OTHER = 0, PVK_PARTY_BODY, PVK_PAWN_MANAGER };
+struct PartyVtClass {
+    uintptr_t vt;
+    uint8_t   kind;
+    char      name[40];
+};
+struct PartyNearType {
+    uintptr_t vt;
+    uintptr_t sample;
+    char      name[40];
+};
+
+// Small DTI objects potentially holding changing health/stamina state.  The
+// heap census records every instance (not merely one sample per vtable), then
+// the live CSV follows their first 32 bytes.  rPlStamina is a rule resource;
+// cPlStamina or a Health-named object is the interesting runtime candidate.
+struct PartyRuntimeProbe {
+    uintptr_t ptr;
+    uintptr_t vt;
+    char      name[40];
+    BYTE      head[kPartyRuntimeProbeBytes];
+    bool      headOk;
+};
+
+struct PartyChildDump {
+    uint32_t  off;
+    uintptr_t ptr;
+    uintptr_t vt;
+    char      name[48];
+    BYTE      head[kPartyChildHeadSize];
+    bool      headOk;
+    bool      ownerRef;
+};
+
+struct PartyValueHit {
+    uint32_t containerOff; // 0 for uPlayer body; body slot for a child object
+    uint32_t valueOff;     // offset inside body/child snapshot
+    char     container[48];
+    char     label[24];
+    char     encoding[4];  // i32 / f32
+};
+
+struct PartyBodyDump {
+    uintptr_t ptr;
+    uintptr_t vt;
+    uint32_t  bodySize;
+    char      dti[40];
+    char      role[24];
+    bool      playerRecordRef;
+    bool      mainPawnRecordRef;
+    bool      pawnManagerRef;
+    bool      hasPawnIntel;
+    BYTE      body[kPartyBodySize];
+    bool      bodyOk;
+    PartyChildDump child[kPartyMaxChildren];
+    int       nChild;
+    PartyValueHit valueHit[kPartyMaxValueHits];
+    int       nValueHit;
+    uint32_t  actOff;
+    uintptr_t actPtr;
+    char      actName[48];
+    bool      actOwnerRef;
+};
+
+static PartyBodyDump g_party[kPartyMaxBodies];
+static PartyBodyDump g_partyChosen[2];
+static int            g_nParty = 0;
+static int            g_partyRawCandidates = 0;
+static uintptr_t      g_partyPawnMgr[8];
+static int            g_nPartyPawnMgr = 0;
+static PartyVtClass   g_partyVtCache[kPartyVtCacheSize];
+static int            g_partyVtChecked = 0;
+static int            g_partyVtNamed = 0;
+static PartyNearType  g_partyNear[kPartyMaxNearTypes];
+static int            g_nPartyNear = 0;
+static PartyRuntimeProbe g_partyRuntime[kPartyMaxRuntimeProbes];
+static int            g_nPartyRuntime = 0;
+static int            g_partySeq = 0;
+static DWORD          g_partyFindMs = 0;
+static volatile LONG  g_partyBusy = 0;
+static char           g_partyStatus[192] = "not scanned";
+static char           g_partyLastFile[MAX_PATH] = "";
+
+// Build 39 live trace. It is intentionally write-free with respect to game
+// memory: only a CSV file is written. Find starts it; '-' stops/starts it.
+static FILE*          g_partyTrace = nullptr;
+static int            g_partyTraceSeq = 0;
+static DWORD          g_partyTraceStartMs = 0;
+static char           g_partyTraceFile[MAX_PATH] = "";
+
+static bool PartyStartsWith(const char* s, const char* prefix)
+{
+    if (!s || !prefix) return false;
+    return strncmp(s, prefix, strlen(prefix)) == 0;
+}
+
+static bool PartyRelevantName(const char* n)
+{
+    if (!n || !n[0]) return false;
+    return PartyStartsWith(n, "cPlAct")
+        || PartyStartsWith(n, "cCmc")
+        || PartyStartsWith(n, "uCmc")
+        || PartyStartsWith(n, "uPawn")
+        || PartyStartsWith(n, "cAIPlayer")
+        || PartyStartsWith(n, "rAIPlayer")
+        || strstr(n, "ActionManager") != nullptr
+        || strstr(n, "ActBank") != nullptr
+        || strstr(n, "Motion") != nullptr
+        || strstr(n, "Status") != nullptr
+        || strstr(n, "Stamina") != nullptr
+        || strstr(n, "Health") != nullptr
+        || strstr(n, "AICtrl") != nullptr
+        || strstr(n, "Think") != nullptr;
+}
+
+static bool PartyBlockHasPtr(const BYTE* data, uint32_t bytes, uintptr_t want)
+{
+    if (!data || !want || bytes < 4) return false;
+    for (uint32_t off = 0; off + 4 <= bytes; off += 4)
+        if (*(const uint32_t*)(data + off) == (uint32_t)want) return true;
+    return false;
+}
+
+static void PartyNoteValueHit(PartyBodyDump& P, uint32_t containerOff,
+                              const char* container, uint32_t valueOff,
+                              const char* label, const char* encoding)
+{
+    if (P.nValueHit >= kPartyMaxValueHits) return;
+    PartyValueHit& H = P.valueHit[P.nValueHit++];
+    memset(&H, 0, sizeof(H));
+    H.containerOff = containerOff;
+    H.valueOff = valueOff;
+    lstrcpynA(H.container, container ? container : "?", sizeof(H.container));
+    lstrcpynA(H.label, label ? label : "?", sizeof(H.label));
+    lstrcpynA(H.encoding, encoding ? encoding : "?", sizeof(H.encoding));
+}
+
+static void PartyScanKnownValues(PartyBodyDump& P, const BYTE* data, uint32_t bytes,
+                                 const char* container, uint32_t containerOff)
+{
+    if (!data || bytes < 4) return;
+    for (uint32_t off = 0; off + 4 <= bytes; off += 4) {
+        uint32_t raw = *(const uint32_t*)(data + off);
+        for (int k = 0; k < kPartyKnownValueCount; ++k) {
+            if (raw == (uint32_t)kPartyKnownValues[k].value)
+                PartyNoteValueHit(P, containerOff, container, off,
+                                  kPartyKnownValues[k].label, "i32");
+            float fv = (float)kPartyKnownValues[k].value;
+            uint32_t fraw = 0;
+            memcpy(&fraw, &fv, sizeof(fraw));
+            if (raw == fraw)
+                PartyNoteValueHit(P, containerOff, container, off,
+                                  kPartyKnownValues[k].label, "f32");
+        }
+    }
+}
+
+static void PartyRememberNearType(const char* name, uintptr_t vt, uintptr_t sample)
+{
+    if (!name || (!strstr(name, "Player") && !strstr(name, "Pawn")
+               && !strstr(name, "Cmc"))) return;
+    for (int i = 0; i < g_nPartyNear; ++i)
+        if (g_partyNear[i].vt == vt) return;
+    if (g_nPartyNear >= kPartyMaxNearTypes) return;
+    PartyNearType& N = g_partyNear[g_nPartyNear++];
+    memset(&N, 0, sizeof(N));
+    N.vt = vt;
+    N.sample = sample;
+    lstrcpynA(N.name, name, sizeof(N.name));
+}
+
+static bool PartyRuntimeProbeName(const char* name)
+{
+    if (!name || !name[0]) return false;
+    return strstr(name, "Stamina") != nullptr
+        || strstr(name, "Health") != nullptr
+        || !strcmp(name, "rStatusParam");
+}
+
+static int PartyRuntimeProbePriority(const char* name)
+{
+    if (!name) return 0;
+    if (!strcmp(name, "cPlStamina")) return 4;
+    if (strstr(name, "Health")) return 3;
+    if (name[0] == 'c' && strstr(name, "Stamina")) return 2;
+    if (!strcmp(name, "rStatusParam")) return 1;
+    return 0; // rPlStamina and other rule resources
+}
+
+static void PartyAddRuntimeProbe(uintptr_t obj, uintptr_t vt, const char* name)
+{
+    if (!obj || !vt || !PartyRuntimeProbeName(name)) return;
+    for (int i = 0; i < g_nPartyRuntime; ++i)
+        if (g_partyRuntime[i].ptr == obj) return;
+
+    int slot = g_nPartyRuntime;
+    if (slot >= kPartyMaxRuntimeProbes) {
+        int weakest = 0;
+        for (int i = 1; i < g_nPartyRuntime; ++i)
+            if (PartyRuntimeProbePriority(g_partyRuntime[i].name)
+                < PartyRuntimeProbePriority(g_partyRuntime[weakest].name))
+                weakest = i;
+        if (PartyRuntimeProbePriority(name)
+            <= PartyRuntimeProbePriority(g_partyRuntime[weakest].name)) return;
+        slot = weakest;
+    }
+
+    BYTE head[kPartyRuntimeProbeBytes];
+    if (!Rd((void*)obj, head, sizeof(head))) return;
+
+    PartyRuntimeProbe& R = g_partyRuntime[slot];
+    memset(&R, 0, sizeof(R));
+    R.ptr = obj;
+    R.vt = vt;
+    lstrcpynA(R.name, name, sizeof(R.name));
+    memcpy(R.head, head, sizeof(head));
+    R.headOk = true;
+    if (slot == g_nPartyRuntime) ++g_nPartyRuntime;
+}
+
+static PartyVtClass* PartyClassifyVt(uintptr_t vt, uintptr_t sample)
+{
+    if (!vt || !InImage(vt)) return nullptr;
+    uint32_t idx = (uint32_t)(((vt >> 4) ^ (vt >> 16)) & (kPartyVtCacheSize - 1));
+    for (int probe = 0; probe < kPartyVtCacheSize; ++probe) {
+        PartyVtClass& C = g_partyVtCache[(idx + probe) & (kPartyVtCacheSize - 1)];
+        if (C.vt == vt) return &C;
+        if (C.vt != 0) continue;
+
+        C.vt = vt;
+        C.kind = PVK_OTHER;
+        C.name[0] = 0;
+        ++g_partyVtChecked;
+
+        char name[40] = {};
+        if (NameOfLiveObject(sample, name, sizeof(name)) && name[0]) {
+            ++g_partyVtNamed;
+            lstrcpynA(C.name, name, sizeof(C.name));
+            if (!strcmp(name, "uPlayer") || !strcmp(name, "uCmc"))
+                C.kind = PVK_PARTY_BODY;
+            else if (!strcmp(name, "sPawnManager"))
+                C.kind = PVK_PAWN_MANAGER;
+            PartyRememberNearType(name, vt, sample);
+        }
+        return &C;
+    }
+    return nullptr;
+}
+
+static void PartyAddBodyCandidate(uintptr_t obj, uintptr_t wantVt, const char* dtiName)
+{
+    if (!obj || !dtiName || g_nParty >= kPartyMaxBodies) return;
+    uint32_t bodySize = 0;
+    if (!strcmp(dtiName, "uPlayer")) bodySize = kPartyBodySize;
+    else if (!strcmp(dtiName, "uCmc")) bodySize = kCmcBodySize;
+    else return;
+
+    for (int i = 0; i < g_nParty; ++i)
+        if (g_party[i].ptr == obj) return;
+
+    uintptr_t vt = 0;
+    if (!RdPtr((void*)obj, &vt) || vt != wantVt) return;
+    BYTE tail = 0;
+    if (!Rd((void*)(obj + bodySize - 1), &tail, 1)) return;
+
+    PartyBodyDump& P = g_party[g_nParty++];
+    memset(&P, 0, sizeof(P));
+    P.ptr = obj;
+    P.vt = vt;
+    P.bodySize = bodySize;
+    lstrcpynA(P.dti, dtiName, sizeof(P.dti));
+}
+
+static void PartyAddPawnManagerCandidate(uintptr_t obj, uintptr_t wantVt)
+{
+    if (!obj || g_nPartyPawnMgr >= 8) return;
+    for (int i = 0; i < g_nPartyPawnMgr; ++i)
+        if (g_partyPawnMgr[i] == obj) return;
+    uintptr_t vt = 0;
+    if (!RdPtr((void*)obj, &vt) || vt != wantVt) return;
+    BYTE tail = 0;
+    if (!Rd((void*)(obj + kPawnManagerSize - 1), &tail, 1)) return;
+    g_partyPawnMgr[g_nPartyPawnMgr++] = obj;
+}
+
+static void PartyFindBodies()
+{
+    g_nParty = 0;
+    g_partyRawCandidates = 0;
+    g_nPartyPawnMgr = 0;
+    g_partyVtChecked = 0;
+    g_partyVtNamed = 0;
+    g_nPartyNear = 0;
+    g_nPartyRuntime = 0;
+    memset(g_partyRuntime, 0, sizeof(g_partyRuntime));
+    memset(g_partyVtCache, 0, sizeof(g_partyVtCache));
+    if (!g_base) return;
+
+    DWORD t0 = MsNow();
+    uintptr_t addr = 0x00010000u;
+    MEMORY_BASIC_INFORMATION mbi;
+    memset(&mbi, 0, sizeof(mbi));
+    while (addr < 0x7FFF0000u) {
+        SIZE_T got = VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi));
+        if (!got) break;
+        uintptr_t start = (uintptr_t)mbi.BaseAddress;
+        uintptr_t end = start + mbi.RegionSize;
+        if (end <= addr) break;
+
+        DWORD prot = mbi.Protect & 0xFF;
+        bool readable = prot == PAGE_READONLY || prot == PAGE_READWRITE
+                     || prot == PAGE_WRITECOPY || prot == PAGE_EXECUTE_READ
+                     || prot == PAGE_EXECUTE_READWRITE;
+        bool scan = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE
+                 && readable && !(mbi.Protect & PAGE_GUARD);
+        if (scan) {
+            __try {
+                const uint32_t* p = (const uint32_t*)start;
+                uint32_t n = (uint32_t)((end - start) / 4);
+                for (uint32_t i = 0; i < n; ++i) {
+                    uintptr_t obj = start + (uintptr_t)i * 4;
+                    uintptr_t vt = p[i];
+                    if (!InImage(vt) || !LooksLikeVtable(vt)) continue;
+
+                    // No hardcoded instance-vtable. Classify each distinct
+                    // genuine vtable once by asking the live object for its DTI name.
+                    PartyVtClass* C = PartyClassifyVt(vt, obj);
+                    if (!C) continue;
+                    if (C->name[0]) PartyAddRuntimeProbe(obj, vt, C->name);
+                    if (C->kind == PVK_PARTY_BODY)
+                        PartyAddBodyCandidate(obj, vt, C->name);
+                    else if (C->kind == PVK_PAWN_MANAGER)
+                        PartyAddPawnManagerCandidate(obj, vt);
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+            }
+        }
+        addr = end;
+    }
+    g_partyRawCandidates = g_nParty;
+    g_partyFindMs = MsNow() - t0;
+}
+
+static void PartyInspectBody(PartyBodyDump& P)
+{
+    uintptr_t ptr = P.ptr;
+    uintptr_t vt = P.vt;
+    uint32_t bodySize = P.bodySize;
+    char dti[40];
+    lstrcpynA(dti, P.dti, sizeof(dti));
+    memset(&P, 0, sizeof(P));
+    P.ptr = ptr;
+    P.vt = vt;
+    P.bodySize = bodySize;
+    lstrcpynA(P.dti, dti, sizeof(P.dti));
+    P.bodyOk = P.bodySize > 0 && P.bodySize <= sizeof(P.body)
+            && Rd((void*)P.ptr, P.body, P.bodySize);
+    if (!P.bodyOk) return;
+
+    uintptr_t playerRecord = 0;
+    uintptr_t mainPawnRecord = 0;
+    if (pBase && *pBase) {
+        playerRecord = (uintptr_t)(*pBase + 0xA7000);
+        mainPawnRecord = playerRecord + 0x7F0;
+    }
+    P.playerRecordRef = PartyBlockHasPtr(P.body, P.bodySize, playerRecord);
+    P.mainPawnRecordRef = PartyBlockHasPtr(P.body, P.bodySize, mainPawnRecord);
+    PartyScanKnownValues(P, P.body, P.bodySize, P.dti, 0);
+
+    int bestActScore = -1;
+    for (uint32_t off = 0x100; off + 4 <= P.bodySize; off += 4) {
+        uintptr_t child = *(uint32_t*)(P.body + off);
+        if (!LooksHeap(child)) continue;
+        uintptr_t childVt = 0;
+        if (!RdPtr((void*)child, &childVt) || !LooksLikeVtable(childVt)) continue;
+
+        char name[48] = {};
+        if (!NameOfLiveObject(child, name, sizeof(name)) || !PartyRelevantName(name)) continue;
+        if (P.nChild >= kPartyMaxChildren) continue;
+
+        PartyChildDump& C = P.child[P.nChild++];
+        memset(&C, 0, sizeof(C));
+        C.off = off;
+        C.ptr = child;
+        C.vt = childVt;
+        lstrcpynA(C.name, name, sizeof(C.name));
+        C.headOk = Rd((void*)child, C.head, sizeof(C.head));
+        C.ownerRef = C.headOk && PartyBlockHasPtr(C.head, sizeof(C.head), P.ptr);
+
+        if (!strcmp(C.name, "uPawnIntel")) P.hasPawnIntel = true;
+        if (C.headOk) {
+            if (PartyBlockHasPtr(C.head, sizeof(C.head), playerRecord)) P.playerRecordRef = true;
+            if (PartyBlockHasPtr(C.head, sizeof(C.head), mainPawnRecord)) P.mainPawnRecordRef = true;
+            PartyScanKnownValues(P, C.head, sizeof(C.head), C.name, C.off);
+        }
+
+        // Player actions are cPlAct*. Pawn/controller actions are cCmc*.
+        // Both normally point back to the owning body. Prefer that evidence
+        // over parameter/check-table objects with a similar prefix.
+        bool plAct = PartyStartsWith(C.name, "cPlAct");
+        bool cmcAct = PartyStartsWith(C.name, "cCmc");
+        if ((plAct || cmcAct)
+            && !strstr(C.name, "Param") && !strstr(C.name, "CheckTbl")) {
+            int score = (plAct ? 20 : 10) + (C.ownerRef ? 100 : 0);
+            if (score > bestActScore) {
+                bestActScore = score;
+                P.actOff = C.off;
+                P.actPtr = C.ptr;
+                P.actOwnerRef = C.ownerRef;
+                lstrcpynA(P.actName, C.name, sizeof(P.actName));
+            }
+        }
+    }
+}
+
+static void PartyMarkPawnManagerRefs()
+{
+    for (int i = 0; i < g_nParty; ++i) g_party[i].pawnManagerRef = false;
+    for (int m = 0; m < g_nPartyPawnMgr; ++m) {
+        static BYTE mgr[kPawnManagerSize];
+        if (!Rd((void*)g_partyPawnMgr[m], mgr, sizeof(mgr))) continue;
+        for (int i = 0; i < g_nParty; ++i)
+            if (PartyBlockHasPtr(mgr, sizeof(mgr), g_party[i].ptr))
+                g_party[i].pawnManagerRef = true;
+    }
+}
+
+static int PartyCountValueHits(const PartyBodyDump& P, const char* prefix)
+{
+    int n = 0;
+    size_t len = prefix ? strlen(prefix) : 0;
+    if (!len) return 0;
+    for (int i = 0; i < P.nValueHit; ++i)
+        if (!strncmp(P.valueHit[i].label, prefix, len)) ++n;
+    return n;
+}
+
+static void PartySelectWorkingPair()
+{
+    if (g_nParty <= 2) return;
+
+    int arisen = -1, pawn = -1;
+    int bestArisen = 0, bestPawn = 0;
+    for (int i = 0; i < g_nParty; ++i) {
+        PartyBodyDump& P = g_party[i];
+        bool pawnEvidence = P.mainPawnRecordRef || P.pawnManagerRef || P.hasPawnIntel;
+
+        int a = !strcmp(P.dti, "uPlayer") ? 500 : 0;
+        if (P.playerRecordRef) a += 2000;
+        a += PartyCountValueHits(P, "player_") * 20;
+        if (pawnEvidence) a -= 1000;
+        if (a > bestArisen) { bestArisen = a; arisen = i; }
+
+        int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
+        if (P.mainPawnRecordRef) p += 2000;
+        if (P.pawnManagerRef) p += 2000;
+        if (P.hasPawnIntel) p += 2000;
+        p += PartyCountValueHits(P, "pawn_") * 20;
+        if (p > bestPawn) { bestPawn = p; pawn = i; }
+    }
+
+    // A body cannot fill both roles. If that happened, keep the stronger role
+    // and look for the next-best distinct candidate.
+    if (arisen >= 0 && pawn == arisen) {
+        pawn = -1; bestPawn = 0;
+        for (int i = 0; i < g_nParty; ++i) {
+            if (i == arisen) continue;
+            PartyBodyDump& P = g_party[i];
+            int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
+            if (P.mainPawnRecordRef) p += 2000;
+            if (P.pawnManagerRef) p += 2000;
+            if (P.hasPawnIntel) p += 2000;
+            p += PartyCountValueHits(P, "pawn_") * 20;
+            if (p > bestPawn) { bestPawn = p; pawn = i; }
+        }
+    }
+
+    int keep = 0;
+    if (arisen >= 0) g_partyChosen[keep++] = g_party[arisen];
+    if (pawn >= 0 && pawn != arisen && keep < 2) g_partyChosen[keep++] = g_party[pawn];
+    if (!keep) return;
+    for (int i = 0; i < keep; ++i) g_party[i] = g_partyChosen[i];
+    g_nParty = keep;
+}
+
+static void PartyAssignRoles()
+{
+    int pawn = -1, arisen = -1;
+    for (int i = 0; i < g_nParty; ++i) {
+        bool cmcBody = !strcmp(g_party[i].dti, "uCmc");
+        bool playerBody = !strcmp(g_party[i].dti, "uPlayer");
+        bool pawnEvidence = cmcBody
+                         || g_party[i].mainPawnRecordRef
+                         || g_party[i].pawnManagerRef
+                         || g_party[i].hasPawnIntel;
+        if (pawnEvidence && pawn < 0) pawn = i;
+        if ((playerBody || g_party[i].playerRecordRef) && !pawnEvidence && arisen < 0)
+            arisen = i;
+    }
+    if (g_nParty == 2) {
+        if (pawn >= 0 && arisen < 0) arisen = 1 - pawn;
+        if (arisen >= 0 && pawn < 0) pawn = 1 - arisen;
+    }
+    for (int i = 0; i < g_nParty; ++i) {
+        if (i == arisen) lstrcpynA(g_party[i].role, "Arisen", sizeof(g_party[i].role));
+        else if (i == pawn) lstrcpynA(g_party[i].role, "Main Pawn", sizeof(g_party[i].role));
+        else sprintf_s(g_party[i].role, sizeof(g_party[i].role), "Candidate %c", 'A' + i);
+    }
+}
+
+static bool PartyCandidatesStillValid()
+{
+    if (g_nParty <= 0) return false;
+    for (int i = 0; i < g_nParty; ++i) {
+        uintptr_t vt = 0;
+        if (!RdPtr((void*)g_party[i].ptr, &vt) || vt != g_party[i].vt) return false;
+        char name[40] = {};
+        if (!NameOfLiveObject(g_party[i].ptr, name, sizeof(name))
+            || strcmp(name, g_party[i].dti))
+            return false;
+    }
+    return true;
+}
+
+static void PartyWriteJson()
+{
+    char fileName[64];
+    sprintf_s(fileName, sizeof(fileName), "ddda_party_recon_%03d.json", g_partySeq);
+    const char* path = ModPaths::File(fileName, 4);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "w") != 0 || !f) {
+        sprintf_s(g_partyStatus, sizeof(g_partyStatus), "cannot write %s", fileName);
+        return;
+    }
+
+    uintptr_t playerRecord = (pBase && *pBase) ? (uintptr_t)(*pBase + 0xA7000) : 0;
+    uintptr_t mainPawnRecord = playerRecord ? playerRecord + 0x7F0 : 0;
+    fprintf(f,
+        "{\n  \"build\":\"%s\",\n  \"seq\":%d,\n  \"moduleBase\":\"0x%08X\",\n"
+        "  \"bodySize\":%u,\n  \"findMs\":%u,\n  \"playerRecord\":\"0x%08X\",\n"
+        "  \"mainPawnRecord\":\"0x%08X\",\n  \"pawnManagers\":%d,\n"
+        "  \"testStats\":{\"player\":{\"hpCurrent\":331,\"hpMax\":498,\"stamina\":600},"
+        "\"mainPawn\":{\"hpCurrent\":327,\"hpMax\":505,\"stamina\":595}},\n"
+        "  \"discovery\":{\"vtChecked\":%d,\"vtNamed\":%d,\"rawCandidates\":%d},\n"
+        "  \"nearTypes\":[",
+        MOD_BUILD_TAG, g_partySeq, (unsigned)g_base, kPartyBodySize, g_partyFindMs,
+        (unsigned)playerRecord, (unsigned)mainPawnRecord, g_nPartyPawnMgr,
+        g_partyVtChecked, g_partyVtNamed, g_partyRawCandidates);
+    for (int i = 0; i < g_nPartyNear; ++i)
+        fprintf(f, "%s{\"name\":\"%s\",\"vt\":\"0x%08X\",\"sample\":\"0x%08X\"}",
+            i ? "," : "", g_partyNear[i].name,
+            (unsigned)g_partyNear[i].vt, (unsigned)g_partyNear[i].sample);
+    fputs("],\n  \"runtimeProbes\":[", f);
+    for (int i = 0; i < g_nPartyRuntime; ++i) {
+        PartyRuntimeProbe& R = g_partyRuntime[i];
+        fprintf(f, "%s{\"name\":\"%s\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\",\"headHex\":\"",
+            i ? "," : "", R.name, (unsigned)R.ptr, (unsigned)R.vt);
+        BYTE now[kPartyRuntimeProbeBytes] = {};
+        bool ok = Rd((void*)R.ptr, now, sizeof(now));
+        if (ok)
+            for (int b = 0; b < kPartyRuntimeProbeBytes; ++b) fprintf(f, "%02X", now[b]);
+        fputs("\"}", f);
+    }
+    fputs("],\n  \"bodies\":[\n", f);
+
+    for (int i = 0; i < g_nParty; ++i) {
+        PartyBodyDump& P = g_party[i];
+        fprintf(f,
+            "    %s{\"role\":\"%s\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\","
+            "\"dti\":\"%s\",\"bodySize\":%u,\"playerRecordRef\":%s,\"mainPawnRecordRef\":%s,"
+            "\"pawnManagerRef\":%s,\"hasPawnIntel\":%s,"
+            "\"action\":{\"off\":\"0x%04X\",\"ptr\":\"0x%08X\",\"name\":\"%s\",\"ownerRef\":%s},"
+            "\"bodyHex\":\"",
+            i ? "," : " ", P.role, (unsigned)P.ptr, (unsigned)P.vt, P.dti, P.bodySize,
+            P.playerRecordRef ? "true" : "false",
+            P.mainPawnRecordRef ? "true" : "false",
+            P.pawnManagerRef ? "true" : "false",
+            P.hasPawnIntel ? "true" : "false",
+            P.actOff, (unsigned)P.actPtr, P.actName,
+            P.actOwnerRef ? "true" : "false");
+        if (P.bodyOk)
+            for (uint32_t b = 0; b < P.bodySize; ++b) fprintf(f, "%02X", P.body[b]);
+        fputs("\",\"children\":[", f);
+        for (int c = 0; c < P.nChild; ++c) {
+            PartyChildDump& C = P.child[c];
+            fprintf(f,
+                "%s{\"off\":\"0x%04X\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\","
+                "\"name\":\"%s\",\"ownerRef\":%s,\"headHex\":\"",
+                c ? "," : "", C.off, (unsigned)C.ptr, (unsigned)C.vt,
+                C.name, C.ownerRef ? "true" : "false");
+            if (C.headOk)
+                for (int b = 0; b < kPartyChildHeadSize; ++b) fprintf(f, "%02X", C.head[b]);
+            fputs("\"}", f);
+        }
+        fputs("],\"knownValueHits\":[", f);
+        for (int h = 0; h < P.nValueHit; ++h) {
+            PartyValueHit& H = P.valueHit[h];
+            fprintf(f,
+                "%s{\"containerOff\":\"0x%04X\",\"container\":\"%s\","
+                "\"valueOff\":\"0x%04X\",\"label\":\"%s\",\"encoding\":\"%s\"}",
+                h ? "," : "", H.containerOff, H.container,
+                H.valueOff, H.label, H.encoding);
+        }
+        fputs("]}\n", f);
+    }
+    fputs("  ]\n}\n", f);
+    fclose(f);
+
+    lstrcpynA(g_partyLastFile, path, sizeof(g_partyLastFile));
+    sprintf_s(g_partyStatus, sizeof(g_partyStatus),
+        "snapshot %03d: %d party bodies, %u ms find", g_partySeq, g_nParty, g_partyFindMs);
+}
+
+static PartyBodyDump* PartyRoleBody(const char* role)
+{
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].role, role)) return &g_party[i];
+    return nullptr;
+}
+
+static void PartyTraceStop()
+{
+    if (!g_partyTrace) return;
+    fputs("# stopped\n", g_partyTrace);
+    fclose(g_partyTrace);
+    g_partyTrace = nullptr;
+    sprintf_s(g_partyStatus, sizeof(g_partyStatus),
+        "live trace stopped: ddda_party_live_%03d.csv", g_partyTraceSeq);
+    logFile << "PartyRecon: live trace stopped file=" << g_partyTraceFile << std::endl;
+}
+
+static void PartyTraceStart()
+{
+    PartyTraceStop();
+    if (!PartyCandidatesStillValid()
+        || !PartyRoleBody("Arisen") || !PartyRoleBody("Main Pawn")) {
+        lstrcpynA(g_partyStatus, "find both bodies before live trace", sizeof(g_partyStatus));
+        return;
+    }
+
+    ++g_partyTraceSeq;
+    char fileName[64];
+    sprintf_s(fileName, sizeof(fileName), "ddda_party_live_%03d.csv", g_partyTraceSeq);
+    const char* path = ModPaths::File(fileName, 5);
+    lstrcpynA(g_partyTraceFile, path ? path : fileName, sizeof(g_partyTraceFile));
+    if (fopen_s(&g_partyTrace, g_partyTraceFile, "w") != 0 || !g_partyTrace) {
+        sprintf_s(g_partyStatus, sizeof(g_partyStatus), "cannot write %s", fileName);
+        return;
+    }
+
+    fprintf(g_partyTrace, "# build,%s\n", MOD_BUILD_TAG);
+    fprintf(g_partyTrace, "# pBase windows,player/pawn record +0x960 through +0x9DC (raw dwords)\n");
+    for (int i = 0; i < g_nPartyRuntime; ++i)
+        fprintf(g_partyTrace, "# runtimeProbe,%d,%s,0x%08X,0x%08X\n",
+            i, g_partyRuntime[i].name,
+            (unsigned)g_partyRuntime[i].ptr, (unsigned)g_partyRuntime[i].vt);
+
+    fputs("ms,arisenAction,arisenActionPtr,arisen_2DD4,arisen_4AE8,arisen_32D8,arisen_1C94,arisen_4B14,"
+          "pawnAction,pawnActionPtr,pawn_2DD4,pawn_4AE8,pawn_32D8,pawn_1C94,pawn_4B14", g_partyTrace);
+    for (int r = 0; r < 32; ++r) fprintf(g_partyTrace, ",playerRec_%03X", 0x960 + r * 4);
+    for (int r = 0; r < 32; ++r) fprintf(g_partyTrace, ",pawnRec_%03X", 0x960 + r * 4);
+    for (int p = 0; p < g_nPartyRuntime; ++p)
+        for (int r = 0; r < kPartyRuntimeProbeBytes / 4; ++r)
+            fprintf(g_partyTrace, ",probe%d_%02X", p, r * 4);
+    fputc('\n', g_partyTrace);
+    fflush(g_partyTrace);
+
+    g_partyTraceStartMs = MsNow();
+    sprintf_s(g_partyStatus, sizeof(g_partyStatus),
+        "LIVE TRACE running: %s ('-' stops)", fileName);
+    logFile << "PartyRecon: live trace started file=" << g_partyTraceFile
+            << " runtimeProbes=" << g_nPartyRuntime << std::endl;
+}
+
+static void PartyTraceBody(FILE* f, PartyBodyDump* P)
+{
+    static const uint32_t offs[] = { 0x2DD4, 0x4AE8, 0x32D8, 0x1C94, 0x4B14 };
+    char actName[48] = "?";
+    uintptr_t act = 0;
+    if (P && RdPtr((void*)(P->ptr + 0x2DC8), &act) && act)
+        NameOfLiveObject(act, actName, sizeof(actName));
+    fprintf(f, ",%s,0x%08X", actName[0] ? actName : "?", (unsigned)act);
+    for (int i = 0; i < (int)(sizeof(offs) / sizeof(offs[0])); ++i) {
+        uint32_t v = 0xFFFFFFFFu;
+        if (P) Rd((void*)(P->ptr + offs[i]), &v, 4);
+        fprintf(f, ",%u", v);
+    }
+}
+
+static void PartyTraceRecord(FILE* f, uintptr_t record)
+{
+    uint32_t raw[32];
+    memset(raw, 0xFF, sizeof(raw));
+    if (record) Rd((void*)(record + 0x960), raw, sizeof(raw));
+    for (int i = 0; i < 32; ++i) fprintf(f, ",0x%08X", raw[i]);
+}
+
+static void PartyTraceTick()
+{
+    if (!g_partyTrace) return;
+    static DWORD last = 0;
+    DWORD now = MsNow();
+    if (last && now - last < 100) return;
+    last = now;
+
+    PartyBodyDump* arisen = PartyRoleBody("Arisen");
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    fprintf(g_partyTrace, "%u", now - g_partyTraceStartMs);
+    PartyTraceBody(g_partyTrace, arisen);
+    PartyTraceBody(g_partyTrace, pawn);
+
+    uintptr_t playerRecord = (pBase && *pBase) ? (uintptr_t)(*pBase + 0xA7000) : 0;
+    PartyTraceRecord(g_partyTrace, playerRecord);
+    PartyTraceRecord(g_partyTrace, playerRecord ? playerRecord + 0x7F0 : 0);
+
+    for (int p = 0; p < g_nPartyRuntime; ++p) {
+        uint32_t raw[kPartyRuntimeProbeBytes / 4];
+        memset(raw, 0xFF, sizeof(raw));
+        Rd((void*)g_partyRuntime[p].ptr, raw, sizeof(raw));
+        for (int r = 0; r < kPartyRuntimeProbeBytes / 4; ++r)
+            fprintf(g_partyTrace, ",0x%08X", raw[r]);
+    }
+    fputc('\n', g_partyTrace);
+    fflush(g_partyTrace);
+}
+
+static void PartyTraceHotkeyTick()
+{
+    static bool wasDown = false;
+    // Physical '-' key beside Backspace (layout-independent OEM key).
+    bool down = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+    if (down && !wasDown) {
+        if (g_partyTrace) PartyTraceStop();
+        else PartyTraceStart();
+    }
+    wasDown = down;
+}
+
+static void PartyCapture(bool forceFind)
+{
+    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
+    if (!InWorld()) {
+        lstrcpynA(g_partyStatus, "load a save first", sizeof(g_partyStatus));
+        InterlockedExchange(&g_partyBusy, 0);
+        return;
+    }
+
+    if (forceFind || !PartyCandidatesStillValid()) PartyFindBodies();
+    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
+    PartyMarkPawnManagerRefs();
+    PartySelectWorkingPair();
+    PartyAssignRoles();
+
+    ++g_partySeq;
+    PartyWriteJson();
+
+    if (g_nParty <= 0) {
+        sprintf_s(g_partyStatus, sizeof(g_partyStatus),
+            "no uPlayer/uCmc yet; discovery %03d saved (%d/%d named vtables)",
+            g_partySeq, g_partyVtNamed, g_partyVtChecked);
+        logFile << "PartyRecon: dynamic DTI scan found no uPlayer/uCmc body"
+                << " vtChecked=" << g_partyVtChecked
+                << " vtNamed=" << g_partyVtNamed
+                << " nearTypes=" << g_nPartyNear
+                << " file=" << g_partyLastFile << std::endl;
+        for (int i = 0; i < g_nPartyNear; ++i)
+            logFile << "  near " << g_partyNear[i].name << " vt=0x" << std::hex
+                    << g_partyNear[i].vt << " sample=0x" << g_partyNear[i].sample
+                    << std::dec << std::endl;
+        InterlockedExchange(&g_partyBusy, 0);
+        return;
+    }
+
+    logFile << "PartyRecon: snapshot " << g_partySeq << " bodies=" << g_nParty
+            << " rawCandidates=" << g_partyRawCandidates
+            << " vtChecked=" << g_partyVtChecked << " vtNamed=" << g_partyVtNamed
+            << " file=" << g_partyLastFile << std::endl;
+    for (int i = 0; i < g_nParty; ++i) {
+        logFile << "  " << g_party[i].role << " body=0x" << std::hex << g_party[i].ptr
+                << " act@+0x" << g_party[i].actOff << " -> " << g_party[i].actName
+                << std::dec << " children=" << g_party[i].nChild
+                << " knownValueHits=" << g_party[i].nValueHit
+                << " pawnIntel=" << (g_party[i].hasPawnIntel ? 1 : 0)
+                << " pawnMgr=" << (g_party[i].pawnManagerRef ? 1 : 0) << std::endl;
+    }
+    if (forceFind && g_nParty >= 2) PartyTraceStart();
+    InterlockedExchange(&g_partyBusy, 0);
+}
+
+static void PartyHotkeyTick()
+{
+    PartyTraceHotkeyTick();
+    PartyTraceTick();
+
+    static bool wasDown = false;
+    // Physical '=' key beside Backspace (VK_OEM_PLUS without Shift).
+    bool down = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
+    if (down && !wasDown) PartyCapture(false);
+    wasDown = down;
+}
+
 static void ScanActSlot(ActorDump& A)
 {
     A.actOff = 0; A.actPtr = 0; A.actVtRva = 0;
@@ -2823,6 +3665,12 @@ void DevTools::WorldScan_Tick()
     // Do not invent a distance despawn.
     if (!g_enabled) return;
     if (!InWorld()) return;
+
+    // Temporary player/pawn probe: '=' takes a read-only snapshot. This is
+    // intentionally checked before the WorldScan throttle so a deliberate
+    // key press is not lost while the Arisen or pawn is sprinting.
+    PartyHotkeyTick();
+
     static DWORD last = 0;
     DWORD now = MsNow();
     if (last && now - last < 150) return;
@@ -3711,6 +4559,41 @@ static void RenderDevToolsUI()
     ImGui::TextWrapped(
         "Factory slots = dead TSV column, always empty. "
         "DUMP is safe anatomy. HUNT (in-world only) derives instance vts and censuses the heap.");
+
+    ImGui::Spacing();
+
+    // ================= Player + Main Pawn recon (temporary) ===============
+    // Only the two controlled subjects are shown here. Detailed bytes go to
+    // JSON for offline analysis; the tester sees only body + current action.
+    if (ImGui::CollapsingHeader("Player + Main Pawn recon", "partyrecon", true, true)) {
+        ImGui::TextWrapped(
+            "Read-only. Find starts a lightweight live CSV automatically. Close F12, do the "
+            "short movement/HP/stamina test, then press '-' to stop. '=' snapshots remain optional.");
+        if (ImGui::Button("Find both + start live trace", ImVec2(300, 28)))
+            PartyCapture(true);
+        ImGui::SameLine();
+        ImGui::TextDisabled("- trace on/off | = snapshot");
+
+        ImVec4 pcol = g_nParty >= 2
+            ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f)
+            : ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
+        ImGui::TextColored(pcol, "%s", g_partyStatus);
+        for (int i = 0; i < g_nParty; ++i) {
+            PartyBodyDump& P = g_party[i];
+            ImGui::Text("%-11s  %-7s  body 0x%08X", P.role, P.dti, (unsigned)P.ptr);
+            ImGui::SameLine();
+            if (P.actName[0])
+                ImGui::TextColored(ImVec4(0.55f, 0.95f, 0.55f, 1.0f),
+                    "%s  @+0x%04X", P.actName, P.actOff);
+            else
+                ImGui::TextDisabled("action not found yet");
+        }
+        if (g_partyLastFile[0])
+            ImGui::TextDisabled("snapshot: ddda_party_recon_%03d.json", g_partySeq);
+        if (g_partyTraceFile[0])
+            ImGui::TextDisabled("live CSV: ddda_party_live_%03d.csv | runtime probes: %d",
+                g_partyTraceSeq, g_nPartyRuntime);
+    }
 
     ImGui::Spacing();
 

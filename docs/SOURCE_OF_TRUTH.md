@@ -117,12 +117,13 @@ end
 
 **Источник:** `docs/TYPE_ATLAS.md` (4405 фабрик MT Framework из TSV), верифицировано HUNT 9, 12, 14, 19, 24.
 
-| Тип | Factory vt RVA | Instance vt RVA | DTI address | Где используется | Источник |
+| Тип | Factory vt RVA | Instance vt VA (наблюдение) | DTI address | Где используется | Источник |
 |---|---|---|---|---|---|
 | `uEm0100` (goblin) | `0x11A0474` | **`0x015852A8`** | `0x01977BA0` | `BestiaryData.h`, `DevTools::WatchAdd` | HUNT 9, 14, 18, 23, 24 |
 | `uEm0900` (gargoyle) | `0x11B59A8` | **`0x015B5A80`** | `0x0197B348` | `DevTools::WatchAdd` | HUNT 22, 23, 25 |
 | `uNpc` | (TSV) | **`0x015D2618`** | `0x01984DE4` | `DevTools::WatchAdd`, `BestiaryData` | HUNT 19 |
-| `uPlayer` | `0x11E4F34` | **`0x015EFD38`** | `0x019846E8` | `CombatIntel::IsPartyMember` | HUNT 23, Cielos |
+| `uPlayer` (Воскресший) | `0x11E4F34` | **`0x015C9D70`** | `0x019846E8` | PartyRecon, `CombatIntel::IsPartyMember` | build 37, DTI + Run/Dash/Wait |
+| `uCmc` (главная пешка) | `0x11E42CC` | **`0x015C9108`** | — | PartyRecon | build 37, DTI + три снимка |
 | `uPlayerBase` | `0x11CEF40` | (shared stub) | — | `CombatIntel::IsPartyMember` | Cielos |
 | `uHumanEnemy` | `0x11EB494` | — | — | `BestiaryData`, `CombatIntel` | Cielos |
 | `uEm8000` (лагерные «зайцы») | `0x11D6410` | **`0x015BB278`** | `0x01981868` | `DevTools`, kind classification | HUNT 19, 28 |
@@ -132,11 +133,28 @@ end
 | `sPawnManager` | `0x115ADB4` | `0x0155ADA4` | — | (диагностика) | HUNT 13 |
 | `sEnemyManager` | `0x1157B54` | — | — | `TypeAtlas` | Cielos |
 
+**Поправка 2026-08-15 по `uPlayer`:** старое `0x015EFD38` отвергнуто как резолвер. Build 37 через динамическое DTI подтвердил текущие живые классы: ГГ = `uPlayer` с vt `0x015C9D70`, главная пешка = `uCmc` с vt `0x015C9108`. В коде всё равно следует резолвить по DTI/менеджеру, а не полагаться на абсолютную vtable.
+
+### Живой action/FSM layout игрока и главной пешки
+
+**Источник:** build 37, три снимка одного запуска (`Run`, `Dash`, `Wait`). Полная расшифровка: `docs/PLAYER_PAWN_IN_MEMORY.md`.
+
+| Оффсет от live body | Тип | Поле | Проверка |
+|---:|---|---|---|
+| `+0x2DC0` | ptr | `cActionManager::cActBank` | DTI на `uPlayer` и `uCmc` |
+| `+0x2DC8` | ptr | текущий `cPlAct*` | ГГ: Wait/Run/Dash; пешка: Run |
+| `+0x2DE8` | ptr | дубликат указателя current Act | совпал во всех трёх снимках |
+| `+0x2E64` | ptr | `cAICtrl` | DTI; у пешки обратная ссылка на body |
+
+Текущий Act — стабильный буфер (placement new): адрес не меняется, меняется vtable. У ГГ наблюдались `cPlActWait` (`0x015C128C`), `cPlActRun` (`0x015C131C`), `cPlActDash` (`0x015C1364`).
+
 **Ловушка:** `gid 0x61` в каталоге = Dragon, но **у гоблинов в лагере стоят `uEm8000` с тем же `+0x2D=0x61`**. Это **зайцы в чужой шкуре**, не Григори. Не маппить `0x61` → Hare в `BestiaryData.h` — сломаем настоящего дракона. Используется как **kind classification** в `DevTools::KindIsEnemy` — отделять от `uEm8600`/`uEm8000` через DTI-имя (`NameOfLiveObjectSafe`).
 
-### uPawn (главная пешка, те же поля что и uEm*)
+### Запись пешки в `pBase` (не live `uCmc`)
 
-| Оффсет от pawn body | Тип | Поле | Источник |
+Ниже оффсеты от персонажной записи `*pBase + 0xA7000 + 0x7F0`. Это не смещения живого сценического тела главной пешки.
+
+| Оффсет от pawn record | Тип | Поле | Источник |
 |---|---|---|---|
 | `+0x6E0` | int32 | Vocation | CE script |
 | `+0x868` | 24 B | Equipped Skills | CE script |
