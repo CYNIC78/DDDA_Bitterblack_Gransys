@@ -61,6 +61,14 @@ struct WorldPresence {
 struct WorldReport {
     int      count;
     int      goblinCount;
+    // Все враги, а не только гоблины: uEm* плюс uHumanEnemy (бандиты,
+    // солдаты). goblinCount оставлен для отладки конкретного вида.
+    int      enemyCount;
+    // Трупы (ActDie/ActDeadBody). В units[] и count НЕ входят.
+    int      deadCount;
+    // Безобидная живность (uEm8000, зайцы): существа, но не угроза.
+    // Считаются отдельно, чтобы не завышать опасность на пустом месте.
+    int      critterCount;
     int      dominantCategory; // -1 none. Only uEm0100/uEm0101 publish a category (0=small).
     uint32_t timestampMs;
     WorldPresence units[32];

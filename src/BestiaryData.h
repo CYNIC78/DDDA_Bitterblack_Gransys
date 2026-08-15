@@ -129,6 +129,22 @@ inline const EnemyEntry* FindEnemyByMSIdx(int mIdx) {
 }
 
 // Поиск врага по vtableRVA
+// Поиск по имени класса ("uEm0100"), полученному через DTI.
+//
+// ЗАЧЕМ. FindEnemyByVTable сравнивает ФАБРИЧНЫЕ vtable из types.tsv,
+// а живой объект несёт instance-vtable. Совпадений не бывает — та же
+// мина, что убила ActMap::FindByVt. Имя класса же читается у самой игры
+// и всегда точное, поэтому это единственный надёжный мост
+// «живой объект -> запись бестиария».
+inline const EnemyEntry* FindEnemyByUEmName(const char* uEm) {
+    if (!uEm || !uEm[0]) return nullptr;
+    for (const EnemyEntry* e = g_bestiary;
+         e < g_bestiary + sizeof(g_bestiary) / sizeof(g_bestiary[0]); ++e) {
+        if (e->uEmName && strcmp(e->uEmName, uEm) == 0) return e;
+    }
+    return nullptr;
+}
+
 inline const EnemyEntry* FindEnemyByVTable(uint32_t vtRVA) {
     if (vtRVA == 0) return nullptr;
     for (auto* e = g_bestiary; e->name; e++)

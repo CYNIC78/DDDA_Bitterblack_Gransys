@@ -68,6 +68,9 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
       <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)ImGui;$(ProjectDir)MinHook;$(ProjectDir)src;$(DXSDK_DIR)Include;C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- /utf-8: в исходниках есть кириллица в строковых литералах. Без флага
+           MSVC читает их в системной кодировке и в игру уезжает мусор. -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -93,6 +96,8 @@ echo Copy it manually to your game folder to test.</Command>
       <PreprocessorDefinitions>WIN32;NDEBUG;_WINDOWS;_USRDLL;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <AdditionalIncludeDirectories>C:\Program Files (x86)\Microsoft DirectX SDK (June 2010)\Include;$(ProjectDir);$(ProjectDir)ImGui;$(ProjectDir)MinHook;$(ProjectDir)src;$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <!-- /utf-8: см. комментарий в Debug-конфигурации -->
+      <AdditionalOptions>/utf-8 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -120,6 +125,8 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
   <ItemGroup>
     <!-- Наши модули -->
     <ClCompile Include="src\dinput8.cpp" />
+    <ClCompile Include="src\EntityConfig.cpp" />
+    <ClCompile Include="src\EnemyTuner.cpp" />
     <ClCompile Include="src\PawnAI.cpp" />
     <ClCompile Include="src\pawnai\TacticalSwitch.cpp" />
     <ClCompile Include="src\pawnai\SmartUtilitarian.cpp" />
@@ -172,6 +179,10 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\TypeAtlas.Generated.h" />
     <ClInclude Include="src\ActMap.Generated.h" />
+    <ClInclude Include="src\EntityConfig.h" />
+    <ClInclude Include="src\EnemyTuner.h" />
+    <ClInclude Include="src\DefaultEntitiesIni.h" />
+    <ClInclude Include="src\ModPaths.h" />
     <!-- dinput8 -->
     <ClInclude Include="dinput8.h" />
     <ClInclude Include="d3d9.h" />

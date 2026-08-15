@@ -3,6 +3,8 @@
  * Modules: Sanitary Cordon, Smart Utilitarian, Custom Anchors, Tactical Switch
  */
 #include "stdafx.h"
+#include "EntityConfig.h"
+#include "EnemyTuner.h"
 #include "PawnAI.h"
 #include "CombatIntel.h"
 #include "CombatBus.h"
@@ -21,6 +23,8 @@ void UpdatePawnAI(){
     if(!g_enabled || !pBase || !*pBase) return;
     CombatIntel_Tick(); // hit path — stomps LastReport
     DevTools::WorldScan_Tick(); // presence — LastWorld, not stomped
+    EntityCfg::Tick();          // hot-reload ddda_entities.ini (mtime, раз в 500 мс)
+    EnemyTuner::Tick();         // применение конфига к врагам (пока учёт+разведка)
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
     g_orch.Tick(incl);
     WriteAllIncl(incl, 0);
@@ -187,8 +191,13 @@ void RenderPawnAIUI(){
         ? (GetTickCount() - world.timestampMs) : 0;
     ImVec4 wcol = (world.count > 0 && age < 500)
         ? ImVec4(0.3f, 1, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1);
-    ImGui::TextColored(wcol, "World: %d units  %d goblins  cat %d  %u ms",
-        world.count, world.goblinCount, world.dominantCategory, age);
+    // enemies = все живые враги (uEm* + uHumanEnemy). goblins оставлен
+    // как отладочный счётчик конкретного вида: раньше он стоял на месте
+    // общего и давал "0" в бою с бандитами.
+    ImGui::TextColored(wcol, "World: %d units  %d enemies  %d critters  %d dead  %u ms",
+        world.count, world.enemyCount, world.critterCount, world.deadCount, age);
+    ImGui::TextDisabled("   goblins: %d   cat %d   (critters = hares etc, not a threat)",
+        world.goblinCount, world.dominantCategory);
     ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Sanitary, SmartUtil, Anchors, Tactical",
         INCL_STRIDE, MSTUDYFLAG_OFFSET);
     ImGui::PopID();

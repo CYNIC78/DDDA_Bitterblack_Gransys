@@ -14,6 +14,9 @@
 #include "CameraPlus.h"
 #include "TargetLock.h"
 #include "devtools/DevTools.h"
+#include "EntityConfig.h"
+#include "ModPaths.h"
+#include "BuildTag.h"
 
 typedef HRESULT(WINAPI *tDirectInput8Create)(HINSTANCE, DWORD, const IID&, LPVOID*, LPUNKNOWN);
 tDirectInput8Create oDirectInput8Create = nullptr;
@@ -68,10 +71,18 @@ void Initialize()
     dataBase = (BYTE*)(base + ioh->BaseOfData);
     dataEnd = dataBase + ioh->SizeOfInitializedData;
 
-    logFile << "DDDA AI Overhaul - Initializing..." << std::endl;
+    // Версия сборки в первой же строке лога.
+    // Одна итерация была потеряна на том, что тестировалась старая DLL,
+    // а понять это удалось только по формату строк. Больше не повторяем:
+    // BUILD_TAG правится при каждой сборке, __DATE__/__TIME__ — автоматом.
+    logFile << "DDDA AI Overhaul - Initializing...  build " << MOD_BUILD_TAG
+            << "  (compiled " << __DATE__ << " " << __TIME__ << ")" << std::endl;
     logFile << "MH_Initialize: " << MH_StatusToString(MH_Initialize()) << std::endl;
 
     InitHooks();
+
+    // Конфиг сущностей: своя папка, hot-reload по mtime.
+    EntityCfg::Load();
 
     // Загружаем настоящий dinput8.dll
     string loadLibrary = config.getStr("main", "loadLibrary");

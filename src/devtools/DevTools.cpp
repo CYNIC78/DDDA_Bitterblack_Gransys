@@ -85,6 +85,8 @@
  *     CollectInside(128) call it replaced. Do NOT re-add either subsystem.
  */
 #include "stdafx.h"
+#include "BuildTag.h"
+#include "EnemyTuner.h"
 #include "TypeAtlas.Generated.h"
 #include "EnemyTypes.Generated.h"
 #include "ActMap.Generated.h"
@@ -722,6 +724,15 @@ struct ActorDump {
     uint32_t    rawPtr[40];   // Zip 35: object address — embedded vs heap
     char        rawName[40][40];   // Zip 34: real class name read from DTI
     int         nRaw;
+    // Билд 29 — живое состояние через DTI, а НЕ через ActMap.
+    // ActMap.Generated.h хранит factory vtable: сравнение с живым объектом
+    // даёт 0 совпадений (проверено, docs/ACTSCAN_RESULT_01.md). Поэтому имя
+    // состояния спрашиваем у самой игры: obj -> vtable -> GetDTI -> DTI+4.
+    char        liveAct[48];  // "cEm0100ActDie", "cEm0100ActWait", ...
+    bool        isDead;       // состояние смерти: ActDie / ActDeadBody
+    // Имя вида, прочитанное через DTI. kind указывает либо сюда, либо на
+    // строковую константу для заранее известных vtable.
+    char        kindBuf[40];
 };
 static ActorDump g_act[32];
 static int       g_nAct = 0;
@@ -2183,6 +2194,41 @@ static void DumpGoldCtors()
     }
 }
 
+// Существо, которым мы вправе управлять (мутации размера и т.п.).
+//
+// Сюда входят и мирные животные: заяц — тоже uEm*, и масштабировать его
+// можно. Это НЕ значит, что он враг.
+static bool KindIsCreature(const char* kind)
+{
+    if (!kind) return false;
+    if (kind[0] == 'u' && kind[1] == 'E' && kind[2] == 'm') return true;
+    return strcmp(kind, "uHumanEnemy") == 0;
+}
+
+// Безобидная живность: не атакует, не участвует в оценке опасности.
+//
+// uEm8000 — те самые «лагерные зайцы» из дампов. Их шестеро вокруг
+// стоянки, и они прибавляли +6 к счётчику врагов на пустом месте.
+// Важно: uEm8000 НЕ Григори (см. FIELD_MAP: «не маппить 0x61 -> Hare,
+// сломаем Григори») — это отдельный вид с gid 0x61.
+static bool KindIsHarmless(const char* kind)
+{
+    if (!kind) return false;
+    return strcmp(kind, "uEm8000") == 0     // лагерная живность
+        || strcmp(kind, "uEm8600") == 0;    // Hare, заяц
+}
+
+// Враг: существо, представляющее угрозу.
+//
+// ВАЖНО: враги бывают не только uEm*. Бандиты и солдаты — это
+// uHumanEnemy (29696 B), ветка uNpc -> uHumanEnemy. Пока фильтр смотрел
+// только на "uEm", люди были невидимы и для счётчика, и для мутаций.
+static bool KindIsEnemy(const char* kind)
+{
+    if (!KindIsCreature(kind)) return false;
+    return !KindIsHarmless(kind);
+}
+
 static int KindCategory(const char* kind)
 {
     // Tactical category from LIVE kind, not gid. 0x61 must never become boss.
@@ -2201,6 +2247,11 @@ static void PublishWorldFromActors()
     int best = -1;
     for (int i = 0; i < g_nAct && w.count < 32; ++i) {
         if (!g_act[i].ptr) continue;
+        // Труп — не участник боя. Без этого счётчик в PawnAI показывает
+        // "1 враг" над свежим трупом, пока движок не выгрузит тело.
+        // Одной чистки EnemyCount() в DevTools мало: PawnAI берёт числа
+        // отсюда, через шину CombatBus, — это вторая дорога для тех же данных.
+        if (g_act[i].isDead) { w.deadCount++; continue; }
         WorldPresence& p = w.units[w.count];
         p.ptr = g_act[i].ptr;
         p.vt = (uint32_t)g_act[i].vt;
@@ -2210,6 +2261,8 @@ static void PublishWorldFromActors()
         p.y = g_act[i].y;
         p.z = g_act[i].z;
         p.fromScan = true;
+        if (KindIsEnemy(g_act[i].kind))         w.enemyCount++;
+        else if (KindIsHarmless(g_act[i].kind)) w.critterCount++;
         if (g_act[i].kind && (!strcmp(g_act[i].kind, "uEm0100")
             || !strcmp(g_act[i].kind, "uEm0101")))
             w.goblinCount++;
@@ -2235,6 +2288,59 @@ static void PublishWorldFromActors()
 static const uint32_t kActSlot = 0x2DC8;
 static uint32_t g_actSlotOff  = 0;      // learned offset, sticky across ticks
 static bool     g_actFullScan = false;  // set by HUNT, cleared after use
+
+// Живое состояние существа: имя класса текущего Act, прочитанное у игры.
+//
+// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ActMap: таблица ActMap.Generated.h содержит
+// factory vtable, у живого объекта instance vtable, единого сдвига нет
+// (гоблин 0x1B1CC, заяц 0x1B198). Сравнение всегда даёт промах, поэтому
+// в старых дампах у всех actName = "-". Имя берём через DTI — тем же
+// способом, каким опознаём uEm0100.
+//
+// Возвращает true, если имя прочитано.
+static bool ReadLiveAct(uintptr_t body, char* out, int cap)
+{
+    if (!out || cap < 2) return false;
+    out[0] = 0;
+    if (!body) return false;
+
+    // +0x2DC8 — текущее действие. Подтверждено дампами 14.08.
+    uintptr_t act = 0;
+    if (!RdPtr((void*)(body + kActSlot), &act)) return false;
+    if (!LooksHeap(act)) return false;
+
+    return DevTools::NameOfLiveObjectSafe((const void*)act, out, cap) != nullptr;
+}
+
+// Смерть определяется СОСТОЯНИЕМ, а не флагом.
+//
+// Флага смерти в теле мы не нашли: гипотеза "+0x14 == 0x12" опровергнута —
+// это же значение стоит на живых (дампы 19-22). См. docs/FIELD_MAP.md,
+// раздел "Не фильтровать World по +14 / +4C / +FC".
+//
+// Зато у Capcom смерть — это штатное состояние FSM:
+//     cEm0100ActDie        — умирает
+//     cEm0100ActDeadBody   — труп
+//     cEm0100ActDieBurn / cEm0100ActDieIce — частные случаи
+// Проверка по подстроке "Die"/"Dead" покрывает все виды сразу: имена
+// состояний единообразны у всех 35 видов (812 состояний в ActMap).
+// ВНИМАНИЕ на форму имени. Первая версия проверяла только префикс сразу
+// после "Act" — и пропускала 6 состояний из 812, где Die стоит в середине:
+//     cEm5000ActDownDie      cEm8600ActFlyDie
+//     cEm9100ActGroundDie    cEm0100ActDmgPoisonDie
+// Поэтому ищем "Die"/"Dead" где угодно в имени состояния.
+//
+// Ложных срабатываний нет: слов с этими буквосочетаниями, кроме смерти,
+// среди 812 состояний не встречается (проверено перебором таблицы).
+// "Dive"/"Damage"/"Down" не совпадают — у них другие буквы.
+static bool ActNameIsDeath(const char* actName)
+{
+    if (!actName || !actName[0]) return false;
+    // Отрезаем префикс класса: интересует только часть после "Act".
+    const char* p = strstr(actName, "Act");
+    const char* s = p ? p + 3 : actName;
+    return strstr(s, "Die") != nullptr || strstr(s, "Dead") != nullptr;
+}
 
 static const ActMap::Act* ActAt(uintptr_t body, uint32_t off, uintptr_t* outPtr, uint32_t* outRva)
 {
@@ -2316,6 +2422,12 @@ static void ScanActSlot(ActorDump& A)
     A.actName = 0; A.actCat = 0; A.actHits = 0;
     A.actOff2 = 0; A.actName2 = 0;
     A.nRaw = 0;
+
+    // Живое имя состояния и признак смерти (билд 29).
+    A.liveAct[0] = 0;
+    A.isDead     = false;
+    if (ReadLiveAct(A.ptr, A.liveAct, sizeof(A.liveAct)))
+        A.isDead = ActNameIsDeath(A.liveAct);
     if (!g_base) return;
 
     // Fast path: we already know where it lives.
@@ -2440,12 +2552,27 @@ static void DumpActorsFrom(uintptr_t* seed, int ns)
         A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
         A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
         ScanActSlot(A);
-        if (A.vt == kGoblinInst) A.kind = "uEm0100";
-        else if (A.vt == kNpcInst) A.kind = "uNpc";
+
+        // Имя вида — у самой игры, через DTI.
+        //
+        // РАНЬШЕ здесь был список из пяти захардкоженных vtable, и всё,
+        // чего в нём нет, получало kind="?" — то есть волки, бандиты и
+        // огры не считались никем. Список констант не масштабируется:
+        // видов в игре 35+, и каждый пришлось бы ловить вручную.
+        //
+        // DTI даёт настоящее имя класса любого существа сразу.
+        // Известные константы оставлены как быстрый путь: для них имя
+        // статическое, без чтения памяти.
+        if (A.vt == kGoblinInst)      A.kind = "uEm0100";
+        else if (A.vt == kNpcInst)    A.kind = "uNpc";
         else if (A.vt == kEm8000Inst) A.kind = "uEm8000";
-        else if (A.vt == kUnk84Inst) A.kind = "u?84";
-        else if (A.vt == kHareInst) A.kind = "uEm8600";
-        else A.kind = "?";
+        else if (A.vt == kHareInst)   A.kind = "uEm8600";
+        else {
+            if (NameOfLiveObject(p, A.kindBuf, sizeof(A.kindBuf)) && A.kindBuf[0])
+                A.kind = A.kindBuf;
+            else if (A.vt == kUnk84Inst) A.kind = "u?84";
+            else A.kind = "?";
+        }
         g_nAct++;
         if (A.next && LooksHeap(A.next) && ns < 32) {
             int d = 0;
@@ -2481,11 +2608,41 @@ static void RewalkActors()
     PublishWorldFromActors();
 }
 
+// Известные vtable — быстрый путь без чтения DTI.
 static int IsSeedVt(uint32_t val)
 {
     return val == (uint32_t)kGoblinInst || val == (uint32_t)kEm8000Inst
         || val == (uint32_t)kNpcInst || val == (uint32_t)kUnk84Inst
         || val == (uint32_t)kHareInst;
+}
+
+// Тело существа ли это — по имени класса от самой игры.
+//
+// ЗАЧЕМ. Раньше поиск в куче принимал только пять захардкоженных vtable
+// (гоблин, uEm8000, uNpc, u?84, Hare). Волк, бандит, огр — всё остальное
+// не проходило фильтр и НИКОГДА не попадало в список акторов. Поэтому
+// «волков система не определяет»: дело не в классификации, их просто
+// не находили.
+//
+// Видов в игре 35+, ловить каждый константой нереально. Спрашиваем имя
+// у DTI: uEm* и uHumanEnemy — наши.
+//
+// Порядок проверок важен для скорости: сначала дешёвые отсечения по
+// памяти, только потом разбор vtable. Функция зовётся на каждом
+// 8-байтовом слове горячей кучи.
+static bool LooksLikeCreatureAt(uintptr_t obj, uint32_t vt)
+{
+    if (!LooksLikeVtable((uintptr_t)vt)) return false;
+    // У всех тел существ есть gid на +0x2D и координаты на +0x40.
+    BYTE probe = 0;
+    if (!Rd((void*)(obj + 0x2D), &probe, 1)) return false;
+    float x = 0;
+    if (!Rd((void*)(obj + 0x40), &x, 4)) return false;
+
+    char nm[40];
+    if (!NameOfLiveObject(obj, nm, sizeof(nm)) || !nm[0]) return false;
+    if (nm[0] == 'u' && nm[1] == 'E' && nm[2] == 'm') return true;
+    return strcmp(nm, "uHumanEnemy") == 0;
 }
 
 static uintptr_t PollSeedSlice(uint32_t budget)
@@ -2532,10 +2689,17 @@ static uintptr_t PollSeedSlice(uint32_t budget)
                 uintptr_t obj = lo + (uintptr_t)i * 4;
                 if (obj & 7) continue;
                 uint32_t val = p32[i];
-                if (!IsSeedVt(val)) continue;
-                if (!LooksLikeVtable((uintptr_t)val)) continue;
-                BYTE probe = 0;
-                if (!Rd((void*)(obj + 0x2D), &probe, 1)) continue;
+                // Быстрый путь: известная vtable — берём без вопросов.
+                // Медленный: спрашиваем DTI, но только если значение
+                // вообще похоже на указатель в образ (иначе тратили бы
+                // разбор vtable на каждое случайное число в куче).
+                if (IsSeedVt(val)) {
+                    BYTE probe = 0;
+                    if (!Rd((void*)(obj + 0x2D), &probe, 1)) continue;
+                } else {
+                    if (!InImage((uintptr_t)val)) continue;
+                    if (!LooksLikeCreatureAt(obj, val)) continue;
+                }
                 g_pollAddr = obj + 8;
                 return obj;
             }
@@ -2547,6 +2711,109 @@ static uintptr_t PollSeedSlice(uint32_t budget)
         if (hi < next) break;
     }
     return 0;
+}
+
+// --- доступ для модулей поведения -------------------------------------------
+// Оффсеты объектов внутри тела ПЛАВАЮТ (слот +0x2B98: uPlayer в calm,
+// uCmc в aggro). Поэтому наружу отдаём тело и имя-резолвер, а не оффсеты:
+// потребитель обязан проверять имя класса, а не доверять смещению.
+
+uintptr_t DevTools::FirstEnemyBody()
+{
+    for (int i = 0; i < g_nAct; ++i) {
+        if (!g_act[i].ptr) continue;
+        const char* k = g_act[i].kind;
+        if (!k) continue;
+        // uEm* — враг. uNpc/uPl — не он.
+        if (KindIsCreature(k)) return g_act[i].ptr;
+    }
+    return 0;
+}
+
+// Считает ЖИВЫХ врагов. Трупы не в счёт: иначе "рядом 5 врагов" после
+// выигранного боя, и любая логика "оценить опасность" врёт.
+int DevTools::EnemyCount()
+{
+    int n = 0;
+    for (int i = 0; i < g_nAct; ++i) {
+        if (!g_act[i].ptr) continue;
+        if (g_act[i].isDead) continue;
+        const char* k = g_act[i].kind;
+        if (KindIsEnemy(k)) ++n;
+    }
+    return n;
+}
+
+// Трупы отдельно — для диагностики и для будущего "поле боя после драки".
+int DevTools::DeadCount()
+{
+    int n = 0;
+    for (int i = 0; i < g_nAct; ++i) {
+        if (!g_act[i].ptr || !g_act[i].isDead) continue;
+        // Труп зайца — тоже труп: считаем всех существ, иначе цифра
+        // не сойдётся с тем, что игрок видит на земле.
+        if (KindIsCreature(g_act[i].kind)) ++n;
+    }
+    return n;
+}
+
+// Перебор врагов по индексу. Нужен, потому что список разнороден:
+// в дампах 6x uEm8000 (лагерные, gid 0x61) + 1x uEm0100 (гоблин).
+// Кто пишет параметры вида — обязан идти по списку и смотреть kind.
+// ВАЖНО: перебор отдаёт только ЖИВЫХ.
+//
+// Труп остаётся в мире и в списке движка до выгрузки (это не баг, см.
+// "гистерезис выгрузки" в FIELD_MAP). Но для модулей поведения мёртвый
+// враг — мусор: мутировать его масштаб или поводок бессмысленно, а в
+// счётчике "врагов рядом" он завышает опасность.
+uintptr_t DevTools::EnemyBodyAt(int idx, const char** kindOut)
+{
+    if (idx < 0) return 0;
+    int n = 0;
+    for (int i = 0; i < g_nAct; ++i) {
+        if (!g_act[i].ptr) continue;
+        if (g_act[i].isDead) continue;          // труп — не цель
+        const char* k = g_act[i].kind;
+        // KindIsCreature, а НЕ KindIsEnemy: заяц не враг, но
+        // масштабировать его можно и нужно (разнообразие живности).
+        // Угрозу считает EnemyCount(), у него фильтр строже.
+        if (!KindIsCreature(k)) continue;
+        if (n == idx) {
+            if (kindOut) *kindOut = k;
+            return g_act[i].ptr;
+        }
+        ++n;
+    }
+    return 0;
+}
+
+uintptr_t DevTools::FirstBodyOfKind(const char* kind)
+{
+    if (!kind) return 0;
+    for (int i = 0; i < g_nAct; ++i) {
+        if (!g_act[i].ptr) continue;
+        if (g_act[i].isDead) continue;          // труп — не цель
+        const char* k = g_act[i].kind;
+        if (k && !strcmp(k, kind)) return g_act[i].ptr;
+    }
+    return 0;
+}
+
+// Состояние существа по индексу в общем списке (включая мёртвых).
+// Нужно диагностике: показать, что труп опознан, а не потерян.
+const char* DevTools::EnemyActAt(int idx, bool* deadOut)
+{
+    if (idx < 0 || idx >= g_nAct) return nullptr;
+    if (deadOut) *deadOut = g_act[idx].isDead;
+    return g_act[idx].liveAct[0] ? g_act[idx].liveAct : nullptr;
+}
+
+const char* DevTools::NameOfLiveObjectSafe(const void* obj, char* out, int cap)
+{
+    if (!obj || !out || cap < 2) return nullptr;
+    out[0] = 0;
+    if (!NameOfLiveObject((uintptr_t)obj, out, cap)) return nullptr;
+    return out[0] ? out : nullptr;
 }
 
 void DevTools::WorldScan_Tick()
@@ -3428,14 +3695,95 @@ static void SetInspect(uintptr_t a)
 
 static void RenderDevToolsUI()
 {
-    if (!ImGui::CollapsingHeader("DevTools — Type Atlas")) return;
+    // Покадровый сэмплер масштаба.
+    // ВАЖНО: вызывать ДО early-return по CollapsingHeader — иначе замер
+    // прекращается, стоит свернуть панель, а мерить надо как раз тогда,
+    // когда игрок дерётся с гоблином и не смотрит в UI.
+    EnemyTuner::SampleTick();
+
+    if (!ImGui::CollapsingHeader("DevTools - Type Atlas")) return;
     ImGui::PushID("DT");
 
+    // Версия сборки на виду: чтобы «а какая DLL сейчас стоит» не съедало итерацию.
+    ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1), "build %s  (%s %s)",
+                       MOD_BUILD_TAG, __DATE__, __TIME__);
     ImGui::Text("exe base 0x%08X   image end 0x%08X", (unsigned)g_base, (unsigned)ImageEnd());
     ImGui::TextWrapped(
         "Factory slots = dead TSV column, always empty. "
         "DUMP is safe anatomy. HUNT (in-world only) derives instance vts and censuses the heap.");
 
+    ImGui::Spacing();
+
+    // ================= Мутации сущностей (EnemyTuner) =====================
+    //
+    // СОСТОЯНИЕ ВСЕГДА СВЕРХУ. Урок теста 11: пользователь нажал FORCE,
+    // тело встало под удержание, и ini «перестал работать». Индикатор был,
+    // но рисовался ПОД кнопками и в глаза не бросался. Теперь статус —
+    // первое, что видно в разделе.
+    // ImGui 1.48: флагов ImGuiTreeNodeFlags_* ещё нет, а "открыт по
+    // умолчанию" задаётся 4-м аргументом CollapsingHeader(label, id,
+    // display_frame, default_open). Не переносить сюда синтаксис новых версий.
+    if (ImGui::CollapsingHeader("Entity mutations", "entmut", true, true)) {
+        if (EnemyTuner::HeldBody()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.15f, 1),
+                "HOLD 0x%08X = %.3f  -- ini is NOT applied to this body",
+                (unsigned)EnemyTuner::HeldBody(), EnemyTuner::HeldValue());
+            if (ImGui::Button("RELEASE - give control back to ini", ImVec2(300, 26)))
+                EnemyTuner::ReleaseHold();
+        } else {
+            ImGui::TextColored(ImVec4(0.45f, 0.9f, 0.45f, 1),
+                "Scale is driven by ddda_entities.ini");
+        }
+
+        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1), "%s",
+                           EnemyTuner::StatusLine());
+        ImGui::Text("alive: %d   dead: %d   writes: %d",
+                    EnemyTuner::TrackedCount(), DevTools::DeadCount(),
+                    EnemyTuner::WriteCount());
+        ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.55f, 1),
+                           "dead = ActDie/ActDeadBody, excluded from mutations");
+
+        ImGui::Spacing();
+
+        // Осмотр — то, чем пользуемся постоянно.
+        if (ImGui::Button("List enemies + scale", ImVec2(300, 26)))
+            EnemyTuner::ListEnemies();
+
+        // Ручная проверка: временно перебивает ini.
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.65f, 1),
+                           "Manual check (sets HOLD):");
+        if (ImGui::Button("Shrink 0.60", ImVec2(146, 26)))
+            EnemyTuner::ForceScale(0.60f);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset 1.00", ImVec2(146, 26)))
+            EnemyTuner::ForceScale(1.00f);
+
+        // Инструменты разведки: нужны редко, свёрнуты по умолчанию.
+        // Не удаляем — на них будем искать зрение, скорость и поводок.
+        if (ImGui::TreeNode("Recon tools")) {
+            if (ImGui::Button("Dump body head 0x00..0x100", ImVec2(290, 24)))
+                EnemyTuner::DumpHead();
+            if (ImGui::Button("Read charParam (leash)", ImVec2(290, 24)))
+                EnemyTuner::ReadCharParam();
+            if (ImGui::Button("Scan vision params", ImVec2(290, 24)))
+                EnemyTuner::ScanVisionParams();
+            if (ImGui::Button("Dump sensor window +0x5900", ImVec2(290, 24)))
+                EnemyTuner::DumpSensorWindow();
+
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(0.65f, 0.65f, 0.65f, 1),
+                               "Per-frame search for changing fields:");
+            if (ImGui::Button("FieldScan start", ImVec2(142, 24)))
+                EnemyTuner::StartFieldScan();
+            ImGui::SameLine();
+            if (ImGui::Button("FieldScan report", ImVec2(142, 24)))
+                EnemyTuner::StopFieldScan();
+            if (ImGui::Button("Check HOLD", ImVec2(290, 24)))
+                EnemyTuner::CheckHold();
+            ImGui::TreePop();
+        }
+    }
     ImGui::Spacing();
     if (ImGui::Button("SCAN exe for manager objects", ImVec2(300, 26))) {
         ScanImage();
@@ -3450,7 +3798,7 @@ static void RenderDevToolsUI()
         for (int k = 0; k < g_nScans; ++k) {
             TypeScan& s = g_scans[k];
             if (s.skipped) {
-                ImGui::TextDisabled("%-24s  shared stub vtable — skip", s.t->name);
+                ImGui::TextDisabled("%-24s  shared stub vtable - skip", s.t->name);
                 continue;
             }
             const bool ok = s.nDataObj > 0;
@@ -3498,7 +3846,7 @@ static void RenderDevToolsUI()
             "Green names below are heap objects whose first dword is a known vtable.");
 
         if (ImGui::TreeNode("Histogram (what the pointers actually are)")) {
-            if (!g_nHist) ImGui::TextDisabled("nothing identified — paste the json anyway");
+            if (!g_nHist) ImGui::TextDisabled("nothing identified - paste the json anyway");
             for (int i = 0; i < g_nHist; ++i)
                 ImGui::Text("%4d  %s", g_hist[i].n, g_hist[i].name);
             ImGui::TreePop();
@@ -3514,7 +3862,7 @@ static void RenderDevToolsUI()
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Heap singleton hunts")) {
-            if (!g_nHunts) ImGui::TextDisabled("none — managers live behind another pointer");
+            if (!g_nHunts) ImGui::TextDisabled("none - managers live behind another pointer");
             for (int i = 0; i < g_nHunts; ++i) {
                 char lab[80];
                 sprintf_s(lab, "%-22s inst %08X##h%d",
@@ -3524,7 +3872,7 @@ static void RenderDevToolsUI()
             ImGui::TreePop();
         }
         if (ImGui::TreeNode("Heap managers (vtable on MEM_PRIVATE)")) {
-            if (!g_nMgrs) ImGui::TextDisabled("none — sEnemyManager etc. not on the private heap");
+            if (!g_nMgrs) ImGui::TextDisabled("none - sEnemyManager etc. not on the private heap");
             for (int i = 0; i < g_nMgrs; ++i) {
                 char lab[80];
                 sprintf_s(lab, "%-22s %08X##hm%d",
@@ -3727,7 +4075,7 @@ static void RenderDevToolsUI()
                 ImGui::SameLine();
                 if (ImGui::SmallButton("re-search act slot")) { g_actSlotOff = 0; g_actFullScan = true; RewalkActors(); g_actFullScan = false; }
             } else {
-                ImGui::TextDisabled("list empty — polling hot heap 0x10000000-0x18000000, 8MB/tick.");
+                ImGui::TextDisabled("list empty - polling hot heap 0x10000000-0x18000000, 8MB/tick.");
             }
             if (g_nLives) {
                 ImGui::TextDisabled("hunt snapshot (frozen until next HUNT)");
@@ -3799,7 +4147,7 @@ static void RenderDevToolsUI()
     }
 
     ImGui::Separator();
-    ImGui::TextDisabled("Type catalog — 4405 names. Not live objects.");
+    ImGui::TextDisabled("Type catalog - 4405 names. Not live objects.");
     ImGui::PushItemWidth(220);
     ImGui::InputText("filter", g_filter, sizeof(g_filter));
     ImGui::PopItemWidth();

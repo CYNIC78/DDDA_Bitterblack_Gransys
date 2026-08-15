@@ -5,6 +5,9 @@ extern BYTE *codeBase, *codeEnd;
 #include "BestiaryData.h"
 #include "CombatBus.h"
 #include "EnemyTypes.Generated.h"
+// Опознание живых объектов через DTI. Тот же резолвер, которым сканер
+// врагов определяет вид: обе подсистемы обязаны видеть мир одинаково.
+#include "devtools/DevTools.h"
 
 #define PLAYER_BASE         0xA7000
 #define PAWN_OFFSET         0x7F0
@@ -21,8 +24,19 @@ struct CombatEntry {
     DWORD    timestamp;
     uint32_t vtableRVA;
     uintptr_t targetPtr;
+    // Имя класса цели через DTI ("uHumanEnemy", "uEm0100"). Пустая строка,
+    // если владельца удара опознать не удалось.
+    //
+    // Зачем отдельно от groupId: gid — это номер в БЕСТИАРИИ, у одного
+    // номера может быть несколько записей (0xE0 = и Soldiers, и Bandits,
+    // и Enemy Person), а у части живых тел gid вообще не читается. Имя
+    // класса от игры — единственный честный ответ на вопрос «кого бьём».
+    char     kind[24];
 };
-#define RING_SIZE 32
+// 32 события на 5-секундное окно мало для стаи: 10 волков под ударами
+// игрока и двух пешек прокручивают кольцо за пару секунд, и ранние
+// попадания вытесняются раньше, чем истечёт COMBAT_TIMEOUT_SEC.
+#define RING_SIZE 64
 
 static CombatEntry g_ring[RING_SIZE];
 static int g_head = 0;
@@ -35,20 +49,24 @@ static int   g_playerHitsTotal = 0;
 static int   g_pawnHitsTotal = 0;
 static DWORD g_lastHitTick[256][2] = {}; // [gid][0=Player, 1=Pawn]
 static int   g_totalHits = 0;
+// Диагностика резолвера: сколько ударов не удалось привязать к телу.
+static int   g_unresolvedHits = 0;
 
 // Дебаунсер повторных суб-тиков (mHPCurrent vs mHPRecoverable) на одной сущности
 struct TargetDebounce {
     uintptr_t targetPtr;
     DWORD     lastHitTick;
 };
-static TargetDebounce g_targetDebounce[16] = {};
-static int g_debounceHead = 0;
+// 16 слотов не хватало: стая из 10 волков + пешки + игрок дают больше
+// живых бакетов, чем слотов, и таблица начинала вытеснять сама себя.
+#define DEBOUNCE_SLOTS 64
+static TargetDebounce g_targetDebounce[DEBOUNCE_SLOTS] = {};
 
 static bool IsDebouncedHit(uintptr_t targetPtr, DWORD now) {
     if (!targetPtr) return false;
     // Маскируем младшие 8 бит для объединения суб-структур одного объекта (710 vs 718)
     uintptr_t entityBucket = targetPtr & ~0xFF;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < DEBOUNCE_SLOTS; i++) {
         if (g_targetDebounce[i].targetPtr == entityBucket) {
             if (now - g_targetDebounce[i].lastHitTick < 120) {
                 return true; // Повторный саб-тик от того же удара — пропускаем!
@@ -57,10 +75,23 @@ static bool IsDebouncedHit(uintptr_t targetPtr, DWORD now) {
             return false;
         }
     }
-    // Новый таргет
-    g_targetDebounce[g_debounceHead].targetPtr = entityBucket;
-    g_targetDebounce[g_debounceHead].lastHitTick = now;
-    g_debounceHead = (g_debounceHead + 1) % 16;
+    // Новый таргет. Занимаем СВОБОДНЫЙ или САМЫЙ СТАРЫЙ слот, а не
+    // следующий по кругу.
+    //
+    // Было: g_debounceHead++ по кольцу на 16 слотов. В стае из 10 волков
+    // каждый зверь занимает 1-2 бакета (тело + структура здоровья), и
+    // голова затирала слот ЖИВОГО бойца, по которому только что попали.
+    // Следующий суб-тик того же удара уже не дебаунсился, шёл в резолвер
+    // как новое событие и часто ловил структуру без владельца -> UNRESOLVED.
+    int victim = 0;
+    DWORD oldest = 0xFFFFFFFFu;
+    for (int i = 0; i < DEBOUNCE_SLOTS; i++) {
+        if (g_targetDebounce[i].targetPtr == 0) { victim = i; break; }
+        DWORD age = now - g_targetDebounce[i].lastHitTick;
+        if (age > oldest || oldest == 0xFFFFFFFFu) { oldest = age; victim = i; }
+    }
+    g_targetDebounce[victim].targetPtr = entityBucket;
+    g_targetDebounce[victim].lastHitTick = now;
     return false;
 }
 
@@ -104,6 +135,21 @@ static bool IsInActiveGameplay() {
 static bool IsPartyMember(void* ptr) {
     if (!ptr || IsBadReadPtr(ptr, 0x20)) return true;
     __try {
+        // ГЛАВНЫЙ путь — спросить у игры имя класса.
+        //
+        // Раньше здесь был только список из трёх vtable RVA. Этого мало:
+        // у пешек не одна vtable (uPawn, uPawnIntel, uPawnBase...), и тело
+        // пешки, чьей vtable в списке нет, проходило проверку как ВРАГ.
+        // Отсюда баг «моё попадание записано на имя пешки»: пешку били,
+        // резолвер опознавал её как валидную цель и писал в ринг.
+        //
+        // Имя класса от DTI закрывает всё семейство разом.
+        char nm[40];
+        if (DevTools::NameOfLiveObjectSafe(ptr, nm, sizeof(nm))) {
+            if (strstr(nm, "Pawn") || strstr(nm, "uPlayer"))
+                return true;                  // свой: игрок или пешка
+        }
+
         uintptr_t vtable = *(uintptr_t*)ptr;
         uintptr_t modBase = (uintptr_t)GetModuleHandle(nullptr);
         if (vtable >= modBase && vtable < modBase + 0x2000000) {
@@ -145,7 +191,46 @@ static bool IsValidEnemyCharacter(BYTE* cand, BYTE* healthPtr, BYTE* outGid) {
             }
         }
 
-        // 2. Проверка через VTable RVA (для uHumanEnemy 0xE0 и фауны)
+        // 2. Имя класса через DTI — спрашиваем у самой игры.
+        //
+        // Раньше здесь стоял FindByVTable(rva), и он был МЁРТВЫМ: таблицы
+        // хранят ФАБРИЧНЫЕ vtable (uEm0100 -> 0x11A0474), а живой объект
+        // несёт instance-vtable (RVA 0x11852A8). Совпадений не бывает —
+        // ровно та же мина, что убила ActMap::FindByVt.
+        //
+        // DTI даёт настоящее имя класса, а FindEnemyByUEmName связывает
+        // его с бестиарием. Это же имя использует сканер врагов, так что
+        // обе подсистемы теперь опознают существ ОДИНАКОВО.
+        char nm[40];
+        if (DevTools::NameOfLiveObjectSafe(cand, nm, sizeof(nm))) {
+            // ЛОВУШКА ЗАЙЦЕВ (FIELD_MAP, dump19-24). Тела с gid 0x61 и
+            // именем uEm8000 — это лагерная живность, а НЕ Григори.
+            // Но в бестиарии 0x61 = "The Dragon", family Dragon, а
+            // GetEnemyCategory даёт категорию 5 = БОСС. Один удар по
+            // зайцу переключал TacticalSwitch в режим драки с драконом.
+            //
+            // Именно поэтому «просто переименовать» нельзя: настоящий
+            // Григори живёт под тем же номером. Отсекаем по имени
+            // класса — единственному, что различает их надёжно.
+            if (strcmp(nm, "uEm8000") == 0 || strcmp(nm, "uEm8600") == 0)
+                return false;                 // живность: не враг, не цель
+
+            const EnemyEntry* be = FindEnemyByUEmName(nm);
+            if (be && be->groupId != 0) {
+                if (outGid) *outGid = be->groupId;
+                return true;
+            }
+            // Люди-враги: в бестиарии их несколько записей с одним
+            // uEmName, groupId у всех 0xE0.
+            if (strcmp(nm, "uHumanEnemy") == 0) {
+                if (outGid) *outGid = 0xE0;
+                return true;
+            }
+        }
+
+        // 3. Запасной путь: фабричная vtable. Срабатывает редко (для
+        //    объектов, чью instance-vtable движок не подменял), но стоит
+        //    дёшево и иногда спасает.
         uint32_t rva = (uint32_t)(vtable - modBase);
         const EnemyTypeInfo* info = FindByVTable(rva);
         if (info && info->groupId != 0) {
@@ -163,12 +248,16 @@ static bool IsValidEnemyCharacter(BYTE* cand, BYTE* healthPtr, BYTE* outGid) {
  * ШАГ 0: Если ptr сам уже является базовым объектом монстра (удары игрока) -> возвращает gid сразу!
  * ШАГ 1: Если ptr — это структура здоровья (удары пешек) -> находит родительский uCharacterBase.
  */
-static BYTE ResolveGidFromEntity(BYTE* ptr) {
+// bodyOut (опц.) — тело, которое реально опознали. Нужен, чтобы взять у
+// него честное имя класса: gid для этого не годится (см. CombatEntry::kind).
+static BYTE ResolveGidFromEntity(BYTE* ptr, BYTE** bodyOut = nullptr) {
+    if (bodyOut) *bodyOut = nullptr;
     if (!ptr) return 0;
     BYTE gid = 0;
 
     // ШАГ 0: Прямая проверка — если ptr уже является базой монстра (как в ebx при атаке игрока)
     if (IsValidEnemyCharacter(ptr, nullptr, &gid)) {
+        if (bodyOut) *bodyOut = ptr;
         return gid;
     }
 
@@ -178,6 +267,7 @@ static BYTE ResolveGidFromEntity(BYTE* ptr) {
         for (int off : priorityOffsets) {
             BYTE* cand = *(BYTE**)(ptr + off);
             if (IsValidEnemyCharacter(cand, ptr, &gid)) {
+                if (bodyOut) *bodyOut = cand;
                 return gid;
             }
         }
@@ -187,19 +277,19 @@ static BYTE ResolveGidFromEntity(BYTE* ptr) {
         for (int off : baseOffsets) {
             BYTE* cand = ptr - off;
             if (IsValidEnemyCharacter(cand, ptr, &gid)) {
+                if (bodyOut) *bodyOut = cand;
                 return gid;
             }
         }
 
-        // ШАГ 3: Корреляция с активным врагом текущего боя (если бой уже идет)
-        DWORD now = GetTickCount();
-        for (int i = 0; i < RING_SIZE; i++) {
-            if (g_ring[i].timestamp != 0 && (now - g_ring[i].timestamp) < (DWORD)(COMBAT_TIMEOUT_SEC * 1000)) {
-                if (g_ring[i].groupId != 0) {
-                    return g_ring[i].groupId;
-                }
-            }
-        }
+        // ШАГ 3 УДАЛЁН. Раньше здесь брался ЛЮБОЙ gid из активного боя,
+        // если владельца найти не удалось.
+        //
+        // Это врало на смешанных группах: бьём волка рядом с гоблином —
+        // урон записывался гоблину, потому что тот попал в ринг первым.
+        // «Какой-то враг» хуже, чем «не знаю»: неизвестность видна в
+        // счётчике unknownTypes и её можно чинить, а тихая подмена —
+        // нет. Лучше вернуть 0.
     } __except(EXCEPTION_EXECUTE_HANDLER) {
         return 0;
     }
@@ -228,7 +318,15 @@ static void OnDamageInternal(BYTE* targetBase, DamageSource src) {
         return;
     }
 
-    BYTE gid = ResolveGidFromEntity(targetBase);
+    BYTE* body = nullptr;
+    BYTE gid = ResolveGidFromEntity(targetBase, &body);
+
+    // Честное имя класса от игры. Берём его ДО взятия блокировки:
+    // DTI лезет в чужую память, под g_lock этого лучше не делать.
+    char kindBuf[24];
+    kindBuf[0] = 0;
+    if (body)
+        DevTools::NameOfLiveObjectSafe(body, kindBuf, sizeof(kindBuf));
 
     DWORD now = GetTickCount();
     int srcIdx = (src == SRC_PLAYER) ? 0 : 1;
@@ -241,7 +339,10 @@ static void OnDamageInternal(BYTE* targetBase, DamageSource src) {
     g_ring[g_head].timestamp = now;
     g_ring[g_head].vtableRVA = vtRVA;
     g_ring[g_head].targetPtr = (uintptr_t)targetBase;
+    lstrcpynA(g_ring[g_head].kind, kindBuf, sizeof(g_ring[g_head].kind));
     g_head = (g_head + 1) % RING_SIZE;
+
+    if (gid == 0 && kindBuf[0] == 0) g_unresolvedHits++;
 
     // Регистрация хитов со счетчиком (throttle 150мс раздельно для игрока и пешек)
     if (now - g_lastHitTick[gid][srcIdx] >= 150 || g_lastHitTick[gid][srcIdx] == 0) {
@@ -614,21 +715,34 @@ void RenderCombatIntelUI()
             bool active = age < (DWORD)COMBAT_TIMEOUT_SEC;
             const EnemyEntry* e = FindEnemyByGid(g_ring[i].groupId);
             const char* srcStr = (g_ring[i].source == SRC_PAWN) ? "PAWN" : (g_ring[i].source == SRC_PLAYER) ? "PLR" : "OTH";
+
+            // Что показываем в колонке имени, по убыванию честности:
+            //   1. имя из бестиария     - опознали и знаем, кто это
+            //   2. имя класса от DTI    - опознали тело, но в бестиарии нет
+            //   3. "UNRESOLVED"         - владельца удара не нашли вообще
+            // Раньше в случае 3 писалось "Target", и это читалось как имя
+            // врага, хотя означает ровно обратное: мы не знаем, кого бьём.
+            const char* nameStr;
+            if (e)                        nameStr = e->name;
+            else if (g_ring[i].kind[0])   nameStr = g_ring[i].kind;
+            else                          nameStr = "UNRESOLVED";
+
             ImGui::TextColored(active ? ImVec4(1, 0.5f, 0.3f, 1) : ImVec4(0.5f, 0.5f, 0.5f, 1),
-                "[%s] gid=0x%02X %-18s %s (%ds ago)",
-                srcStr, g_ring[i].groupId,
-                e ? e->name : (g_ring[i].groupId == 0 ? "Target" : "???"),
+                "[%s] gid=0x%02X %-18s %s (%us ago)",
+                srcStr, g_ring[i].groupId, nameStr,
                 PawnKnowsGroup(g_ring[i].groupId) ? "KNOWN" : "unk",
-                age);
+                (unsigned)age);
         }
         LeaveCriticalSection(&g_lock);
 
         ImGui::Separator();
         ImGui::TextDisabled("Total hits: %d (Player: %d, Pawn: %d)", g_totalHits, g_playerHitsTotal, g_pawnHitsTotal);
+        ImGui::TextDisabled("Unresolved: %d", g_unresolvedHits);
         for (int k = 0; k < 256; k++) {
             if (g_hitCount[k]) {
                 const EnemyEntry* e = FindEnemyByGid((BYTE)k);
-                ImGui::Text("  gid 0x%02X %-16s hits: %d", k, e ? e->name : (k == 0 ? "Target" : "???"), g_hitCount[k]);
+                // gid 0 = резолвер не нашёл владельца удара (см. ринг выше).
+                ImGui::Text("  gid 0x%02X %-16s hits: %d", k, e ? e->name : (k == 0 ? "UNRESOLVED" : "???"), g_hitCount[k]);
             }
         }
         ImGui::TreePop();
