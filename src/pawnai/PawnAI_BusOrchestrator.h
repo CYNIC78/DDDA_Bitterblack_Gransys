@@ -6,9 +6,12 @@
  *
  *   1. override (кризис)  →  finalTarget = override (Emergency, макс. приоритет)
  *   2. иначе              →  base = anchor (ползунки игрока)
- *                            + delta от модулей (SmartUtil, TacticalSwitch)
- *                            → кордон зажимает мусор в ЦЕЛИ (не в значениях)
+ *                            + delta от модулей (SmartUtil, TacticalSwitch,
+ *                            AcquisitorManager)
  *   3. один лерп incl → finalTarget
+ *
+ * Build 55: SanitaryCordon заменён на AcquisitorManager. Guardian/Nexus —
+ * доктрины (CAT_DOCTRINE), кордон их больше не зажимает.
  *
  * Никакой драки между модулями: каждый возвращает поправку, оркестратор
  * складывает. Падение модуля (SEH) отключает ТОЛЬКО его.
@@ -18,7 +21,7 @@
  * GetDelta в Tick. Контракт уже готов.
  */
 #include "PresetManager.h"
-#include "SanitaryCordon.h"
+#include "AcquisitorManager.h"
 #include "SmartUtilitarian.h"
 #include "TacticalSwitch.h"
 
@@ -36,7 +39,7 @@ namespace PawnAI {
 
 struct Orchestrator {
     PresetManager      presets;
-    SanitaryCordon     sanitary;
+    AcquisitorManager  acquisitor;   // бывший SanitaryCordon: только Acquisitor
     SmartUtilitarian   smartUtil;
     TacticalSwitch     tactical;
 
@@ -46,17 +49,17 @@ struct Orchestrator {
     void SetOverride(const float* t){ if(t){ for(int i=0;i<I_COUNT;i++) overrideTarget[i]=t[i]; overrideArmed=true; } }
     void ClearOverride(){ overrideArmed=false; }
 
-    // Для UI: последняя дельта и кап кордона — показываем «как система дышит».
+    // Для UI: последняя дельта модулей — показываем «как система дышит».
     float lastDelta[I_COUNT] = {};
 
     void Init(){
         presets.Init();
-        sanitary.Init();
+        acquisitor.Init();
         smartUtil.Init();
         tactical.Init();
     }
     void Shutdown(){
-        sanitary.Shutdown();
+        acquisitor.Shutdown();
         smartUtil.Shutdown();
         tactical.Shutdown();
     }
@@ -77,15 +80,15 @@ struct Orchestrator {
         float delta[I_COUNT] = {};
         SAFE_MODULE(smartUtil, GetDelta(target, delta));
         SAFE_MODULE(tactical,  GetDelta(target, delta));
+        SAFE_MODULE(acquisitor, GetDelta(target, delta)); // бывший кордон: только Acquisitor
 
-        // 4) finalTarget = base + delta, потом кордон зажимает мусор в цели
+        // 4) finalTarget = base + delta
         for (int i = 0; i < I_COUNT; i++) {
             target[i] += delta[i];
             if (target[i] < 0.0f) target[i] = 0.0f;
             if (target[i] > 1000.0f) target[i] = 1000.0f;
             lastDelta[i] = delta[i];
         }
-        SAFE_MODULE(sanitary, ApplyCap(target));
 
         // 5) Один лерп к отфильтрованной цели
         if (presets.enabled) {

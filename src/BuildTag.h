@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "54-pawn-runtime-semantics-91"
+#define MOD_BUILD_TAG "58-guardian-bodyguard-gradient"

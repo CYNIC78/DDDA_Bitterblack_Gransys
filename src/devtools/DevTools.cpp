@@ -101,6 +101,13 @@
 extern BYTE *codeBase, *codeEnd, *dataBase, *dataEnd;
 
 static bool g_enabled = false;
+// Build 56.5: выключатель исследовательских дампов (JSON/CSV). По умолчанию OFF.
+// Когда ON, кнопка «Find both + capture baseline» пишет:
+//   ddda_party_recon_%03d.json, ddda_pawn_ai_bridge_%03d.json,
+//   ddda_pawn_intent_trace_%03d.csv (trace растёт всю сессию).
+// Для продуктовой работы (Guardian doctrine) не нужны — включать только на
+// время охоты за редкими semantic codes.
+static bool g_researchDump = false;
 static uintptr_t g_base = 0;
 static uint32_t g_imageSize = 0;
 
@@ -2956,30 +2963,30 @@ static bool PartyPriorityProfileReadConfig(
 static int PartyPriorityLiveSlot(uintptr_t prioParam)
 {
     if (!prioParam) return -1;
-    PawnAiCandidate* root = nullptr;
-    for (int i = 0; i < g_nPawnAi; ++i)
-        if (!strcmp(g_pawnAi[i].name, "cAIPriorityThink")) {
-            root = &g_pawnAi[i];
-            break;
-        }
-    if (!root) return -1;
+    // Build 57.2: искать во ВСЕХ экземплярах cAIPriorityThink, а не только
+    // в первом. Раньше брался первый и выходили — если у пешки несколько
+    // приоритетных корней (или первый — чужая пешка), slot давал -1.
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& root = g_pawnAi[i];
+        if (strcmp(root.name, "cAIPriorityThink")) continue;
 
-    for (int slot = 0; slot < 48; ++slot) {
-        const uintptr_t field = root->ptr + 0x38u + (uint32_t)slot * 0x14u;
-        uint32_t before[5] = {};
-        uint32_t after[5] = {};
-        uintptr_t entries[16] = {};
-        if (!Rd((void*)field, before, sizeof(before))) continue;
-        if (before[1] > 16u || before[2] > 16u || before[1] > before[2]) continue;
-        if (before[1] && (!LooksHeap(before[4])
-            || !Rd((void*)(uintptr_t)before[4], entries,
-                before[1] * sizeof(uintptr_t))))
-            continue;
-        if (!Rd((void*)field, after, sizeof(after))
-            || memcmp(before, after, sizeof(before)) != 0)
-            continue;
-        for (uint32_t n = 0; n < before[1]; ++n)
-            if (entries[n] == prioParam) return slot;
+        for (int slot = 0; slot < 48; ++slot) {
+            const uintptr_t field = root.ptr + 0x38u + (uint32_t)slot * 0x14u;
+            uint32_t before[5] = {};
+            uint32_t after[5] = {};
+            uintptr_t entries[16] = {};
+            if (!Rd((void*)field, before, sizeof(before))) continue;
+            if (before[1] > 16u || before[2] > 16u || before[1] > before[2]) continue;
+            if (before[1] && (!LooksHeap(before[4])
+                || !Rd((void*)(uintptr_t)before[4], entries,
+                    before[1] * sizeof(uintptr_t))))
+                continue;
+            if (!Rd((void*)field, after, sizeof(after))
+                || memcmp(before, after, sizeof(before)) != 0)
+                continue;
+            for (uint32_t n = 0; n < before[1]; ++n)
+                if (entries[n] == prioParam) return slot;
+        }
     }
     return -1;
 }
@@ -3051,6 +3058,10 @@ static bool PartyPriorityProfileResolveAll()
 
 static bool PartyPriorityProfileRestoreAll(const char* reason)
 {
+    // Build 56.7: ничего не применено — нечего и восстанавливать. Без этого
+    // вызова на «world unload» логировали впустую (спам в логе).
+    if (!g_priorityProfileApplied) return true;
+
     // Prevalidate every still-live target before changing any of them.
     for (int i = 0; i < g_nPriorityProfileRules; ++i) {
         PartyPriorityProfileRule& R = g_priorityProfileRules[i];
@@ -3565,6 +3576,110 @@ static bool PartyCandidatesStillValid()
     return true;
 }
 
+// Build 56.2 — Guardian doctrine anchor/pawn world positions.
+// +0x40/+0x44/+0x48 = world XYZ (SOURCE_OF_TRUTH §2, live units).
+// Тела Аризена/пешки резолвятся тем же census'ом, что и priority-профиль
+// (PartyFindBodies → PartyAssignRoles); позиции читаются ДЁШЕВО каждый тик,
+// а сам census — throttled, только когда тела невалидны/не найдены.
+static bool   g_arisenPosOk = false;
+static bool   g_pawnPosOk   = false;
+static bool   g_wasInWorld  = false;  // для dedupe cleanup'а «world unload»
+static float  g_arisenPosX = 0, g_arisenPosY = 0, g_arisenPosZ = 0;
+static float  g_pawnPosX = 0, g_pawnPosY = 0, g_pawnPosZ = 0;
+
+static DWORD  g_pawnPosLastFailLog = 0;  // rate-limit диагностики
+
+// Читает позиции из уже разрешённых тел (дешёво, без census).
+// Вызывается каждый тик и после каждого PartyAssignRoles.
+static void PartyReadPositions()
+{
+    g_arisenPosOk = false;
+    g_pawnPosOk = false;
+    if (g_nParty <= 0) return;
+    int arisen = -1, pawn = -1;
+    for (int i = 0; i < g_nParty; ++i) {
+        if (!strcmp(g_party[i].role, "Arisen")) arisen = i;
+        else if (!strcmp(g_party[i].role, "Main Pawn")) pawn = i;
+    }
+    float x = 0, y = 0, z = 0;
+    // (0,0,0) считается sentinel «нет позиции»: мировые координаты DDDA —
+    // тысячи, никогда не нулевые в реальной точке.
+    if (arisen >= 0
+        && Rd((void*)(g_party[arisen].ptr + 0x40), &x, 4)
+        && Rd((void*)(g_party[arisen].ptr + 0x44), &y, 4)
+        && Rd((void*)(g_party[arisen].ptr + 0x48), &z, 4)
+        && !(x == 0.0f && y == 0.0f && z == 0.0f)) {
+        g_arisenPosX = x; g_arisenPosY = y; g_arisenPosZ = z;
+        g_arisenPosOk = true;
+    } else {
+        g_arisenPosX = g_arisenPosY = g_arisenPosZ = 0;
+    }
+    if (pawn >= 0
+        && Rd((void*)(g_party[pawn].ptr + 0x40), &x, 4)
+        && Rd((void*)(g_party[pawn].ptr + 0x44), &y, 4)
+        && Rd((void*)(g_party[pawn].ptr + 0x48), &z, 4)
+        && !(x == 0.0f && y == 0.0f && z == 0.0f)) {
+        g_pawnPosX = x; g_pawnPosY = y; g_pawnPosZ = z;
+        g_pawnPosOk = true;
+    } else {
+        g_pawnPosX = g_pawnPosY = g_pawnPosZ = 0;
+        // Диагностика (rate-limited): почему пешка не читается — роль не
+        // назначена или тело устарело. Лог даст точную причину.
+        DWORD now = MsNow();
+        if (now - g_pawnPosLastFailLog >= 3000u) {
+            g_pawnPosLastFailLog = now;
+            logFile << "PartyPositions: pawn read FAILED nParty=" << g_nParty
+                    << " pawnIdx=" << pawn << std::endl;
+            for (int i = 0; i < g_nParty; ++i) {
+                logFile << "  [" << i << "] role='" << g_party[i].role
+                        << "' dti='" << g_party[i].dti << "' body=0x" << std::hex
+                        << g_party[i].ptr << std::dec << std::endl;
+            }
+        }
+    }
+}
+
+// Ленивый census + дешёвое чтение позиций каждый тик.
+// Build 56.8: census повторяется, пока не найдены ОБЕ роли (Arisen + Main Pawn).
+// Раньше был ранний выход по g_nParty>0 — если первым фоновым сканом пойман
+// только uPlayer (пешка спавнится на долю секунды позже), census больше
+// никогда не перезапускался и пешка оставалась ненайденной навсегда.
+static DWORD g_partyPosLastDiscover = 0;
+
+static void PartyPositionsTick()
+{
+    // Обе роли уже назначены?
+    int arisen = -1, pawn = -1;
+    for (int i = 0; i < g_nParty; ++i) {
+        if (!strcmp(g_party[i].role, "Arisen")) arisen = i;
+        else if (!strcmp(g_party[i].role, "Main Pawn")) pawn = i;
+    }
+    bool complete = (arisen >= 0 && pawn >= 0);
+
+    if (complete && PartyCandidatesStillValid()) {
+        PartyReadPositions();
+        return;
+    }
+
+    // Нужен (до)резолв: census в фоне, с троттлом.
+    DWORD now = MsNow();
+    if (g_partyPosLastDiscover && now - g_partyPosLastDiscover < 5000u) {
+        // Пока ждём — читаем то, что уже есть (дешёво), чтобы позиция
+        // Аризена обновлялась, а не висела нулём.
+        if (g_nParty > 0) PartyReadPositions();
+        return;
+    }
+    g_partyPosLastDiscover = now;
+    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
+    PartyFindBodies();
+    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
+    PartyMarkPawnManagerRefs();
+    PartySelectWorkingPair();
+    PartyAssignRoles();
+    InterlockedExchange(&g_partyBusy, 0);
+    if (g_nParty > 0) PartyReadPositions();
+}
+
 static bool PartyPriorityProfileAutoDiscover()
 {
     if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return false;
@@ -3573,6 +3688,7 @@ static bool PartyPriorityProfileAutoDiscover()
     PartyMarkPawnManagerRefs();
     PartySelectWorkingPair();
     PartyAssignRoles();
+    PartyReadPositions();
     InterlockedExchange(&g_partyBusy, 0);
 
     const bool found = PartyPriorityProfileResolveAll();
@@ -4709,9 +4825,10 @@ static void PartyCapture(bool forceFind)
     PartyMarkPawnManagerRefs();
     PartySelectWorkingPair();
     PartyAssignRoles();
+    PartyReadPositions();
 
     ++g_partySeq;
-    PartyWriteJson();
+    if (g_researchDump) PartyWriteJson();
 
     if (g_nParty <= 0) {
         sprintf_s(g_partyStatus, sizeof(g_partyStatus),
@@ -4730,8 +4847,8 @@ static void PartyCapture(bool forceFind)
         return;
     }
 
-    PartyWriteAiBridgeJson();
-    if (!g_intentTrace) PartyIntentTraceStart();
+    if (g_researchDump) PartyWriteAiBridgeJson();
+    if (g_researchDump && !g_intentTrace) PartyIntentTraceStart();
 
     logFile << "PartyRecon: snapshot " << g_partySeq << " bodies=" << g_nParty
             << " rawCandidates=" << g_partyRawCandidates
@@ -5165,20 +5282,296 @@ const char* DevTools::NameOfLiveObjectSafe(const void* obj, char* out, int cap)
     return out[0] ? out : nullptr;
 }
 
+// Build 56.2 — Guardian doctrine anchor/pawn world positions.
+// Читает +0x40/+0x44/+0x48 из уже разрешённых тел (PartyReadPositions).
+bool DevTools::GetArisenWorldPos(float* x, float* y, float* z)
+{
+    if (!g_arisenPosOk) return false;
+    if (x) *x = g_arisenPosX;
+    if (y) *y = g_arisenPosY;
+    if (z) *z = g_arisenPosZ;
+    return true;
+}
+
+bool DevTools::GetMainPawnWorldPos(float* x, float* y, float* z)
+{
+    if (!g_pawnPosOk) return false;
+    if (x) *x = g_pawnPosX;
+    if (y) *y = g_pawnPosY;
+    if (z) *z = g_pawnPosZ;
+    return true;
+}
+
+// Build 57 — разведка Guardian-штрафов (read-only).
+// Читает уже разрешённые cPrioParam-строки из g_pawnAi. Для кодов
+// Guardian-семейства (4/13/15/54/60/66) + лук 57 снимает identity-кортеж,
+// AddS32 каждого personality-правила (cCodeParam) и СЫРЫЕ байты checks
+// (условия выбора правила). НЕ пишет в игру.
+// cCodeParam layout (SOURCE_OF_TRUTH §3.5): +0x04 AddS32, +0x08 AddF32,
+// +0x0C BreakAfterApply, +0x10..+0x20 checks cArray (+0x14 count, +0x20 mpArray).
+static char g_guardianAuditStatus[640] = "Guardian audit: not run";
+
+const char* DevTools::GuardianPenaltyAudit()
+{
+    static const uint32_t kCodes[] = { 4, 13, 15, 54, 57, 60, 66 };
+    static const int kCodeCount = sizeof(kCodes) / sizeof(kCodes[0]);
+
+    int totalRows = 0, matched = 0;
+    char tail[512] = {};
+    size_t tailLen = 0;
+
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        if (strcmp(A.name, "rAIPriorityThink::cPrioParam")) continue;
+        ++totalRows;
+
+        BYTE prioRaw[64] = {};
+        uintptr_t vt = 0;
+        if (!RdPtr((void*)A.ptr, &vt) || vt != A.vt
+            || !Rd((void*)A.ptr, prioRaw, sizeof(prioRaw)))
+            continue;
+
+        const uint32_t sensor   = *(uint32_t*)(prioRaw + 0x04);
+        const uint32_t code     = *(uint32_t*)(prioRaw + 0x08);
+        const uint32_t category = *(uint32_t*)(prioRaw + 0x0C);
+        const uint32_t objectId = *(uint32_t*)(prioRaw + 0x10);
+        const uint32_t extra    = *(uint32_t*)(prioRaw + 0x14);
+
+        bool want = false;
+        for (int k = 0; k < kCodeCount; ++k)
+            if (code == kCodes[k]) { want = true; break; }
+        if (!want) continue;
+
+        uint32_t pCount = *(uint32_t*)(prioRaw + 0x1C);
+        if (pCount > 16u) pCount = 0;
+        uintptr_t pArray = *(uint32_t*)(prioRaw + 0x28);
+        uintptr_t pPtrs[16] = {};
+        const bool pOk = pCount == 0u
+            || (LooksHeap(pArray) && Rd((void*)pArray, pPtrs, pCount * 4));
+
+        logFile << "GuardianAudit code=" << code
+                << " tuple{s=" << sensor << ",cat=" << category
+                << ",obj=" << objectId << ",extra=" << extra
+                << "} personality=" << pCount << (pOk ? "" : " ARRAY_BAD")
+                << std::endl;
+        ++matched;
+
+        if (pOk) {
+            for (uint32_t n = 0; n < pCount; ++n) {
+                BYTE cp[0x24] = {};
+                if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
+                const int32_t addS32  = *(int32_t*)(cp + 0x04);
+                float addF32 = 0; memcpy(&addF32, cp + 0x08, 4);
+                const uint32_t brk  = *(uint32_t*)(cp + 0x0C);
+                const uint32_t chkCnt  = *(uint32_t*)(cp + 0x14);
+                const uint32_t chkCap  = *(uint32_t*)(cp + 0x18);
+                const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
+                logFile << "  rule[" << n << "] AddS32=" << addS32
+                        << " AddF32=" << addF32 << " break=" << brk
+                        << " checks=" << chkCnt << "/" << chkCap << std::endl;
+
+                // Build 57.2: дамп СОДЕРЖИМОГО каждого check (сырые байты).
+                // Check — объект с условием выбора правила. Разбираем offline.
+                if (chkCnt && chkCnt <= 8u && LooksHeap(chkArr)) {
+                    uintptr_t ckPtrs[8] = {};
+                    if (Rd((void*)chkArr, ckPtrs, chkCnt * 4)) {
+                        for (uint32_t c = 0; c < chkCnt; ++c) {
+                            BYTE ck[0x30] = {};
+                            if (!Rd((void*)ckPtrs[c], ck, sizeof(ck))) continue;
+                            char hex[0x30 * 3 + 4] = {};
+                            for (int b = 0; b < 0x30; ++b)
+                                sprintf_s(hex + b * 3, sizeof(hex) - b * 3,
+                                    "%02X ", ck[b]);
+                            logFile << "    check[" << c << "] " << hex << std::endl;
+                        }
+                    }
+                }
+
+                if (code == 54 && tailLen + 96 < sizeof(tail)) {
+                    tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
+                        " c54.r%d=%d", n, addS32);
+                }
+            }
+        }
+    }
+
+    if (matched == 0) {
+        lstrcpynA(g_guardianAuditStatus,
+            "Guardian audit: NO rows matched (census not ready?)", sizeof(g_guardianAuditStatus));
+    } else if (tailLen) {
+        sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
+            "Guardian audit: %d rows, code54 rules:%s", matched, tail);
+    } else {
+        sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
+            "Guardian audit: %d rows matched (code 54 not seen)", matched);
+    }
+    logFile << "GuardianAudit: totalRows=" << totalRows
+            << " matched=" << matched << std::endl;
+    return g_guardianAuditStatus;
+}
+
+// ============ Build 57.1 — динамический Guardian-фикс ============
+// Снимает доказанный штраф -3 с code 54 (WpnDaggerAtk) rule 0, транзакционно.
+// Кортеж подтверждён дампом Build 57 (GuardianAudit):
+//   code=54 tuple{sensor=1, category=0, objectId=0, extra=1} personality=5
+//     rule[0] AddS32=-3 AddF32=0 break=0 checks=1
+static PartyPriorityProfileRule g_guardianFixRule;
+static bool   g_guardianFixInit = false;
+static bool   g_guardianFixArmed = false;
+static bool   g_guardianFixApplied = false;
+static int    g_guardianFixWrites = 0;
+static int    g_guardianFixRollbacks = 0;
+static char   g_guardianFixStatus[160] = "Guardian fix: disabled";
+
+static void GuardianFixInitOnce()
+{
+    if (g_guardianFixInit) return;
+    g_guardianFixInit = true;
+    memset(&g_guardianFixRule, 0, sizeof(g_guardianFixRule));
+    g_guardianFixRule.sensor     = 1;
+    g_guardianFixRule.code       = 54;
+    g_guardianFixRule.category   = 0;
+    g_guardianFixRule.objectId   = 0;
+    g_guardianFixRule.extra      = 1;
+    g_guardianFixRule.ruleIndex  = 0;
+    g_guardianFixRule.expectedAddS32 = -3;
+    g_guardianFixRule.desiredAddS32  = 0;
+    g_guardianFixRule.expectedBreak  = 0;
+    g_guardianFixRule.expectedCheckCount = 1;
+    g_guardianFixRule.expectedSlot = -1; // слот не проверяем (конвергенция по AddS32)
+}
+
+void DevTools::GuardianFixSetTarget(int32_t desiredAddS32)
+{
+    GuardianFixInitOnce();
+    g_guardianFixRule.desiredAddS32 = desiredAddS32;
+    // desired == vanilla (-3) → откат; иначе — активен.
+    g_guardianFixArmed = (desiredAddS32 != g_guardianFixRule.expectedAddS32);
+}
+
+bool DevTools::GuardianFixIsApplied()
+{
+    return g_guardianFixApplied;
+}
+
+const char* DevTools::GuardianFixStatus()
+{
+    return g_guardianFixStatus;
+}
+
+// Build 58: единый tick с градиентом. Целевое значение = desired (если armed)
+// или expected (rollback). Каждый тик читаем текущее, при расхождении —
+// write + readback (verify) + откат к прежнему при неудаче. Поддерживает
+// плавную смену desired (градиент: -3 → 0 → +2 по дистанции угрозы).
+void DevTools::GuardianFixTick()
+{
+    GuardianFixInitOnce();
+    PartyPriorityProfileRule& R = g_guardianFixRule;
+
+    if (g_guardianFixArmed && !R.resolved) {
+        if (!PartyPriorityProfileResolveRule(R)) {
+            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+                "Guardian fix: ARMED, rule not resolved (census pending)");
+            return;
+        }
+    }
+    if (!R.resolved) {
+        g_guardianFixApplied = false;
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: disabled (not resolved)");
+        return;
+    }
+
+    const int32_t target = g_guardianFixArmed ? R.desiredAddS32 : R.expectedAddS32;
+    int32_t cur = 0;
+    uintptr_t vt = 0;
+    if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
+        || !Rd((void*)(R.rulePtr + 0x04), &cur, 4)) {
+        R.resolved = R.applied = false;
+        g_guardianFixApplied = false;
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: rule lost");
+        return;
+    }
+    R.currentAddS32 = cur;
+
+    if (cur == target) {
+        g_guardianFixApplied = g_guardianFixArmed;
+        if (g_guardianFixArmed) {
+            int slot = PartyPriorityLiveSlot(R.prioPtr);
+            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+                "Guardian fix: APPLIED (code54 = %d) slot=%d writes=%d",
+                target, slot, g_guardianFixWrites);
+        } else {
+            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+                "Guardian fix: vanilla (rolled back x%d)", g_guardianFixRollbacks);
+        }
+        return;
+    }
+
+    // Переход к целевому значению: write + readback (verify), при неудаче —
+    // вернуть прежнее.
+    if (!WrSafe((void*)(R.rulePtr + 0x04), &target, 4)) {
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: write FAILED");
+        return;
+    }
+    int32_t verify = 0;
+    if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4) || verify != target) {
+        WrSafe((void*)(R.rulePtr + 0x04), &cur, 4);
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: verify FAILED");
+        return;
+    }
+    R.currentAddS32 = verify;
+    if (g_guardianFixArmed) {
+        ++g_guardianFixWrites;
+        int slot = PartyPriorityLiveSlot(R.prioPtr);
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: APPLIED (code54 = %d) slot=%d writes=%d",
+            target, slot, g_guardianFixWrites);
+    } else {
+        ++g_guardianFixRollbacks;
+        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
+            "Guardian fix: vanilla (rolled back x%d)", g_guardianFixRollbacks);
+    }
+    g_guardianFixApplied = g_guardianFixArmed;
+}
+
 void DevTools::WorldScan_Tick()
 {
     // Presence only. Engine keeps uEm* on the list and on screen far
     // past the spawn sphere. World=0 means the 29KB body is gone.
     // Do not invent a distance despawn.
     if (!g_enabled) return;
-    if (!InWorld()) {
-        PartyIntentTraceStop("world unload");
-        PartyPriorityProfileRestoreAll("world unload");
-        PartyPriorityProfileResetRuntime();
-        g_priorityProfileWorldSince = 0;
-        g_priorityProfileLastDiscover = 0;
+    bool inWorld = InWorld();
+    if (!inWorld) {
+        // Build 56.7: cleanup только на ПЕРЕХОДЕ в «не в мире», а не каждый тик
+        // (раньше RestoreAll логировал «world unload» каждые 150 мс — спам).
+        if (g_wasInWorld) {
+            PartyIntentTraceStop("world unload");
+            PartyPriorityProfileRestoreAll("world unload");
+            PartyPriorityProfileResetRuntime();
+            g_priorityProfileWorldSince = 0;
+            g_priorityProfileLastDiscover = 0;
+            g_arisenPosOk = false;
+            g_pawnPosOk = false;
+            g_partyPosLastDiscover = 0;
+            // Сброс тел: старые body-указатели после выгрузки недействительны.
+            // Без этого PartyPositionsTick мог залипнуть на старом uPlayer.
+            g_nParty = 0;
+            // Build 57.1: сброс dynamic fix-правила (указатели устарели).
+            g_guardianFixRule.resolved = g_guardianFixRule.applied = false;
+            g_guardianFixRule.prioPtr = g_guardianFixRule.rulePtr = 0;
+            g_guardianFixApplied = false;
+        }
+        g_wasInWorld = false;
         return;
     }
+    g_wasInWorld = true;
+
+    // Build 56.2: Guardian doctrine anchor/pawn positions (throttled discover + cheap read).
+    PartyPositionsTick();
 
     // Temporary player/pawn probe: '=' takes an AI snapshot. This is
     // intentionally checked before the WorldScan throttle so a deliberate
@@ -6092,6 +6485,14 @@ static void RenderDevToolsUI()
         ImGui::SameLine();
         ImGui::TextDisabled("- profile  = snapshot");
 
+        // Build 56.5: исследовательские дампы OFF по умолчанию.
+        if (ImGui::Checkbox("Write research dumps (json/csv)", &g_researchDump)) {
+            config.setBool("devtools", "researchDump", g_researchDump);
+            if (!g_researchDump && g_intentTrace) PartyIntentTraceStop("dump disabled");
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("When ON, capture writes ddda_party_recon / ddda_pawn_ai_bridge / ddda_pawn_intent_trace. Off by default — not needed for Guardian doctrine.");
+
         ImVec4 pcol = g_nParty >= 2
             ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f)
             : ImVec4(1.0f, 0.65f, 0.25f, 1.0f);
@@ -6597,6 +6998,8 @@ void Hooks::DevTools()
     // Дефолт OFF: игроку DevTools не нужен, а WorldScan_Tick стоит 150 мс-обхода.
     // Для разработки включается в ddda_ai_overhaul.ini: [devtools] enabled = on
     g_enabled = config.getBool("devtools", "enabled", false);
+    // Исследовательские дампы (JSON/CSV) — отдельно, дефолт OFF.
+    g_researchDump = config.getBool("devtools", "researchDump", false);
     g_base = (uintptr_t)GetModuleHandle(nullptr);
 
     if (g_base) {

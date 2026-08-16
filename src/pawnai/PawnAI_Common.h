@@ -40,14 +40,85 @@ inline const char* InclName(int i){
     static const char* n[]={"Scather","Medicant","Mitigator","Challenger","Utilitarian","Guardian","Nexus","Pioneer","Acquisitor","Skill Use"};
     return n[i];
 }
-enum InclCat { CAT_USEFUL, CAT_NEUTRAL, CAT_JUNK };
+enum InclCat { CAT_USEFUL, CAT_NEUTRAL, CAT_JUNK, CAT_DOCTRINE };
 inline InclCat GetInclCategory(int idx){
     switch(idx){
         case I_SCATHER: case I_MEDICANT: case I_MITIGATOR:
         case I_CHALLENGER: case I_UTILITARIAN: return CAT_USEFUL;
-        case I_GUARDIAN: case I_NEXUS: case I_ACQUISITOR: return CAT_JUNK;
+        // Build 55: Guardian/Nexus больше не «мусор», а доктрины защиты.
+        // Они выходят из-под кордона; их реализацией займётся GuardianDoctrine
+        // (priority-совет с учётом vocation), а не числовой кап.
+        case I_GUARDIAN: case I_NEXUS: return CAT_DOCTRINE;
+        // Acquisitor — единственная инклинация, бесполезная в бою; ею управляет
+        // AcquisitorManager (подавление в бою / временный подъём вне боя).
+        case I_ACQUISITOR: return CAT_JUNK;
         default: return CAT_NEUTRAL;
     }
+}
+
+// ================= Vocation =================
+// Оффсет подтверждён (docs/SOURCE_OF_TRUTH.md, character record +0x6E0, int32).
+// Enum значений ПОДТВЕРЖДЁН пользовательской CE-таблицей (2026-08-16).
+// ВНИМАНИЕ: 1-based, порядок НЕ совпадает с интуитивным:
+//   1=Fighter, 2=Strider, 3=Mage, 4=Mystic Knight, 5=Assassin,
+//   6=Magick Archer, 7=Warrior, 8=Ranger, 9=Sorcerer
+// Значения 0 и ≥10 не определены.
+#define VOCATION_OFFSET 0x6E0
+
+enum VocationId {
+    VOC_FIGHTER = 1, VOC_STRIDER = 2, VOC_MAGE = 3, VOC_MYSTIC_KNIGHT = 4,
+    VOC_ASSASSIN = 5, VOC_MAGICK_ARCHER = 6, VOC_WARRIOR = 7, VOC_RANGER = 8,
+    VOC_SORCERER = 9,
+    VOC_UNKNOWN = -1
+};
+
+inline const char* VocationName(int v){
+    switch(v){
+        case VOC_FIGHTER:        return "Fighter";
+        case VOC_STRIDER:        return "Strider";
+        case VOC_MAGE:           return "Mage";
+        case VOC_MYSTIC_KNIGHT:  return "Mystic Knight";
+        case VOC_ASSASSIN:       return "Assassin";
+        case VOC_MAGICK_ARCHER:  return "Magick Archer";
+        case VOC_WARRIOR:        return "Warrior";
+        case VOC_RANGER:         return "Ranger";
+        case VOC_SORCERER:       return "Sorcerer";
+        default:                 return "?";
+    }
+}
+
+// Грубая классификация «стиля боя» для доктрин. DDDA-вокации гибридны,
+// поэтому это первая прикидка; позже уточним по action-eligibility.
+enum VocationClass { VCL_MELEE, VCL_RANGED, VCL_CASTER, VCL_HYBRID, VCL_UNKNOWN };
+
+inline VocationClass VocationClassOf(int v){
+    switch(v){
+        case VOC_FIGHTER: case VOC_WARRIOR: case VOC_MYSTIC_KNIGHT: return VCL_MELEE;
+        case VOC_MAGE: case VOC_SORCERER: return VCL_CASTER;
+        case VOC_RANGER: case VOC_MAGICK_ARCHER: return VCL_RANGED;
+        case VOC_STRIDER: case VOC_ASSASSIN: return VCL_HYBRID;
+        default: return VCL_UNKNOWN;
+    }
+}
+
+inline const char* VocationClassName(VocationClass c){
+    switch(c){
+        case VCL_MELEE:  return "Melee";
+        case VCL_RANGED: return "Ranged";
+        case VCL_CASTER: return "Caster";
+        case VCL_HYBRID: return "Hybrid";
+        default:         return "?";
+    }
+}
+
+// Чтение вокации из character record. recordBase = *pBase + PLAYER_BASE
+// (для главной пешки — + PLAYER_BASE + PAWN_OFFSET).
+inline int ReadVocation(uintptr_t recordBase){
+    if(!recordBase) return VOC_UNKNOWN;
+    SEH_TRY
+        return *(int32_t*)(recordBase + VOCATION_OFFSET);
+    SEH_EXCEPT
+    return VOC_UNKNOWN;
 }
 
 struct InclPreset {

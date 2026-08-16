@@ -16,19 +16,38 @@
 | `pWorld` | signature-resolved world pointer | ✅ |
 | `*pBase + 0xA7000` | Arisen character record | ✅ |
 | `Arisen record + 0x7F0` | Main Pawn character record | ✅ |
+| `*pBase + 0xA7A14` | Discipline Points (DP) | ✅ |
+| `*pBase + 0xA7A18` | Gold | ✅ |
+| `*pBase + 0xA7A1C` | Rift Crystals (RC) | ✅ |
 
 ## 2. Character record (Arisen/Main Pawn)
 
+Vocation enum (1-based, confirmed via user CE table 2026-08-16):
+
+```text
+1 = Fighter         2 = Strider        3 = Mage
+4 = Mystic Knight   5 = Assassin       6 = Magick Archer
+7 = Warrior         8 = Ranger         9 = Sorcerer
+0 / ≥10 = unknown
+```
+
 | Offset | Type | Field | Status |
 |---:|---|---|---|
-| `+0x6E0` | int32 | vocation | ✅ |
-| `+0x868` | 3×int32 | equipped skills | ✅ |
+| `+0x6E0` | int32 | vocation (1-based enum above) | ✅ |
+| `+0x868` | 6×int32 | equipped skills (main weapon 3 + secondary weapon 3) | ✅ |
 | `+0x8D0` | 6×int32 | augments | ✅ |
 | `+0x96C` | float | current HP | ✅ |
 | `+0x970` | float | max HP | ✅ |
 | `+0x974` | float | recoverable/secondary HP | 🔎 |
 | `+0x978` | float | current stamina | ✅ |
+| `+0x97C` | float | max stamina | ✅ |
+| `+0x980` | float | recoverable/secondary stamina | 🔎 |
+| `+0x984` | float | Strength | ✅ |
+| `+0x988` | float | Defense | ✅ |
+| `+0x98C` | float | Magick | ✅ |
+| `+0x990` | float | Magick Defense | ✅ |
 | `+0x994` | int32 | XP | ✅ |
+| `+0x998` | int32 | XP to next level | ✅ |
 | `+0xDD0` | uint16 | level | ✅ |
 | `+0x1616` | 322 B | bestiary `mStudyFlag` | ✅ |
 | `+0x1B90 + id*0x0C` | float in 12-B row | inclinations/skill-use values | ✅ |
@@ -42,7 +61,7 @@ Reference test save: Arisen HP `331/498`, stamina `600`; Main Pawn HP `327/505`,
 | `+0x0C` | ptr | live-list next | observed `uEm*` | ✅ |
 | `+0x10` | ptr | live-list prev | observed `uEm*` | ✅ |
 | `+0x2D` | byte | gid/type byte | DTI name still required | ✅ |
-| `+0x40/+0x44/+0x48` | float | world XYZ | live units | ✅ |
+| `+0x40/+0x44/+0x48` | float | world XYZ (НЕ метры — ~сантиметры, ~100/m) | live units | ✅ |
 | `+0x60/+0x64/+0x68` | float | body scale W/H/D | EnemyTuner-observed | ✅ |
 | `+0x2DC0` | ptr | Act bank | player/pawn/enemy observations | ✅ |
 | `+0x2DC8` | ptr | current Act object | player/pawn/enemy observations | ✅ |

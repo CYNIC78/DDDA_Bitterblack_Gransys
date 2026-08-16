@@ -1,48 +1,62 @@
-Build 52 — Main Pawn semantic map: all planner slots (read-only)
+Build 58 — Guardian: градиентная «зона телохранителя»
 
 Собрать:
   Visual Studio → Release | Win32 → Build Solution
 
 Проверить в F12:
-  build 52-pawn-semantic-all-slots
+  build 58-guardian-bodyguard-gradient
 
-Build 51 подтвердил:
-  - exact bow action: cPlActWpnBow / packed 0x02060000 / priority code 57;
-  - code 57 PlanCtrl -> WpnBowAtk2 IDs 12/107 + DmgUkemi 149 fallback;
-  - exact dagger action: cPlActWpnDaggerAtckLandL / code 54;
-  - code 54 -> WpnDaggerAtk IDs 9/124/132/133/10;
-  - current combat target: uCmc+0x2EB8;
-  - cAICtrl child layout подписан.
+ИДЕЯ (твоя, реализована безопасно)
+===================================
 
-Цель Build 52:
-  - не ловить каждый priority code вручную;
-  - за один snapshot пройти все 91 cPlanCtrl slots;
-  - для каждого slot собрать cGoalPlanningNode+0x04 links;
-  - сопоставить links с 69 rAIGoalPlanning resources и Interface IDs;
-  - массово заполнить pawn_priority_semantics.json/csv.
+Лук (code 57) имеет personality=0 — штрафовать его напрямую = структурная
+запись (рискованно, мы так не делаем). Вместо этого делаем ГРАДИЕНТ на
+кинжалы (code 54 rule 0), который сам переигрывает лук на нужной дистанции:
 
-Добавлен JSON section:
-  plannerSlots[91]
-    code
-    PlanCtrl ptr/hash
-    nodeLinks[]
+  вне зоны (>10 м)      → vanilla (-3): пешка свободна, лук работает
+  preempt-зона (6..10 м) → снять штраф (-3 → 0): пешка «готовится», кинжалы в руке
+  melee-зона (<6 м)      → лёгкий бонус (-3 → +2): пешка фиксируется на перехвате
 
-Analyzer автоматически переводит каждый node link в:
-  GOAP resource path
-  InterfaceID
-  cCmc action-interface pointer
+Это твоя «зона, где враг потенциально опасен → пешка заранее готовится
+напасть», но плавно (градиент), а не бинарно. Заодно лечит weapon-switch
+истерику: смена намерения идёт по дистанции, а не щелчком на границе.
 
-ТЕСТ — ОДИН снимок
+Новые ini-ключи ([pawnAI]):
+  guardianPreemptRadius   = 10.0   (м)
+  guardianDaggerBiasMelee   = 2     (desired AddS32 в melee-зоне)
+  guardianDaggerBiasPreempt = 0     (desired AddS32 в preempt-зоне)
 
-1. Только Arisen + Main Pawn.
-2. Priority profile = green vanilla.
-3. Загрузить сейв и подождать 20 секунд, чтобы AI resources были полностью готовы.
-4. F12 → Player + Main Pawn recon.
-5. Нажать "Find both + capture baseline".
-6. Дождаться AI bridge 001.
+Транзакционно: каждый тик читаем текущее AddS32, при расхождении — write +
+readback + откат при неудаче. Поддерживает плавную смену desired.
 
-Прислать:
-  ddda_pawn_ai_bridge_001m.json
+ЧТО ТЕСТИРОВАТЬ
+===============
 
-Состояние пешки не критично: Build 52 читает все planner slots, а не только selected.
-Build 52 read-only. F9 не использовать.
+1. guardianFix ON. Подведи врага ПОСТЕПЕННО:
+   - далеко (>10 м): пешка спокойно держит лук;
+   - ~7-9 м: пешка должна «приготовиться» (вытащить кинжалы), но не рваться;
+   - <6 м: пешка фиксируется и бьёт кинжалами.
+
+2. Наблюдай, пропала ли истерика кинжалы<->лук (должна — градиент плавный).
+
+3. Статус-строка теперь показывает текущее значение:
+   «Guardian fix: APPLIED (code54 = 0)» в preempt,
+   «Guardian fix: APPLIED (code54 = 2)» в melee,
+   «vanilla (rolled back)» вне зоны.
+
+ЧТО ПРИСЛАТЬ
+============
+
+1. Компилируется ли.
+
+2. Поведение в трёх дистанциях (далеко/preempt/melee) + статус-строка в каждой.
+
+3. Стала ли пешка заметно «телохранителем»: готовится заранее, перехватывает
+   вплотную, но не гоняется далеко от тебя.
+
+ЗАМЕТКА ПРО ЦЕЛИ
+================
+
+Это укрепляет ГОТОВНОСТЬ и завязку на угрозу рядом с тобой, но НЕ
+переранжирует цели (кого выбрать первым — это слой выше приоритета).
+Настоящую приоритизацию целей сделаем позже через sRecognition::cEnemyInfo.

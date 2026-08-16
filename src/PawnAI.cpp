@@ -1,6 +1,9 @@
 /**
  * PawnAI.cpp — Pawn AI Overhaul Orchestrator & Custom Anchors
- * Modules: Sanitary Cordon, Smart Utilitarian, Custom Anchors, Tactical Switch
+ * Modules: Acquisitor Manager, Smart Utilitarian, Custom Anchors, Tactical Switch
+ *
+ * Build 55: Sanitary Cordon заменён на AcquisitorManager. Guardian/Nexus
+ * вышли из-под кордона (CAT_DOCTRINE) — их реализацией займётся GuardianDoctrine.
  *
  * АРХИТЕКТУРА: модули запускаются каждый в своём SEH-блоке.
  * Падение любого модуля не роняет остальные и не роняет игру.
@@ -15,6 +18,7 @@
 #include "devtools/DevTools.h"
 #include "pawnai/PawnAI_Common.h"
 #include "pawnai/PawnAI_BusOrchestrator.h"
+#include "pawnai/GuardianDoctrine.h"
 
 using namespace PawnAI;
 
@@ -40,6 +44,10 @@ void UpdatePawnAI(){
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     __try { EnemyTuner::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
+    __try { PawnAI::GuardianDoctrineTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
@@ -69,10 +77,10 @@ void RenderPawnAIUI(){
     if(ImGui::Checkbox("Enable Pawn AI Master", &g_enabled)) config.setBool("pawnAI", "enabled", g_enabled);
     ImGui::Separator();
 
-    // 1. Sanitary Cordon
-    ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Sanitary Cordon");
-    if(ImGui::Checkbox("Enable##san", &g_orch.sanitary.enabled)) config.setBool("pawnAI", "sanitary", g_orch.sanitary.enabled);
-    if(ImGui::IsItemHovered()) ImGui::SetTooltip("Dynamic cap on junk inclinations (Guardian/Nexus/Acquisitor) based on 3rd highest useful.");
+    // 1. Acquisitor Manager (бывший Sanitary Cordon)
+    ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Acquisitor Manager");
+    if(ImGui::Checkbox("Enable##acq", &g_orch.acquisitor.enabled)) config.setBool("pawnAI", "acquisitor", g_orch.acquisitor.enabled);
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("Soft manager for Acquisitor only: suppressed in combat, temporarily boosted out of combat (loot vacuum). Guardian/Nexus are now doctrines and are NOT capped.");
 
     // 2. Smart Utilitarian
     ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Smart Utilitarian");
@@ -143,7 +151,7 @@ void RenderPawnAIUI(){
         float incl[I_COUNT]; ReadAllIncl(incl, 0);
 
         ImGui::TextDisabled("Slider = current target (truth). Live = actual value (+delta from combat).");
-        ImGui::TextDisabled("Cordon Cap: %.0f | %s%s", g_orch.sanitary.lastCap,
+        ImGui::TextDisabled("Acquisitor mgr: combat=suppress, idle=loot boost | %s%s",
             PawnAI::PresetManager::presets[g_orch.presets.lastPresetIdx].name,
             g_orch.presets.IsModified() ? " (Modified)" : "");
         ImGui::Separator();
@@ -153,9 +161,10 @@ void RenderPawnAIUI(){
         const float itemH = ImGui::GetWindowFontSize() + 2.0f * ImGui::GetStyle().FramePadding.y;
 
         for(int i = 0; i < I_COUNT; i++) {
-            ImVec4 nameCol = (GetInclCategory(i) == CAT_USEFUL) ? ImVec4(0.3f, 1, 0.3f, 1) :
-                             (GetInclCategory(i) == CAT_JUNK)   ? ImVec4(1, 0.5f, 0.3f, 1) :
-                                                                  ImVec4(0.8f, 0.8f, 0.8f, 1);
+            ImVec4 nameCol = (GetInclCategory(i) == CAT_USEFUL)   ? ImVec4(0.3f, 1, 0.3f, 1) :
+                             (GetInclCategory(i) == CAT_DOCTRINE) ? ImVec4(0.5f, 0.6f, 1, 1) :
+                             (GetInclCategory(i) == CAT_JUNK)     ? ImVec4(1, 0.5f, 0.3f, 1) :
+                                                                    ImVec4(0.8f, 0.8f, 0.8f, 1);
             ImGui::PushID(i);
             ImGui::TextColored(nameCol, "%-12s", InclName(i));
             ImGui::SameLine(115);
@@ -165,9 +174,10 @@ void RenderPawnAIUI(){
             if (fraction < 0.0f) fraction = 0.0f;
             if (fraction > 1.0f) fraction = 1.0f;
 
-            ImVec4 barColor = (GetInclCategory(i) == CAT_USEFUL) ? ImVec4(1.0f, 0.85f, 0.25f, 0.9f) :
-                              (GetInclCategory(i) == CAT_JUNK)   ? ImVec4(1.0f, 0.55f, 0.2f, 0.85f) :
-                                                                   ImVec4(0.7f, 0.85f, 1.0f, 0.85f);
+            ImVec4 barColor = (GetInclCategory(i) == CAT_USEFUL)   ? ImVec4(1.0f, 0.85f, 0.25f, 0.9f) :
+                              (GetInclCategory(i) == CAT_DOCTRINE) ? ImVec4(0.5f, 0.6f, 1.0f, 0.9f) :
+                              (GetInclCategory(i) == CAT_JUNK)     ? ImVec4(1.0f, 0.55f, 0.2f, 0.85f) :
+                                                                     ImVec4(0.7f, 0.85f, 1.0f, 0.85f);
             ImGui::PushStyleColor(ImGuiCol_PlotHistogram, barColor);
             ImGui::ProgressBar(fraction, ImVec2(barW, itemH), "");
             ImGui::PopStyleColor();
@@ -191,9 +201,9 @@ void RenderPawnAIUI(){
             else
                 ImGui::Text("Live: %4.0f", incl[i]);
 
-            if(GetInclCategory(i) == CAT_JUNK && incl[i] > g_orch.sanitary.lastCap) {
+            if(i == I_ACQUISITOR && g_orch.acquisitor.lastState == PawnAI::AcquisitorManager::ST_SUPPRESS) {
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "[cordon]");
+                ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "[mgr]");
             }
 
             ImGui::PopID();
@@ -227,6 +237,96 @@ void RenderPawnAIUI(){
         ImGui::TreePop();
     }
 
+    // 5. Guardian Doctrine (единая секция, без номеров билдов)
+    if(ImGui::TreeNode("Guardian Doctrine")) {
+        uintptr_t playerRec = 0, pawnRec = 0;
+        if(pBase && *pBase){
+            playerRec = (uintptr_t)(*pBase) + PLAYER_BASE;
+            pawnRec   = playerRec + PAWN_OFFSET;
+        }
+        int arisenVoc = ReadVocation(playerRec);
+        int pawnVoc   = ReadVocation(pawnRec);
+
+        ImGui::Text("Arisen: %s (%s) | Main pawn: %s (%s)",
+            VocationName(arisenVoc), VocationClassName(VocationClassOf(arisenVoc)),
+            VocationName(pawnVoc),   VocationClassName(VocationClassOf(pawnVoc)));
+
+        // Доктрина — observe-only. Decide() ничего не пишет в игру.
+        static PawnAI::GuardianDoctrine doctrine;
+        doctrine.worldUnitsPerMeter = config.getFloat("pawnAI", "worldUnitsPerMeter", 100.0f);
+        PawnAI::GuardianSitRep sit;
+        PawnAI::BuildGuardianSitRep(sit);
+        PawnAI::GuardianReport rep;
+        doctrine.Decide(sit, rep);
+
+        float incl[I_COUNT]; ReadAllIncl(incl, 0);
+        const char* owner =
+            (incl[I_GUARDIAN] > incl[I_NEXUS] + 1.0f) ? "Guardian (anchor = Arisen)" :
+            (incl[I_NEXUS] > incl[I_GUARDIAN] + 1.0f) ? "Nexus (anchor = selected pawn)" :
+                                                        "Tie (primary inclination decides)";
+        ImGui::Text("Guardian %.0f / Nexus %.0f — %s", incl[I_GUARDIAN], incl[I_NEXUS], owner);
+        ImGui::TextDisabled("Observe-only: decides, writes NOTHING to game memory.");
+
+        ImGui::Separator();
+        // Build 57.1: динамический Guardian-фикс (code 54, -3 -> 0).
+        if (ImGui::Checkbox("Guardian fix (code 54, -3->0)", &PawnAI::g_guardianFixEnabled)) {
+            config.setBool("pawnAI", "guardianFix", PawnAI::g_guardianFixEnabled);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Transactional: lifts Guardian -3 penalty on WpnDaggerAtk ONLY while a threat is in your zone and pawn is melee/hybrid. Rollback when zone clears.");
+        ImGui::TextColored(DevTools::GuardianFixIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
+            "%s", DevTools::GuardianFixStatus());
+
+        ImGui::Separator();
+        // Build 57: разведка Guardian-штрафов (read-only). Кнопка + статус.
+        // Результат кэшируем в static — аудит нельзя гонять каждый кадр (спам лога).
+        static char auditCache[640] = "Guardian audit: press the button (needs bodies resolved).";
+        if (ImGui::Button("Audit Guardian penalties (code 54)")) {
+            const char* r = DevTools::GuardianPenaltyAudit();
+            if (r) lstrcpynA(auditCache, r, sizeof(auditCache));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("read-only, logs full tuple");
+        ImGui::TextWrapped("%s", auditCache);
+
+        ImGui::Separator();
+        ImGui::Text("Response mode: %s | combat %s",
+            rep.responseMode, sit.inCombat ? "YES" : "no");
+
+        if(!rep.anchorResolved){
+            ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1),
+                "Arisen position NOT resolved yet (world not loaded / DevTools off).");
+        } else {
+            ImGui::Text("Arisen pos: (%.1f, %.1f, %.1f) raw", sit.anchorX, sit.anchorY, sit.anchorZ);
+            if(rep.pawnResolved)
+                ImGui::Text("Pawn   pos: (%.1f, %.1f, %.1f) raw", sit.pawnX, sit.pawnY, sit.pawnZ);
+            else
+                ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "Pawn pos: (pending resolution...)");
+            char nearestBuf[32];
+            if (rep.threatsInZone > 0 && rep.nearestThreatDist < 1e8f)
+                sprintf_s(nearestBuf, sizeof(nearestBuf), "%.1f m", rep.nearestThreatDist);
+            else
+                lstrcpynA(nearestBuf, "---", sizeof(nearestBuf));
+            ImGui::Text("Threats in zone: %d | nearest %s | pawn->Arisen %.1f m | engaged %s",
+                rep.threatsInZone, nearestBuf, rep.pawnAnchorDist,
+                rep.zoneEngaged ? "YES" : "no");
+        }
+        ImGui::TextDisabled("World units are NOT meters (~cm, scale %.0f/m). Distances shown in meters.",
+            doctrine.worldUnitsPerMeter);
+
+        if(rep.adviceCount){
+            for(int i = 0; i < rep.adviceCount; i++){
+                const PawnAI::GuardianAdvice& a = rep.advice[i];
+                ImGui::TextColored(ImVec4(0.5f, 0.6f, 1, 1), "[advice] %s", a.reason);
+                ImGui::TextDisabled("   code=%u intent=%s deltaS32=%d",
+                    a.code, a.intentKey ? a.intentKey : "(none)", a.deltaS32);
+            }
+        } else {
+            ImGui::TextDisabled("No advice (vanilla) — no threat in zone, or zone unresolved.");
+        }
+        ImGui::TreePop();
+    }
+
     // Bus status — копируем под блокировкой, работаем с локальными копиями
     CombatReport bus = CombatBus::Instance().LastReport();
     WorldReport world = CombatBus::Instance().LastWorld();
@@ -242,7 +342,7 @@ void RenderPawnAIUI(){
         world.count, world.enemyCount, world.critterCount, world.deadCount, age);
     ImGui::TextDisabled("   goblins: %d   cat %d   (critters = hares etc, not a threat)",
         world.goblinCount, world.dominantCategory);
-    ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Sanitary, SmartUtil, Anchors, Tactical",
+    ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Acquisitor, SmartUtil, Anchors, Tactical",
         INCL_STRIDE, MSTUDYFLAG_OFFSET);
     ImGui::PopID();
 }
@@ -250,13 +350,24 @@ void RenderPawnAIUI(){
 void Hooks::PawnAI(){
     g_enabled = config.getBool("pawnAI", "enabled", true);
     g_orch.presets.enabled   = config.getBool("pawnAI", "presetsEnabled", true);
-    g_orch.sanitary.enabled  = config.getBool("pawnAI", "sanitary", true);
+    g_orch.acquisitor.enabled = config.getBool("pawnAI", "acquisitor", true);
     g_orch.smartUtil.enabled = config.getBool("pawnAI", "smartUtil", true);
     g_orch.presets.smooth    = config.getFloat("pawnAI", "smooth", 0.10f);
     g_orch.tactical.enabled  = config.getBool("pawnAI", "tactical", true);
+    // Build 57.1: динамический Guardian-фикс (vanilla по умолчанию).
+    PawnAI::g_guardianFixEnabled = config.getBool("pawnAI", "guardianFix", false);
+    PawnAI::g_guardianMeleeRadius = config.getFloat("pawnAI", "guardianMeleeRadius", 6.0f);
+    // Build 58: градиентные зоны телохранителя.
+    PawnAI::g_guardianPreemptRadius = config.getFloat("pawnAI", "guardianPreemptRadius", 10.0f);
+    PawnAI::g_guardianDaggerBiasMelee = config.getInt("pawnAI", "guardianDaggerBiasMelee", 2);
+    PawnAI::g_guardianDaggerBiasPreempt = config.getInt("pawnAI", "guardianDaggerBiasPreempt", 0);
+    g_orch.acquisitor.suppressFloor = config.getFloat("pawnAI", "acquisitorCombatFloor", 100.0f);
+    g_orch.acquisitor.boostAmount   = config.getFloat("pawnAI", "acquisitorLootBoost", 180.0f);
+    g_orch.acquisitor.boostWindowMs = (DWORD)config.getInt("pawnAI", "acquisitorBoostWindowMs", 8000);
+    g_orch.acquisitor.returnMs      = (DWORD)config.getInt("pawnAI", "acquisitorReturnMs", 4000);
     g_orch.Init();
     int known = CountKnownEnemies();
-    logFile << "PawnAI v2.8 Modular initialized — Sanitary / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
+    logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
     g_pawnTickStop = false;
     g_pawnTickEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);

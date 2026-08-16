@@ -41,4 +41,28 @@ namespace DevTools {
     // Живое имя состояния по индексу в ПОЛНОМ списке (трупы включены).
     // deadOut — признак смерти. nullptr, если индекса нет или имя не читается.
     const char* EnemyActAt(int idx, bool* deadOut);
+
+    // Build 56.2 — Guardian doctrine anchor/pawn world positions.
+    // +0x40/+0x44/+0x48 (SOURCE_OF_TRUTH §2). false, если тела не резолвлены.
+    bool GetArisenWorldPos(float* x, float* y, float* z);
+    bool GetMainPawnWorldPos(float* x, float* y, float* z);
+
+    // Build 57 — разведка Guardian-штрафов (read-only).
+    // Сканирует уже разрешённые cPrioParam-строки (g_pawnAi) и для кодов
+    // Guardian-семейства (4/13/15/54/60/66) снимает identity-кортеж + AddS32
+    // каждого personality-правила. Нужно, чтобы БЕЗ угадывания найти точное
+    // правило code 54 с штрафом -3 для будущего A/B-записи.
+    // Возвращает компактную строку-отчёт (внутренний буфер, лог — полный).
+    const char* GuardianPenaltyAudit();
+
+    // Build 57.1 — динамический Guardian-фикс (code 54 rule 0, штраф -3 → 0).
+    // Транзакционный apply/rollback ОДНОГО правила, управляется флагом armed.
+    // Кортеж подтверждён дампом Build 57 (GuardianAudit):
+    //   code=54 tuple{s=1,cat=0,obj=0,extra=1} rule[0] AddS32=-3 break=0 checks=1
+    // Build 58: желаемое значение теперь произвольное (градиент). Передаётся
+    // через GuardianFixSetTarget(desired); desired == -3 (vanilla) = rollback.
+    void  GuardianFixSetTarget(int32_t desiredAddS32);
+    bool  GuardianFixIsApplied();
+    const char* GuardianFixStatus();
+    void  GuardianFixTick();   // вызывает доктрина каждый тик (apply/rollback)
 }

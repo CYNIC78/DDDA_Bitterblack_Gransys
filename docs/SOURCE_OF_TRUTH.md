@@ -16,21 +16,43 @@ Main Pawn record = Arisen record + 0x7F0
 
 Character record — save/gameplay data, не live scene body `uPlayer/uCmc`.
 
+Vocation enum (1-based, подтверждён CE-таблицей 2026-08-16):
+
+```text
+1=Fighter 2=Strider 3=Mage 4=Mystic Knight 5=Assassin
+6=Magick Archer 7=Warrior 8=Ranger 9=Sorcerer
+```
+
 | Offset record | Type | Field |
 |---:|---|---|
-| `+0x6E0` | int32 | vocation |
-| `+0x868` | 3×int32 | equipped skills |
+| `+0x6E0` | int32 | vocation (1-based enum) |
+| `+0x868` | 6×int32 | equipped skills (main weapon 3 + secondary weapon 3) |
 | `+0x8D0` | 6×int32 | augments |
 | `+0x96C` | float | current HP |
 | `+0x970` | float | max HP |
 | `+0x974` | float | recoverable/secondary HP |
 | `+0x978` | float | current stamina |
+| `+0x97C` | float | max stamina |
+| `+0x980` | float | recoverable/secondary stamina |
+| `+0x984` | float | Strength |
+| `+0x988` | float | Defense |
+| `+0x98C` | float | Magick |
+| `+0x990` | float | Magick Defense |
 | `+0x994` | int32 | XP |
+| `+0x998` | int32 | XP to next level |
 | `+0xDD0` | uint16 | level |
 | `+0x1616` | 322 B | `mStudyFlag` bestiary knowledge |
 | `+0x1B90` | 10×12 B | inclination values (9 inclinations + skill-use slot) |
 
 Inclination stride — `0x0C`; нельзя читать значения плотным `float[]`.
+
+Account economy (абсолютные, от `pBase`):
+
+| Offset | Type | Field |
+|---:|---|---|
+| `+0xA7A14` | int32 | Discipline Points (DP) |
+| `+0xA7A18` | int32 | Gold |
+| `+0xA7A1C` | int32 | Rift Crystals (RC) |
 
 ## 2. Live bodies и action/FSM
 
@@ -43,11 +65,21 @@ Main Pawn определяется динамически как `uCmc`, Arisen 
 | `+0x2DD4` | uint32 | packed current action code (player/main pawn подтверждены) |
 | `+0x2DE8` | ptr | duplicate current Act pointer (player/main pawn observations) |
 | `+0x2E64` | ptr | `cAICtrl` |
-| `+0x40/+0x44/+0x48` | float | world XYZ у live units |
+| `+0x40/+0x44/+0x48` | float | world XYZ у live units (единицы НЕ метры — ~сантиметры, см. §2 ниже) |
 
 Current Act использует стабильный placement-new buffer: меняется vtable/состояние, а не обязательно адрес. Прямая подмена `+0x2DC8` не является безопасным AI control.
 
 Подтверждённые packed codes main pawn: Wait `0`, Walk `1`, Run `2`, Dash `5`, Jump `8`.
+
+### 2.1 Масштаб мировых координат
+
+`+0x40/+0x44/+0x48` — это **не метры**. Единицы мира ≈ сантиметры (~100 единиц/метр). Косвенные доказательства:
+
+- `AIPlActParam` — дальности действий `500..4000`: как сантиметры это 5–40 м (осмысленно для удара/лука), как метры — абсурд;
+- гоблин-сенсор `em0100A.sn2` зрение `1500`: ~15 м агро-радиуса (осмысленно), не 1500 м;
+- live `pawn→Arisen ≈ 440` при следовании вплотную: ~4.4 м (нормальная дистанция следования), не 440 м.
+
+Точный фактор (100 vs иное) уточняется touch-тестом. В коде доктрины дистанции считаются в raw world-units и переводятся в метры через `worldUnitsPerMeter` (ini `[pawnAI]`, по умолчанию 100.0).
 
 ## 3. Main Pawn priority pipeline
 
@@ -125,6 +157,55 @@ AddS32 -2 -> slot 34
 ```
 
 Build 46 доказал transaction для codes 45/46 одновременно: slot 34 `[46,45]`, slot 35 `[47]`; vanilla — slot 35 `[47,46,45]`.
+
+### 3.5.1 Guardian-family modifiers (подтверждено Build 57 audit, read-only)
+
+Runtime дамп live `cPrioParam` для Guardian-кодов (85 rows total, совпадает с каноном). Identity-кортеж — полный tuple `{sensor, code, category, objectId, extra}`; каждое правило — отдельный `cCodeParam` с `AddS32/AddF32/break/checks`:
+
+| code | tuple | personality rules (AddS32) | статус |
+|---|---:|---|---|
+| `4` | `{0,·,0,0,1}` | `[+3]` break=0 | CONFIRMED (wait/follow бонус) |
+| `13` | `{1,·,0,0,1}` | `[-4,-2,-2]` break=1 | CONFIRMED (party relation) |
+| `15` | `{0,·,0,0,1}` | `[-2,-2,-2]` break=1 | CONFIRMED (Air) |
+| `54` | `{1,·,0,0,1}` | `[-3,-2,+2,+5,-1]` break=0 | CONFIRMED (WpnDaggerAtk) |
+| `60` | `{1,·,0,0,1}` | `[-3,-3]` break=0 | CONFIRMED (Em0600Cover) |
+| `66` | `{1,·,0,0,1}` | `[-4]` break=0 | CONFIRMED (battle response) |
+
+`code 54` — главный рычаг: rule[0] несёт штраф `-3` (`break=0`, `checks=1`). Это «поводок пассивности» Guardian на WpnDaggerAtk. Бонусы `+2/+5` — другие состояния Guardian (низкая инклинация → бонус к атаке). Build 57.1 снимает именно rule[0] (`-3 → 0`) транзакционно.
+
+### 3.5.2 Семантика checks (подтверждено Build 57.2, read-only)
+
+Каждый `cCodeParam` несёт массив checks (по одному на правило здесь). Check-объект:
+
+```text
++0x00  vtable (4 байта)
++0x04  int32  — идентификатор склонности (0-based, СОВПАДАЕТ с нашим InclIdx):
+               0=Scather 1=Medicant 2=Mitigator 3=Challenger 4=Utilitarian
+               5=Guardian 6=Nexus 7=Pioneer 8=Acquisitor
++0x08  int32  — ранг склонности: 2=primary, 1=secondary, 0=tertiary
+```
+
+Доказательство — идеальная корреляция AddS32 ↔ (склонность, ранг) в code 54:
+
+| AddS32 | check | смысл |
+|---|---:|---|
+| -3 | (Guardian, primary) | Guardian главный → штраф кинжалы |
+| -2 | (Guardian, secondary) | Guardian второй → штраф |
+| +2 | (Scather, secondary) | Scather второй → бонус |
+| +5 | (Scather, primary) | Scather главный → бонус |
+| -1 | (Medicant, tertiary) | Medicant → лёгкий штраф |
+
+Следовательно: агрессивные склонности дают БОНУС к атаке, оборонительные —
+ШТРАФ. Это штатный «поводок», который мы переписываем.
+
+### 3.5.3 Лук (code 57) НЕ имеет personality-модификаторов
+
+`code 57 (WpnBowAtk2)` — `personality=0`. У лука НЕТ склонностных штрафов/бонусов.
+Следствие (подтверждено тестом 57.1): пешка-гибрид с Guardian primary при
+снятом даггер-штрафе вытаскивает кинжалы, но в момент атаки берёт лук —
+потому что лук не штрафуется, а враг дальше даггер-радиуса (GOAP/eligibility
+честно выбирают дистанционное оружие). Фикс должен быть distance-aware:
+поощрять кинжалы только при угрозе в даггер-радиусе, иначе лук работает.
 
 ### 3.6 Persistent profiles
 
