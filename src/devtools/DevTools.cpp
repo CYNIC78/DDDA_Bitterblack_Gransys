@@ -734,8 +734,8 @@ struct ActorDump {
     char        rawName[40][40];   // Zip 34: real class name read from DTI
     int         nRaw;
     // Билд 29 — живое состояние через DTI, а НЕ через ActMap.
-    // ActMap.Generated.h хранит factory vtable: сравнение с живым объектом
-    // даёт 0 совпадений (проверено, docs/ACTSCAN_RESULT_01.md). Поэтому имя
+    // ActMap.Generated.h хранит factory vtable: runtime-сравнение с живым
+    // объектом дало 0 совпадений. Поэтому имя
     // состояния спрашиваем у самой игры: obj -> vtable -> GetDTI -> DTI+4.
     char        liveAct[48];  // "cEm0100ActDie", "cEm0100ActWait", ...
     bool        isDead;       // состояние смерти: ActDie / ActDeadBody

@@ -1,1018 +1,164 @@
-# Field Map — разведанные оффсеты внутри типов
+# Field Map
 
-**Живой документ.** Сюда попадает только то, что подтверждено в рантайме.
-Идентичность типа — `docs/TYPE_ATLAS.md`. Как пользоваться обоими — `docs/DEVTOOLS_VISION.md`.
+Компактная карта подтверждённых runtime-полей. Источники и ограничения — в [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md). История HUNT/TEST хранится в Git, а не в этом файле.
 
-VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(NULL) + RVA`.
+Статусы:
 
-Легенда статуса: ✅ подтверждено в нашем коде · 🧪 гипотеза · ❌ отвергнуто
+- ✅ подтверждено чтением/изменением и используется;
+- 🔎 подтверждено чтением, semantic name уточняется;
+- 🧪 исследовательское/видоспецифичное.
 
----
+## 1. Process anchors
 
-## Глобалы (не типы, а якоря процесса)
-
-| Символ | Как достаём | Статус | Где в коде |
-|---|---|---|---|
-| `pBase` | сигнатура `8B 15 ?? ?? ?? ?? 33 DB 8B F8` → `*(sig+2)` | ✅ | `src/dinput8.cpp` |
-| `pWorld` | сигнатура `89 35 ?? ?? ?? ?? 89 BE 70 09 00 00` | ✅ | `src/dinput8.cpp` |
-| HP write | `DDDA.exe+374739` `movss [edi+08], xmm0` ; `edi` = health-obj | ✅ | `CombatIntel.cpp` |
-
----
-
-## `pBase` — персонажные данные (сейв-слой, не uPlayer)
-
-Это **не** `uPlayer`. Это большой блок прогресса, к которому игра ходит через глобал.
-
-```
-*pBase
-└── +0xA7000   PLAYER_BASE          база ГГ в этом блоке
-    ├── +0xDD0     UINT16 level
-    ├── +0x994     XP
-    ├── +0x6E0     Vocation
-    ├── +0x96C     current HP float
-    ├── +0x970     max HP float
-    ├── +0x974     второй HP/recoverable параметр float (имя уточняется)
-    ├── +0x978     current stamina float
-    ├── +0x97C...  боевые характеристики (Strength/Defense/...)
-    ├── +0x96C+0x1224  инклинации пешки, 9×float, шаг 0xC
-    ├── +0xA7808   Equipped Skills
-    ├── +0xA7E00   Learned Skills
-    ├── +0x7F0     Main Pawn
-    │     ├── +0x96C+0x1224  её инклинации
-    │     └── +0x1616        mStudyFlag[322]
-    ├── +0x7F0+0x1660      Pawn 1
-    └── +0x7F0+0x1660×2    Pawn 2
-└── +0xB8780   погода
-└── +0xB33A8   флаг пост-игры
-```
-
-Build 39 подтвердил одинаковый layout у записи ГГ и `+0x7F0` записи главной пешки. Внутренние HP — дробные float (интерфейс округляет): урон изменил `+0x96C` синхронно с `cPlActDmgNormalB`; Dash изменял `+0x978` от 600 до 499.5 и обратно. У пешки `+0x978` менялся при оружейных умениях и восстанавливался до 595.
-
-Статус: ✅ (dinput8 / PawnAI / Nightmare / Party live trace 39). Не путать с живым `uPlayer` на сцене.
-
----
-
-## Живые юниты (`u*`, первый dword = vtable инстанса)
-
-| Тип | Factory vt RVA / live vt VA | Size | Поле | Оффсет | Статус |
-|---|---|---:|---|---|---|
-| `uPlayer` (ГГ) | `0x11E4F34` / `0x015C9D70` | 23056 (`0x5A10`) | (идентификация) | `*(void**)obj` | ✅ build 37, DTI |
-| `uCmc` (главная пешка) | `0x11E42CC` / `0x015C9108` | 22752 (`0x58E0`) | (идентификация) | `*(void**)obj` | ✅ build 37, DTI |
-| `uPlayerBase` | `0x11CEF40` / shared stub | 22608 | (базовый тип) | | ✅ TypeAtlas |
-| `uPawnIntel` | `0x117852C` | 56 | компонент пешки, не её live body | | ✅ RVA в `CombatIntel` исправлен на `0x117852C` |
-| любой `uEm*` | см. `EnemyTypes.Generated.h` | ~29–33 КБ | TypeId / groupId | `obj[0x2D]` | ✅ совпадает с TSV col 5 у **боевых** (гоблин=5). Фауна dump19: live `+0x2D=0x61` при зайцах на экране — каталог врёт телу, не наоборот |
-| health-obj (не юнит) | — | — | current HP float | `+0x08` | ✅ хук `movss [edi+08]` |
-| health → владелец | — | — | кандидатные ptr | `+0x1B4, +0x14, +0x18` | 🧪 приоритетный перебор в `ResolveGidFromEntity` |
-| юнит ← health | — | — | обратные смещения | `-0x710, -0x96C, -0x970, -0x1B4` | 🧪 |
-| физика ГГ (yaw) | — | — | yaw float | `+0x14` от ESI хука `fstp [esi+14]` | 🧪 TargetLock, ловится руками Alt+X |
-| `uCameraGame` / orient | — | — | follow distance | `+0x150` | 🧪 CameraPlus HCam2 |
-| camera orient | — | — | sin / cos yaw | `+0xB0` / `+0x110` | 🧪 TargetLock |
-| camera orient | — | — | (хук читает) | `+0x114, +0x110, +0x150` | 🧪 CameraPlus |
-
-### Action/FSM игрока и главной пешки — build 37
-
-Одинаковый layout подтверждён на `uPlayer` и `uCmc`:
-
-| Оффсет | Поле | Проверка |
-|---:|---|---|
-| `+0x2DC0` | ptr на `cActionManager::cActBank` | DTI |
-| `+0x2DC8` | ptr на текущий `cPlAct*` | Wait/Walk/Run/Jump/Land/Dash/Damage/Weapon/Lift |
-| `+0x2DD4` | uint32 packed action-code | Wait=0, Walk=1, Run=2, Dash=5, Jump=8; Build 39 |
-| `+0x2DE8` | дубликат current Act ptr | три снимка |
-| `+0x2E64` | ptr на `cAICtrl` | DTI |
-
-Act-буфер стабилен, меняется только vtable. `+0x2DD4` подтверждён на обоих телах как дешёвый код текущего action/варианта; оружейные действия имеют упакованные большие значения. `+0x4AE8`, `+0x32D8`, `+0x1C94`, `+0x4B14` отвергнуты как sprint flags. Подробности: `PLAYER_PAWN_WORK/PLAYER_PAWN_IN_MEMORY.md` и `PLAYER_PAWN_WORK/PARTY_LIVE_TRACE_RESULT_39.md`.
-
-### Верхний AI главной пешки — Build 40
-
-| База | Оффсет | Поле | Статус |
-|---|---:|---|---|
-| `cAIGoalPlanning` | `+0x17C` | current priority code (`cmc.prt`) | ✅ Wait=0, Follow=1, Combat=54 |
-| `cAIGoalPlanning` | `+0x190 + code*0x110` | выбранный `cPlanCtrl` | ✅ DTI slots 0/1/54 |
-| `cAIPriorityThink` | `+0x08` | ptr на immutable `rAIPriorityThink` resource | ✅ Build 41 |
-| `cAIPriorityThink` | pointer fields | transient `0x90` score/rank nodes | 🧪 Build 42 |
-| `rAIPriorityThink::cPrioParam` | `+0x08` | code | ✅ 85 runtime = 85 file entries |
-| `cCmcInfo` | `+0x14B8 + id*0x0C` | `{context/state, id, inclination value}` | ✅ 9 ID |
-| `cCmc*` action interface | `+0x258` | 6 range floats + Element/Atk/Use attrs | ✅ exact AIPlActParam matches |
-| `cCmcInfo` | `+0x29C` | current HP mirror | ✅ damage transition |
-| `cCmcInfo` | `+0x2A4` | second/recoverable HP mirror | 🧪 имя уточняется |
-
-Полный отчёт: `PLAYER_PAWN_WORK/PAWN_AI_LIVE_BRIDGE_RESULT_40.md`.
-
----
-
-## Синглтоны — зонд в F12 → DevTools
-
-Прогон 12.08.2026 (Steam, без ASLR):
-
-| Факт | Значение |
-|---|---|
-| `moduleBase` | `0x00400000` = TSV image base. RVA можно читать как оффсет от exe. |
-| Слот `FactoryPointer` у всех менеджеров | `0`. Колонка TSV — **не** живой синглтон. |
-| Что делать дальше | F12 → DevTools → загрузить сейв → **SCAN exe for manager objects** |
-
-## Синглтоны — скан exe 12.08.2026 (Steam, base `0x400000`)
-
-Слоты TSV `FactoryPointer` пустые. Instance ищем как dword = factory vtable в секциях exe.
-
-`SizeOfImage` = `0x15CC000` → конец образа `0x019CC000`.
-
-| Тип | Instance VA | RVA | Статус |
-|---|---|---|---|
-| `sUnit` | `0x018B6DBC` | `0x14B6DBC` | ✅ один хит **vtable-слота**. Это НЕ таблица юнитов |
-| `sSetManager` | `0x01971D0C` | `0x1571D0C` | ✅ один хит. 112976 байт **влезает** в образ |
-| `sPlayerManager` | 7 адресов, шаг часто `0x7F8` | — | 🧪 не синглтон-один; первый хит плавает |
-| `sEnemyManager` и остальные | не в образе | — | ❌ куча или другой vt у instance |
-
-`sPlayerManager` стабильные: `0x0185D930` `0x0185E128` `0x0185E920` `0x0185F118` `0x018618F0` `0x01863C90`.
-Первый хит менялся: `0x018598F8` → `0x0185B5E0` — ложное совпадение dword.
-
-ASLR нет — VA стабильны на этой сборке. В коде всё равно писать `base + RVA`.
-
-### WALK sUnit — пусто 12.08.2026 (рядом с гоблинами, сейв загружен)
-
-Гипотеза «в `sUnit` лежит плоский массив heap-указателей на `uEm*`» — **отвергнута**. 0 live, включая `uPlayer`.
-
-Почему это ожидаемо:
-
-- TSV `sizeof(sUnit)` = **1 700 720**. От `0x018B6DBC` это конец `0x01A5612C` — **на 561 КБ за** `SizeOfImage`. Статического объекта такого размера в exe нет.
-- В атласе уже есть вложенные типы: `sUnit::MoveLine` (24 байт, vt RVA `0x1025EFC`) и `sUnit::UnitGroup` (28 байт, vt RVA `0x1025F04`). Юниты — не `dword*` с +4.
-- `sSetManager` по адресу `0x01971D0C` лежит *внутри* заявленного диапазона `sUnit`. Два независимых объекта такого размера не могут пересекаться. Значит 1.7 МБ — это размер **кучи** (`new sUnit` / `sUnitExt`), а dataObj — место, где в `.data` лежит dword vtable.
-
-### sUnit header — разобран 12.08.2026 (DUMP, 128 байт)
-
-`identify=sUnit`, `fitsInImage=false`. Это **живой заголовок** синглтона в `.data`, не шаблон.
-
-```
-sUnit @ 0x018B6DBC
-+00  01425EF4   vtable sUnit
-+08  018B6DDC   указатель на +20 (первая MoveLine, встроена)
-+20  01425EFC   vtable sUnit::MoveLine   (ровно 1 в заголовке)
-+2C  0          mpTop/список этой линии пуст (поля +24/+28 — IMAGE, не куча)
-+44  0BDFD9E0   начало heap-пула
-+48  0BDFF9C0   шаг 0x1FE0 = 8160
-...  ещё 13 указателей в первых 128 байтах, тот же шаг
-```
-
-`ptrs:[]` / `live:0` / `hunts:0` — фильтр «только известный vtable» спрятал пул. Сами указатели в hex есть.
-
-`pWorld` = `0x0BC81370` (куча, рядом с пулом), Identify пустой — не MtObject с нашим vt.
-
-Типа размера 8160 в атласе нет. 208×0x1FE0+0xD70 = 1700720 — совпадение с sizeof, но блоки на куче, не вшиты.
-
-DUMP 05: пул `len≥48` (уперлись в cap), шаг `0x1FE0`. Блоки **не** `MtObject`: `vt=0` или `-1`. Пустые — 32 нуля. Занятые (~16 из 48) — сентинели `FFFFFFFF` и указатель на `+0x18` (часто общий `0x4F942CE0`). `inside=6–10` кучи в теле 8160 байт, ни один не опознан как `uEm*`.
-
-Это workspace линий движения, не массив персонажей.
-
-Inspect `+0x18` → `0x4F942CE0` (пока процесс жив):
-
-```
-+00  50505050     не vtable (магия/тег)
-+04  00000013     19 — счётчик?
-+0C  CDCDCDCD     слот «пусто»
-+10  float  6345.5  -201.1  -201.1  -201.1
-+20  float 31751.5 30619.2 30619.2 30619.2
-+30  float  3690.7  -433.5  -433.5  -611.9
-```
-
-Читается. Identify пустой правильно: это AABB/координаты линии, не `uEm*`.
-
-### DUMP 06 — inside[] пула, 12.08.2026 (рядом с гоблинами)
-
-`pool.len = 50` (реальная длина, не cap). `inside = 53`, `live = 0`.
-
-Все указатели внутри занятых блоков 0x1FE0 — **теги геометрии**, не MtObject:
-
-| Первый dword | Сколько | Что это |
-|---|---:|---|
-| `50505050` | 20 | AABB / bounds |
-| `D0D0D0D0` | 12 | тот же каркас, другой тег |
-| `0F0F0F0F` | 8 | то же |
-| `78787878` / `F0F0F0F0` / `5A5A5A5A` / `4B4B4B4B` / `3C3C3C3C` | 1–2 | то же |
-| `CDCDCDCD` на `+0C` | почти все | MSVC debug fill «пусто» |
-| `0x08000000` и родня | 3 | ложные LooksHeap, отсечены |
-
-После тега — int-счётчики и float'ы в масштабе Грансиса (тысячи). Пять линий делят один AABB — это bounds линии, не гоблин.
-
-Гипотеза «юниты сидят в других ptr тела 0x1FE0» — **отвергнута**. Пул `sUnit+0x44` закрыт как список персонажей. Это spatial/collision workspace на 50 MoveLine.
-
-`pWorld+0x30` в этой сессии `0x12D44E50`, первый dword `0x0E4C0060` — не в образе, не vtable.
-
-Дальше: VirtualQuery кучи на vtable `uPlayer` / `uEm*` (снимок 07) + полный embed-скан 1.1 МБ `sUnit` на `UnitGroup`.
-
-### DUMP 07 — heap hunt, 12.08.2026
-
-Охота пробежалась: **5078 мс, 1047 регионов, 1.61 ГБ, 143 ключа**.
-
-| Результат | Значение | Вывод |
+| Anchor | Contract | Status |
 |---|---|---|
-| `embed.moveLine` | **1** | во всём 1.1 МБ `sUnit` одна линия, как в шапке |
-| `embed.unitGroup` | **0** | `UnitGroup` не вшиты в `.data` sUnit |
-| `live` | **0** | ни одного `uPlayer` / `uEm*` с **factory** vtable на куче |
-| `heapMgrs` | 32, все `sUnitSearchManager` | упёрлись в cap; factory vt у этого типа **совпадает** с instance |
-| `holders` | 0 | некого держать |
+| `pBase` | signature-resolved gameplay/save base | ✅ |
+| `pWorld` | signature-resolved world pointer | ✅ |
+| `*pBase + 0xA7000` | Arisen character record | ✅ |
+| `Arisen record + 0x7F0` | Main Pawn character record | ✅ |
 
-Значит factory vtable из TSV — это vtable **фабрики** (`create_*` в [0]). У синглтонов в `.data` (`sUnit`, `sSetManager`) и у `sUnitSearchManager` он же стоит в [0] объекта. У живых `u*` — нет. Иначе охота нашла бы хотя бы `uPlayer`.
+## 2. Character record (Arisen/Main Pawn)
 
-`IsPartyMember` сравнивает factory vt с тем, что в `edi` хука HP. `edi` — health-obj, не юнит. Совпадение `0x11E4F34` там **не доказано**.
+| Offset | Type | Field | Status |
+|---:|---|---|---|
+| `+0x6E0` | int32 | vocation | ✅ |
+| `+0x868` | 3×int32 | equipped skills | ✅ |
+| `+0x8D0` | 6×int32 | augments | ✅ |
+| `+0x96C` | float | current HP | ✅ |
+| `+0x970` | float | max HP | ✅ |
+| `+0x974` | float | recoverable/secondary HP | 🔎 |
+| `+0x978` | float | current stamina | ✅ |
+| `+0x994` | int32 | XP | ✅ |
+| `+0xDD0` | uint16 | level | ✅ |
+| `+0x1616` | 322 B | bestiary `mStudyFlag` | ✅ |
+| `+0x1B90 + id*0x0C` | float in 12-B row | inclinations/skill-use values | ✅ |
 
-Окна `sUnit+0xD0C` / `+0x1954`: IMAGE-vtable рядом с кластером sUnit (`01428728`, `0142BAA8`), **не в атласе** — вложенные незарегистрированные типы.
+Reference test save: Arisen HP `331/498`, stamina `600`; Main Pawn HP `327/505`, stamina `595`.
 
-Factory slots в UI — мёртвая колонка TSV `FactoryPointer`. Пустые с дня 1. Это не прогресс-бар.
+## 3. Live unit body (`uPlayer/uCmc/uEm*` observations)
 
-### HUNT 09 — первые имена на куче, 12.08.2026
-
-`hunt.ms=11453`, 1.34 ГБ, `live=96` (упёрлись в cap), `holders=0`.
-
-| Что в live | Сколько | Реально |
-|---|---:|---|
-| подписано `uEm0900` (Gargoyle, gid `0x2C`) | 94 | **не 94 гаргульи** |
-| из них `[0x2D]==0x2C` | 81 | typeId совпал |
-| `uEm0403` | 2 | один gid совпал (`0x18`) |
-| шаг в куче `0x0C5Bxxxx` | **0x50 = 80 байт** | `sizeof(uEm0900)=29504`. Это массив коротких записей, не акторы |
-| `uPlayer` / `uEm0100` (гоблин рядом) | 0 | derive не вытащил их instance vt |
-
-`derived`: 7 типов схлопнулись в один `inst=0x01574748` (нет в атласе, рядом `cCtrlMotion`). Последний `mov [reg], imm` в первых 256 байтах `create_*` — **базовый/компонентный** vtable, не вид. Охота подписала всё одним именем.
-
-Census засорён: 4007× `vt=0x00400000` (база exe). `LooksLikeVtable` был слишком мягкий.
-
-`holders=0` — `sUnit` эти адреса как юниты не держит.
-
-Прорыв: цепочка derive→куча→имя заработала. Список ещё нельзя кормить в TacticalSwitch.
-
-### HUNT 10 — фильтр shared, 12.08.2026
-
-`live=0` — честно. Shared `0x01574748` больше не подписывается. Census: **15613** объектов с этим vt (`shared-base`). Это и были «94 гаргульи».
-
-Уникальные DIFF есть (`uEm0900` inst `0x015B5A80` рядом с factory) — в этой клетке таких объектов нет (перед нами гоблин `uEm0100`).
-
-`uEm0100` create=0. `uPlayer` inst найден, но `shared` с `uEm2004` — в охоту не взяли.
-
-Кликабельное в UI: `sPawnManager`×3, `sUnitExt`×3 (слишком близко для sizeof 1.7МБ), `cLinkUnitEnemy`×1. Не сцена гоблинов.
-
-### HUNT 11 — gid scout, 12.08.2026
-
-`hunt.ms=9390`, 1.21 ГБ, `live=0`, `gids=48` (cap), `holders=0`. Zip 11 compile-fix подтверждён: `uEm0900` inst остался `0x015B5A80` (не сцепился).
-
-`gids[]` — **не гоблины**. Нет `0x05`. Буфер забит по возрастанию адресов:
-
-| Что | Сколько | Почему мусор |
-|---|---:|---|
-| `gid 0xAA` подписан `uEm2005` | 19 | байт `0xAA` на `+0x2D` у разных vt |
-| `vt 0x0140BB3C` (census n=1024) | 25 | таблица шаг `0x10` у `0x0A2802xx`; `+0x2D` читает соседнюю запись |
-| `vt 0x01550048` (census n=52380) | 1 | самый частый vt на куче, не в атласе |
-
-`uEm0100` create=0 по-прежнему. Пул `sUnit+0x44` без изменений.
-
-### HUNT 25 — anatomy, 12.08.2026 (dump19)
-
-4 гоблина снова в `live[]` **до боя**. Адреса сменились (куча) — вид тот же.
-
-`actors=13` из обхода `+0C/+10`: это **общий список живых персонажей**, не только Джо. Список **закрыт**: других 29 КБ тел на цепи нет.
-
-| n | vt | gid | kind (zip 26) | fat29 |
+| Offset | Type | Field | Scope | Status |
 |---:|---|---|---|---|
-| 4 | `0x015852A8` | 5 | `uEm0100` | да, `subVt=0x015497F8` |
-| 3 | `0x015D2618` | 2 | `uNpc` (DTI `0x015D295C` − `0x344`) | да, +0x6150 пуст |
-| 6 | `0x015BB278` | `0x61` | `uEm8000` — **не Григори**; см. зайцы ниже | да, subVt мусор `0xC01DC871` |
+| `+0x0C` | ptr | live-list next | observed `uEm*` | ✅ |
+| `+0x10` | ptr | live-list prev | observed `uEm*` | ✅ |
+| `+0x2D` | byte | gid/type byte | DTI name still required | ✅ |
+| `+0x40/+0x44/+0x48` | float | world XYZ | live units | ✅ |
+| `+0x60/+0x64/+0x68` | float | body scale W/H/D | EnemyTuner-observed | ✅ |
+| `+0x2DC0` | ptr | Act bank | player/pawn/enemy observations | ✅ |
+| `+0x2DC8` | ptr | current Act object | player/pawn/enemy observations | ✅ |
+| `+0x2DD4` | uint32 | packed action code | player/main pawn | ✅ |
+| `+0x2DE8` | ptr | duplicate current Act | player/main pawn | 🔎 |
+| `+0x2E64` | ptr | `cAICtrl` | player/pawn/enemy observations | ✅ |
 
-Далёкие гоблины на локации — записи LOT / `cLinkUnitEnemy`, не `uEm0100`. Спавнер не инстанциировал: далеко. Подойти ближе → HUNT увидит больше `gid=5`.
+Do not treat offsets `+0x4AE8/+0x32D8/+0x1C94/+0x4B14` as sprint flags; hypothesis rejected.
 
-### Зайцы = «драконы» — dump19 + поле, 12.08.2026
+## 4. Main Pawn priority resource
 
-На той же клетке, рядом с гоблинами: **2–3 стайки зайцев по 3**. Урон по ним проходит (валидная цель, не враг). Дамаг-лог годами пишет **The Dragon**. Переименовать в бестиарии не вышло — и правильно не вышло.
+### `rAIPriorityThink::cPrioParam` (64 B)
 
-Цепь из 13 закрыта. Гоблины и NPC опознаны. Значит шесть тел `vt=0x015BB278` / `gid=0x61` — это **единственное место, куда деться зайцам**. 2 стайки × 3 = 6. Третья стайка, как дальние гоблины, — LOT, спавнер не разбудил.
+| Offset | Type | Field |
+|---:|---|---|
+| `+0x00` | ptr | vtable |
+| `+0x04` | uint32 | Sensor |
+| `+0x08` | uint32 | Code |
+| `+0x0C` | uint32 | Category |
+| `+0x10` | uint32 | Object ID |
+| `+0x14` | uint32 | Extra |
+| `+0x18` | ptr | personality cArray vtable |
+| `+0x1C` | uint32 | personality count |
+| `+0x20` | uint32 | personality capacity |
+| `+0x24` | uint32 | personality flags |
+| `+0x28` | ptr | `cCodeParam**` |
+| `+0x2C` | ptr | order cArray vtable |
+| `+0x30` | uint32 | order count |
+| `+0x34` | uint32 | order capacity |
+| `+0x38` | uint32 | order flags |
+| `+0x3C` | ptr | `cOrderValue**` |
 
-XYZ шести «драконов» — одна стая, не шесть Григори:
+### `rAIPriorityThink::cCodeParam` (104 B)
 
-```
-0x10E00060   8510.6  31922.9  5092.5
-0x10E07320   7632.1  31994.4  5346.4     stride 0x72C0 = 29296+80
-0x10E10060   8090.9  31948.7  5308.4     stride 0x72C0
-0x10E17320   9826.2  32023.4  5425.1
-0x10DE0060   9602.8  32014.6  5456.0
-0x10DD7470   9887.3  32003.3  5186.0
-```
+| Offset | Type | Field |
+|---:|---|---|
+| `+0x04` | int32 | AddS32 |
+| `+0x08` | float | AddF32 |
+| `+0x0C` | uint32 | BreakAfterApply |
+| `+0x10` | ptr | checks cArray vtable |
+| `+0x14` | uint32 | check count |
+| `+0x18` | uint32 | check capacity |
+| `+0x1C` | uint32 | check flags |
+| `+0x20` | ptr | check pointer array |
 
-Y ≈ 31920–32023, Z ≈ 5090–5455. Высокий гоблин (`0x10DD0060`, Z=6242) в той же полосе. Три низких гоблина (Z≈300–600) — другой лагерь. NPC (Z≈2900) — третья.
+### `rAIPriorityThink::cOrderValue` (12 B)
 
-`0x72C0` = `sizeof(uEm8000)+80`. Тот же паттерн аллокатора, что у гоблина (`0x7410` = 29632+80). `sizeof(uEm8600)` = 29328 → паддинг был бы `0x72E0`. Две плотные пары сидят в размере **драконьего** класса, не заячьего.
+| Offset | Type | Field |
+|---:|---|---|
+| `+0x04` | uint32 | Value |
+| `+0x08` | uint32 | Type |
 
-Каталог согласован сам с собой и врёт полю:
+## 5. `cAIPriorityThink` (1020 B)
 
-| Источник | `uEm8000` | `uEm8600` Hare |
+| Offset | Field | Status |
+|---:|---|---|
+| `+0x08` | `rAIPriorityThink*` | ✅ |
+| `+0x38 + slot*0x14` | 48 cArray bucket descriptors | ✅ |
+| descriptor `+0x04` | count | ✅ |
+| descriptor `+0x08` | capacity | ✅ |
+| descriptor `+0x0C` | flags | ✅ |
+| descriptor `+0x10` | `cPrioParam**` | ✅ |
+
+Only entries `[0,count)` are valid. Allocator spacing/trailing storage is not a score node.
+
+## 6. Planner
+
+| Object/offset | Field | Status |
 |---|---|---|
-| TSV TypeId | **97 = `0x61`** | 107 = `0x6B` |
-| `BestiaryData.h` | The Dragon / Ur-Dragon, family Dragon | Hare / Rabbit, Wildlife |
-| `EnemyTypes.Generated.h` | gid `0x61`, size 29296, factory RVA `0x11D6410` | gid `0x6B`, size 29328, factory RVA `0x11D8B68` |
-| live `+0x2D` (dump19) | **`0x61` на всех шести** | ни одного `0x6B` на цепи |
-| live `[0]` | `0x015BB278` | не найден |
-
-`FindEnemyByGid` берёт **первое** совпадение. `0x61` → строка 43 «The Dragon». `GetEnemyCategory(0x61)` → family Dragon → **кат. 5, босс**. Удар по зайцу кормит TacticalSwitch пресетом Григори. Вот почему «починить лог» переименованием нельзя: настоящий дракон живёт в том же номере. Зайцы носят чужой паспорт на живом теле.
-
-`CombatIntel::IsValidEnemyCharacter` читает `cand[0x2D]`, видит `0x61`, сразу возвращает Dragon. До `0x6B` дело не доходит. Это не баг хука HP. Это LIVE-поле.
-
-**Не делать:** маппить `0x61` → Hare в `BestiaryData.h`. Сломаем Григори. Не публиковать этих шести в WorldReport как Dragon / boss. Не звать `uEm8000` «Dragon» в UI.
-
-**Сделано в zip 26 / dump20:** `kind=uEm8000` на всех шести. XYZ той же стаи. Дальний гоблин проснулся.
-
-**Zip 27:** `ctors[]` снимает `create_uEm8000` @ `0x00C48AC0` и `create_uEm8600` @ `0x01052BF0` (derived dump20). Смотрим hex: пишет ли кто-то из них live `[0]=0x015BB278`. `kDtiNames[]` + кап дерева — позже, не этот срез.
-
-`tree[]` из dump13 **не полное**. `g_tree[48]` / очередь 48. `uEm5000.next = 0x0197CACC` в дерево не попал. Драконы и фауна (`uEm80xx` / `uEm85xx` / `uEm86xx`) сидят дальше по sibling-цепи `uEnemy`. «Полная таксономия» — ложь капа.
-
-### Рецепт: паспорт и тушка любого `uEm*`
-
-Джо был первым, не уникальным. Конвейер больше не CE:
-
-```
-1. Паспорт (карточка MtDTI в .data)
-   строка "uEmXXXX\0" в образе
-     → объект, у которого [+4] = эта строка
-   +18  sizeof | (flags<<16)
-   +1C  typeId  (== obj[+0x2D] у боевых uEm*)
-   +08 / +0C / +10  next / child / parent
-   DTI.vt[4] = create вида   (не DTI.vt[0] — тот общий 0x00BFF9A0)
-
-2. Тушка (instance vt)
-   разобрать create: после allocator
-     mov [edi], IMM32     ← это [0] живого объекта
-   гоблин: meth4 0x008CAFA0 пишет 0x015852A8, push sizeof 0x73C0
-
-3. Живые тела
-   WatchAdd(instance vt)  и/или  обойти +0C/+10 с любого live
-   +2D  typeId   +40/+44/+48  XYZ Грансиса
-```
-
-Что уже в руках без нового реверса:
-
-| Вид | паспорт DTI | instance vt | live без удара |
-|---|---|---|---|
-| `uEm0100` гоблин | `0x01977BA0` | **`0x015852A8`** | ✅ dump18/19 |
-| `uEm0101` greater | `0x019778F8` | тот же `[0]`, gid 6 | тот же список |
-| `uEm0900` гаргулья | `0x0197B348` | `0x015B5A80` | нет в этой клетке |
-| `uNpc` | `0x01984DE4` | **`0x015D2618`** | ✅ dump19 ×3 |
-| `uPlayer` | `0x019846E8` | `0x015EFD38` | factory≠instance |
-| волки / скелеты / нежить / гарпии / призраки / голем | в `tree[]` (dump22, 93 узла) | create не разобран | — |
-| `uEm8000` лагерные «зайцы» | `0x01981868` | **`0x015BB278`** | ✅ dump19–24, meth4 штампует `+0x2D=0x61` |
-| `uEm8600` заяц каталога | `0x01981BE8` | **`0x015BD9D0`** | meth4 dump23; на лагерной цепи пока нет |
-| `uEm8500` олень | `0x01981B40` | **`0x015BCF78`** | meth4 dump22 |
-| `u?84` | нет в атласе factory | **`0x015D1D30`** | dump22/23 ×3; dump24 cand `uHumanEnemy` |
-
-Одного HUNT, который для каждого ребёнка `uEnemy` снимает паспорт и парсит `meth4`, хватит на всю семью. Это не 25 охот на вид. Zip 26 это не делает — сначала подтверждаем ярлыки.
-
-### HUNT 26 — label live list, 12.08.2026 (dump20)
-
-**Kind подтверждён.** `live=10` честно = 4 гоблина + 6 `uEm8000`. NPC в этой сессии нет (куча другая / не в зоне). Первая загрузка сейва крашнула; вторая прошла. Не класс 08 (ENB `d3d9`).
-
-```
-live=10 actors=10 hunt.ms=9688 regions=1348 bytes=1312784384 keys=159
-pWorld obj 0x0BAF1370
-
-0x10DD0060  uEm0100  gid 5   xyz 12393.8  32444.8  6703.1  subVt 0x015497F8
-0x10DD7470  uEm8000  gid 61  xyz  9829.7  31994.7  5129.4
-0x10DE0060  uEm8000  gid 61  xyz  9582.9  32015.6  5477.0
-0x10DE7320  uEm0100  gid 5   xyz  8417.6  32017.3  6175.6
-0x10DF7470  uEm0100  gid 5   xyz  9559.5  31520.8   628.5
-0x10E00060  uEm8000  gid 61  xyz  8517.2  31923.3  5099.3
-0x10E07320  uEm8000  gid 61  xyz  7677.0  31987.9  5322.6   stride 0x72C0
-0x10E10060  uEm8000  gid 61  xyz  8073.7  31943.0  5245.7   stride 0x72C0
-0x10E17320  uEm8000  gid 61  xyz  9831.0  32015.4  5340.0
-0x114F41E0  uEm0100  gid 5   xyz 15294.7  32349.5  4481.8   NEW FAR — спавн проснулся
-```
-
-Цепь линейная: first.prev=0, last.next=0, 10 узлов. WatchAdd соседей не замусорил. `subVt` у зайцев не читаем (zip 26).
-
-derived dump20: `uEm8000 create=0x00C48AC0 inst=0x015E3D98 shared=true` — это **не** live `[0]`. Live остаётся `0x015BB278`. `uEm8600 create=0x01052BF0 inst=0`.
-
-### HUNT 27 — WorldReport, 13.08.2026 (dump21)
-
-Крашей нет. `world{count:10, goblins:4, cat:0}`. Канал присутствия пишет правду.
-
-Цепь закрыта, 10 узлов. 4× `uEm0100` + 6× `uEm8000`. Это **не** «выгрузилась стайка зайцев». 13 из dump19 = 4 гоблина + 3 NPC + 6 зайцев. NPC в этой сессии снова нет (как в dump20). Зайцев по-прежнему шесть. Один указатель сменился: `0x10DE0060` → `0x11380060` (та же стая, XYZ рядом).
-
-Гоблин-преследователь: `0x10DE7320` ушёл с `8418 32017 6176` на `6284 31892 4358`. GPS работает. Дальний `0x114F41E0` (X=15294) выгрузился. Два новых низких гоблина сели на места dump19.
-
-**TSV create снова врёт** (тот же класс лжи, что path-string у гоблина):
-
-```
-create_uEm8000 @ 0x00C48AC0
-  B0 01 C2 04 00     mov al, 1 / ret 4     — заглушка, не ctor
-  рядом +0x20: push DTI 0x01986CF4, push size 0x2B00=11008
-               mov [edi], 0x015EB180       — чужой маленький объект, не 29 КБ
-  derived inst 0x015E3D98 shared с uEm8500 — last-write в окне 512 Б заглушки
-  live [0] = 0x015BB278 в hex НЕТ
-
-create_uEm8600 @ 0x01052BF0
-  mov esi, ecx; test flags; mov [esi+0xD80], 2
-  это метод на живом this, не allocator. Поэтому derived inst=0.
-```
-
-Рецепт тот же: паспорт DTI → `vt[4]` = настоящий create → `mov [edi], IMM`. Zip 28 снимает карточки `uEm8000/8600/8500` и `meth4_*`.
-
-json — фото в момент HUNT. Тик 150 мс обновляет `LastWorld` / `g_act[]`, но не файл и не `live[]` кнопки. Поэтому казалось, что «цифры только после Hunt».
-
-**Поле, билд 27, после dump21.** Тик жив, с задержкой ~150 мс. Подошёл к пачке «три гоблина» — World показал **5**. Пешка убила трёх по одному — счётчик остался 5 до конца боя. Отошёл, встретил одного — стало 1; в кустах сидел второй, агрился, счётчик не вырос, пока обоих не забили. После прогулки — обновление.
-
-Это не мёртвый тик. Три разных факта:
-
-1. **Список ≠ LOS.** `+0C` — инстанциированные тела, не то, что видно. Двое из пяти были за гребнем / в кустах / ещё не «три в пачке» глазами.
-2. **Труп ещё `uEm0100`.** HP внутри 29 КБ не читаем. Мёртвый гоблин остаётся на цепи, пока движок не выгрузит (отошёл = выгрузка). 5 после трёх трупов = 2 живых или 2 трупа ещё в списке. World = присутствие тел, не «кто ещё дерётся».
-3. **Опоздавший спавн.** Второй из кустов, скорее всего, встал на цепь позже (LOT → aggro). Если тик его не взял за бой — либо не успел слинковаться на тот же `+0C`, либо сид уже смотрел в труп. Zip 28: строки xyz. Труп стоит, живой ползёт, новый появляется новой строкой.
-
-Полка MEMORY / «энкаунтер кончился» раньше HP-поля или флага смерти — гадание. Сначала FieldMap HP внутри `uEm0100`.
-
-### HUNT 28 — wildlife DTI, 13.08.2026 (dump22)
-
-`dti=27` `tree=93` `ctors=9` `world{15,6,cat0}`. Кап дерева 96 дошёл до фауны.
-
-**Паспорт `uEm8000`:**
-
-```
-DTI @ 0x01981868   DTI.vt 0x015BB588   size 29296   typeId 97=0x61
-meth4 @ 0x00A942E0 = create вида:
-
-push 0x01981868        ; DTI
-push 0x7270            ; 29296
-call allocator
-mov  [edi], 0x015BB278 ; LIVE [0]  (DTI.vt − 0x310)
-mov  [edi+0x6010], 0x015497F8
-and/or [edi+0x2C], 0x6100   ; ШТАМПУЕТ байт +0x2D = 0x61
-```
-
-Шесть тел у лагеря — настоящий `uEm8000`, не заяц в чужой куртке. Каталог зовёт 0x61 Dragon. Модель на поле — заяц. **Не** маппить 0x61→Hare. World по-прежнему не даёт им кат. 5.
-
-`uEm8600` DTI @ `0x01981BE8` size 29328 tid 107 meth4 `0x00A9D4F0`. В первых 128 Б — alloc + jmp дальше + кусок `uEm8601` (0x6C). Live vt зайца в окне нет — zip 29 снимает 256 Б.
-
-`uEm8500` DTI @ `0x01981B40` meth4 `0x00A9BE20`.
-
-На цепи dump22: 6 гоблинов (включая дальний X=15294 и высокий 12394) + 4×`uEm8000` + 2 NPC + 3× vt `0x015D1D30` gid `0x84` kind `?`. Игрок на этой цепи **нет**.
-
-**Поле после Hunt у чужой пачки:** отошёл, всех выгрузило, World=0. Вернулся к гоблину спавна + ещё одному — счётчик не ожил, пешка убила обоих вслепую. Тик делает `if (!g_nAct) return`. Семена умерли вместе со списком. Новый спавн не подхватывается без Hunt. Это дыра 28, не LOS.
-
-### HUNT 29 — poll reseed, 13.08.2026 (dump23)
-
-Одиночки после нуля вернулись. Пачка из трёх — нет, убили при World=0.
-
-Причина: полл стартовал с `lastBand−2MB` и шёл **вверх** до `0x40000000`. Если последний сид был `0x113xxxxx` (u?84), классическая куча `0x10DD` остаётся **сзади** ~30 с. Бой короче.
-
-Hunt-снимок: 4 гоблина + 6×`uEm8000` + 3×`u?84`. Цепь одна.
-
-**`meth4_uEm8600` дочитан (256 Б):**
-
-```
-jmp 00A9D5C0
-mov [edi], 0x015BD9D0   ; LIVE заяц каталога (tid 0x6B)
-uEm8601: [0]=0x015BDCE8  or +2C = 0x6C  змея
-uEm8602: [0]=0x015BE000  or +2C = 0x6D  летучая мышь
-uEm8500: [0]=0x015BCF78  or +2C = 0x69  олень
-```
-
-Лагерные «зайцы» = `0x015BB278` / `0x61` = `uEm8000`. Настоящий заяц каталога — другой vt. На цепи dump23 `0x015BD9D0` нет.
-
-### HUNT 30 — hot ring + merge, 13.08.2026 (dump24)
-
-**Полл закрыт.** Поле: одиночки и пачки снова встают в реестр без второго Hunt. `world{13,4,cat0}` совпал с `actors=13`. Крашей нет.
-
-```
-pWorld obj 0x0BBE1370
-hunt.ms=11266  live=13  actors=13  dti=27  tree=93  ctors=9
-
-цепь одна (first.prev=0 @ 0x10DD7470, last.next=0 @ 0x10DF0060):
-  4× uEm0100  [0]=0x015852A8  gid 5
-  6× uEm8000  [0]=0x015BB278  gid 0x61
-  3× uNpc     [0]=0x015D2618  gid 2
-  u?84 в этой клетке нет
-
-гоблины (тот же лагерь, что dump19/20; Z снова 600–6700, не dump23 +10k):
-  0x10DD0060  8534.8  32021.5  6242.8   = dump19 spawn до байта
-  0x10DE5040 12393.8  32444.6  6703.1   высокий, dXZ от спавна ≈ 3886
-  0x10DF0060 15294.7  32349.5  4481.8   дальний, dXZ ≈ 6986
-  0x10DF7470  9566.4  31518.5   605.2   южный, dXZ ≈ 5731
-```
-
-Четыре живых `uEm0100` в **одном** Hunt уже сидят в 4–7k единиц друг от друга. Движок держит несколько лагерей сразу. Это не баг сканера и не «утечка» `g_act`.
-
-`uHumanEnemy` DTI cand (dump24): callee `0x00BA61F0` пишет `0x015D1D30`. Хлебная крошка для `u?84`, не имя. Бестиарий `0x84` не знает (люди у нас — кастом `0xE0`). Не путать с `mStudyIdx=84` у «Enemy Person».
-
-### Присутствие: четыре карты, не один баг
-
-World = инстанциированные 29 КБ тела на `+0C`. Не LOS, не «ещё дерутся», не «я отошёл на 50 м».
-
-1. **Список ≠ LOS.** На цепи могут быть кусты / гребень / труп за спиной. Пачка «три глазами» ≠ 3 в World.
-2. **Труп ещё `uEm0100`.** HP внутри 29 КБ не читаем. Мёртвый остаётся, пока движок не выгрузит. World ≠ «кто ещё дерётся».
-3. **Опоздавший спавн / мёртвые семена.** LOT → тело появляется позже. Zip 27/28 умирали при `g_nAct=0`. Zip 30 сливает новые сиды с горячего кольца — dump24 это подтвердил.
-4. **Экран ≠ выгрузка. Гистерезис движка.** ✅ dump24 + поле. Спавн-сфера << сфера выгрузки. LOS держит тушку (видно, как пляшут за сотни метров). Чтобы World стал 0, надо уйти дальше радиуса keep-alive **и** порвать взгляд **и** дождаться тика выгрузки. Сотни метров — нормально. Это не наша дыра и не повод писать свой despawn по дистанции.
-
-Потолок «~10 активных врагов» — полевая оценка (ещё FluffyQuack, 2016). Наши фото: 10–15 смешанных тел на `+0C` (гоблины + `uEm8000` + NPC + иногда `u?84`). Wildlife/NPC могут сидеть в другом бюджете. **Не** кодировать магическую десятку. Кап — друг: `g_act[32]` хватает на клетку, дальние LOT остаются `cLinkUnitEnemy` и не раздувают World.
-
-Следствия, которые **не** делаем:
-
-- не фильтровать «дальше N метров» — игрок на `+0C` нет, GPS ГГ ещё не снят, а движок сам решает, кого выгрузить;
-- не считать World=0 целью продукта. Это жёсткий протокол теста полла;
-- не путать присутствие с угрозой. Угроза = рядом + жив. Для «жив» нужен HP/флаг смерти внутри 29 КБ. Для «рядом» — GPS игрока. Оба — следующие карточки FieldMap, не CombatIntel `edi+8`.
-
-### HUNT 31 — live vs corpse, first 256B, 13.08.2026 (dump25 + Inspect)
-
-Один указатель `0x10E07320`, один процесс. Inspect живой, потом труп. dump25 = HUNT **до** удара (`world{7,1,cat0}`, xyz ещё живые 5295/32350/4482).
-
-Identify `gid=0x00` — это `WatchAdd(kGoblinInst, "uEm0100", 0)`, не тело. HUNT читает `+0x2D` и пишет `gid=0x05`. Смотри строку `body +2D=` в Inspect (zip 31).
-
-**В первых 256 байтах HP нет.** Это uCoord / три копии матрицы (`+40 / +A0 / +E0`). Ни один float не ушёл с «больших хитов» на 0.
-
-Что меняется живой→труп в Inspect, и почему это ещё не смерть:
-
-| поле | живой Inspect | труп Inspect | все HUNT dump17–25 (живые) | вердикт |
-|---|---|---|---|---|
-| `+14` low | `0x11` | `0x12` | `0x11` **или** `0x12` (dump19–22 все `0x12` до боя) | state/alert, не труп |
-| `+4C` float | `1.0` | `0.0` | **всегда 0** | physics-awake, не жизнь |
-| `+FC` | `0x3F800009` (~1.0) | `0x00000009` | **всегда 9** | то же |
-| `+3C` | `1.0` | `1.0` | 0 / 1 / 255 | шум |
-| `+07` | `0x3C` | `0x3C` | 0 / 0x3C / 0xC0 | флаги сессии |
-| XYZ | 5295/32350/4482 | 5523/32364/4131 | как живой | труп упал. Поза, не HP |
-
-`+14=0x12` на живых dump19–22 закрывает гипотезу «12 = мёртв». Не фильтровать World по `+14` / `+4C` / `+FC`.
-
-Труп остаётся `uEm0100`, gid 5, на `+0C`. Карта 2 подтверждена этим A/B.
-
-HP / death flag сидит глубже. create пишет нули/float в `+0x5BD0` и `+0x601C…+0x612C`. Zip 31: Inspect кнопки `+5BD0` / `+6000` / `+6150`; HUNT кладёт `st14`, `win5b`, `win60` в json.
-
-Следующий A/B (билд 31), тот же указатель, не отходя:
-
-1. Живой: head, потом `+5BD0`, потом `+6000`.
-2. Убить. Не отходить.
-3. Труп: те же три окна.
-4. Ищем float, который был большим (десятки–тысячи) и стал 0, или байт, который залип только на трупе (не на живых dump19–22).
-
-Не `CombatIntel.cpp`. Не `edi+8`.
-
-### HUNT 24 — live goblin, 12.08.2026 (dump18)
-
-**Критерий фазы 0.4 выполнен.** HUNT без удара:
-
-```
-live[4]  uEm0100  gid=0x05
-  0x10DD0060   xyz 12394  32445  6703   fat29=yes
-  0x10DE7320   xyz  7870  32041  6250
-  0x10DF0060   xyz  9377  31511   551
-  0x10DF7470   xyz  9571  31519   605   stride от соседа 0x7410 = 29632+80
-```
-
-`[0] = 0x015852A8` — instance vt, который пишет `meth4_uEm0100`.  
-`+0x2D = 5` — typeId / groupId.  
-`+0x40/+44/+48` — world XYZ (Грансис).  
-`+0x0C / +0x10` — двусвязный список живых (то, что мы искали в sUnit).  
-`+0x601C…+0x612C` — `movss` из create (тело 29 КБ).  
-`+0x6150` — подобъект, vt `0x015497F8` (parent из zip 17).
-
-`holders=0` ожидаемо: контейнер — сам список на акторе, не плоская таблица в `.data`.
-
-Greater (`uEm0101`) тот же `[0]`, gid `6`.
-
-### HUNT 23 — force near + ctor hex, 12.08.2026 (dump17)
-
-`near[uEm0900 +216] = 0x015B5A80` — золото гаргульи, forced `+0xD8`.  
-`sPawn −0x10 = 0x0155ADA4`. `uPlayer` fact `0x015E4F34` на off=0.  
-`uEm0100` forced off=0 пуст (TSV factory = строка).
-
-`create_uEm0900` первые байты: `C7 06 48 47 57 01` = `mov [esi], 0x01574748` (**shared-base**). Вид `0x015B5A80` пишется позже, за 64 байтами.
-
-**meth4_uEm0100 `0x008CAFA0` — это create вида:**
-
-```
-push 0x01977BA0        ; DTI uEm0100
-call …
-push 0x73C0            ; 29632 = sizeof
-call allocator
-mov  edi, eax
-call base_ctor
-mov  [edi], 0x015852A8 ; instance vt
-```
-
-`0x015852A8` мы забраковали: «сосед DTI» (`0x01585604 − 0x015852A8 = 0x35C`) и «трекер». Это **финальный [0] гоблина**. Первые 256 байт «узлов» `0x10DD*` — шапка uCoord/трансформ 29 КБ актора. `+0x2D == 5` не случайность.
-
-`writes[]` золото снова не влезло: `acc[128]` забит Act* до `0x00A3B130`.
-
-### HUNT 22 — vtable starts, 12.08.2026 (dump16)
-
-START-фильтр сработал слишком хорошо: `near=6`, **гаргульи нет**. `uEm0900` fact `0x015B59A8` / inst `0x015B5A80` сидят в пачке vtable, `at-4` тоже LLV — оба отсеяны.
-
-Что осталось: `uEm0100 off=-276 → 0x015A0360` (старт кластера `cEm0100Act*`, не вид). `sPawn off=-20 → 0x0155ADA0` (4 байта до золотого inst `0x0155ADA4`).
-
-`writes=48` — шаг `0x48` / сайт шаг `0xB0`: конструкторы **действий** `cEm0100Act*`. Золото `0x015B5A80` снова не влезло (create @ `0x00A3B130` позже в `.text`). Скорее всего ctor пишет через `B8+89`, не через `C7`.
-
-`+F8` узлов: `[0]=0x82/81/83xxxxxx` — не vtable. `from=nodeF8` съел дедуп. Новый gid-объект `0x110805B0` vt `0x01575860` → AI-кластер (`cAIUserList`), не актор.
-
-`foundInst` гоблина 0. derived золото цело. `live=0`.
-
-### HUNT 21 — near vt objects, 12.08.2026 (dump15)
-
-`near=48` — все 48 слотов съел `uEm0100` начиная с `off=-512` (`0x015A0274`) шаг 4. `LooksLikeVtable` истинен в **середине** vtable (два соседних слота = `.text`). До `off=0` / `+0xD8` не дошли. Гаргулью даже не смотрели.
-
-`writes=48` — снова ранняя полоса, теперь `0x01580xxx`. Золото `0x015B5A80` в выборке нет.
-
-`nodes` 256 байт: до `+0xEC` только матрицы позы (XYZ повторяется трижды: `+40`, `+A0`, `+E0`).  
-`+F8` = куча (`0x10E79CC0` / `0x10E79550` / `0x11320BB0` / `0x10F16450`), `[0]` с старшим битом (`0x825E…`) — не vtable. `+FC=9`. Актора 29 КБ нет.
-
-`foundInst` гоблина 0. derived золото на месте. `live=0`.
-
-### HUNT 20 — ctor writes + near factory, 12.08.2026 (dump14)
-
-`near=0` — баг сканера: проверяли `LooksLikeVtable(*at)`, а в ±0x200 лежат **сами** vtable (у фабрики `*at = create`, InExec).  
-`writes=48` — cap съели ранние `0x01539xxx` (начало `.text`). Золото `0x015B5A80` / create `0x00A3B130` в выборку не попали. `acc[96]` тоже забился до них.
-
-`uEm0100.foundInst=0` честно (callee отсечён). derived золото гаргульи/игрока/пешки на месте. `live=0`.
-
-**nodes[4] vt `0x015852A8` — трекеры с координатами, не акторы:**
-
-```
-+00  vt
-+0C / +10  двусвязный список таких же узлов
-+14  float 0.5
-+2D  байт 0x05  ← поэтому сработал gid scout, это не typeId актора
-+40  float X    тысячи, Грансис
-+44  float Y    ~32000
-+48  float Z    сотни–тысячи
-+54..+78  ориентация / кватернион
-```
-
-GPS гоблина есть. Тушки в 128 байтах нет — либо дальше +0x80, либо актор держится снаружи.
-
-### HUNT 19 — DTI tree, 12.08.2026 (dump13)
-
-`tree=46`. Таксономия `uEnemy` **до капа 48** (фауна/драконы за `uEm5000.next` не вошли):
-
-```
-uCharacterBase
- ├── uEnemy                         @ 0x01982110   size 24576
- │    ├── uEm0100 goblin gid 5      child: 0101, next: FactionBase
- │    │    ├── uEm0101 greater 6
- │    │    ├── uEm0102           7
- │    │    └── uEm0103         tid 142
- │    ├── uEmWolfBase → 0200..0204
- │    ├── uEmZombiBase → 0500..0503
- │    ├── uEm0600FactionBase → 0600..0603
- │    ├── uEm0700 → 0701..0703
- │    ├── uEm0900 gargoyle 0x2C → 0901
- │    ├── uEm1200Base → 1200
- │    └── uEm5000
- └── uPlayerBase
-      ├── uCmc
-      ├── uNpc → uHumanEnemy, uMultiNpc
-      └── uPlayer
-```
-
-`uEnemy.child = uEm0100` — гоблин первый зарегистрированный враг. Greater — **подкласс** гоблина (`parent=uEm0100`), тот же sizeof 29632.
-
-`xrefs=0`. Золотые inst/fact (`0x015B5A80` / `0x015EFD38` / `0x0155ADA4`) **не лежат dword’ом в неисполняемых секциях**. Только immediate в `.text`. Дверь «таблица vt в .data» закрыта.
-
-`derived[]` защита сработала: гаргулья `0x015B5A80`, игрок `0x015EFD38`, пешка `0x0155ADA4`.  
-`uEm0100.foundInst=0x0157C450` — callee слота 5, кластер `uGUICmcMessage`. Не вид. `live=0` честно.
-
-`leads=32` забиты пакованными id (`0x05BBxxxx`) из таблиц `0x32EFxxxx`. Единственный полезный — `0x10DD0060→0x10DD7470`. `from=back` пуст.
-
-### HUNT 18 — unique cands + xref + leads, 12.08.2026 (dump12)
-
-Zip 18: все слоты DTI + кали E8, unique pick, xref, дерево +08..+14, leads из gid-0x05.
-
-**MtDTI дерево подтверждено:**
-
-```
-+08  mpNext   сосед
-+0C  mpChild  первый наследник
-+10  mpParent родитель
-```
-
-`uEm0100.parent = uEnemy` @ `0x01982110`.  
-`uEm0100.child  = uEm0101` (greater — подкласс гоблина, тот же sizeof 29632).  
-`uEm0100.next   = uEm0600FactionBase`.  
-`uEm0200.parent = uEmWolfBase`.  
-`uEm0500.parent = uEmZombiBase`.  
-`uCharacterBase.parent = uObjModel`.  
-`sEnemyManager.next = sHumanEnemyManager`.
-
-**Unique pick — снова не вид.** `uEm0100.foundInst=0x01585654` = DTI.vt `0x01585604` **+0x50** (соседний vt в кластере карточки). На куче нулей. То же у гаргульи `0x0159A830` рядом с её DTI.vt. Кали **не** нашли золото `0x015B5A80`.
-
-`derived[]`: гаргулья и `sPawnManager` золото уцелело. `uPlayer` затёрли (был `shared=true`, защита не сработала) — inst стал `0x015CB3F0`.
-
-**Xref бесполезен в этом прогоне:** 32/32 = `uPlayer.create 0x00C76030` (общий слот кучи vtable). Золотые inst/fact до капа не доехали.
-
-`live=1` `uNpc` gid `0xFF` @ `0x0BB17EC0` рядом с pWorld — фейк.
-
-`leads[]`: список `0x10DD/DE/DF` на vt `0x015852A8` (DTI-метод uEm0101) и `0x015BB278`. Узлы ссылаются друг на друга, `fat=true` из-за региона, не из-за 29 КБ. Актор если есть — глубже 64 байт или *перед* узлом.
-
-### HUNT 17 — DTI methods, 12.08.2026 (dump11)
-
-Zip 17: `ScanFuncForInst` на `DTI.vt[4+]` (первый хит, `break`). `hunt.ms=11953`, 1.29 ГБ, `live=3`, `dti=19`, `gids=48` (8× `want` gid `0x05`).
-
-**Золотой тест провален.** `DTI.vt[4]` пишет **родительский** vt, не вид:
-
-| Тип | foundInst (slot 1) | Ожидали | Вердикт |
-|---|---|---|---|
-| `uEm0100` | **`0x015497F8`** | (не знали) | общий с гаргульей |
-| `uEm0900` | **`0x015497F8`** | `0x015B5A80` | не вид |
-| `uPlayer` | `0x015C9D70` | `0x015EFD38` | не вид |
-| `sPawnManager` | `0x0153FEFC` | `0x0155ADA4` | не вид |
-| `uCharacterBase` | `0x01574748` | — | старый shared-base |
-
-`derived[]` от TSV-фабрики **не сломался**: `uEm0900` inst `0x015B5A80` / create `0x00A3B130`; `uPlayer` inst `0x015EFD38` (shared); `sPawnManager` inst `0x0155ADA4`. У гоблина TSV factory = строка пути, поэтому DTI-hit перезаписал derived на родителя `0x015497F8`. На куче этого vt **нет** (census пуст) — правильно не актор.
-
-`live=3` — снова кишки `sSetManager` (`0x3005EC28/A8/D0`), подписаны `uNpc` (gid атласа = 0, байт `+0x2D` прошёл). Не NPC.
-
-**Первые 8 скаутов gid `0x05` — не гоблины:**
-
-| vt | ptr | Что это |
-|---|---|---|
-| `0x014263C0` / `0x01426440` | `0x11522xxx` шаг `0xE10` | незарегистрированные vt рядом с `sUnit` (`0x01425EF4`); в одном слоте ptr на shared-base `0x01574748` |
-| `0x01560050` | `0x32E884C0` | пачка `uint16` (`76 05 76 05…`) |
-| `0x015852A8` | `0x10DD0060`… список | это **DTI-foundInst `uEm0101`**, узлы ~не 29 КБ. Могут указывать на актора — zip 18 идёт по ptr |
-
-`cLinkUnitEnemy` @ `0x2FB057D8`: `[0]=0x01590164` = TSV factory vt (у этого типа factory==instance), size 96. В голове пачка id `04 00 05 00 06 00` — лот знает гоблина. Не живой `uEm0100`.
-
-`sPlayerManager` DTI foundInst `0x01540820` совпал с историческим `pWorld[0]`. 🧪
-
-Каталог действий (TSV, не рантайм): **139** `cEm0100*`, 98× size 120 = `cEm0100Action`. Соседи карточки `+0x20/+0x40/+0x60` — их DTI, не живые экшены.
-
-Гипотеза «`vt[4]` = create вида» — **отвергнута**. Метод карточки пишет базу. Вид по-прежнему только из factory derive (есть у гаргульи/игрока/пешки, нет у гоблина).
-
-### HUNT 16 — DTI body, 12.08.2026 (dump10)
-
-`foundFact=0` у всех, включая `uEm0900`/`uPlayer`/`sPawnManager`, чьи factory vt мы уже знаем. Значит заводской vt **не лежит в карточке**.
-
-Карточка — это **пачка DTI по 0x20 байт**:
-
-```
-uEm0100 @ 0x01977BA0
-+00  карточка актора     size 29632  typeId 5
-+20  вложенный DTI       size 120    (= cEm0100Action)
-+40  ещё один            size 120
-+60  ещё один            size 120
-```
-
-`DTI.vt[0] = 0x00BFF9A0` у всех (общий create карточки).  
-`DTI.vt[4]` у каждого свой и в `.text`: гоблин `0x008CAFA0`, гаргулья `0x009543B0`, игрок `0x00B52F00`. Это кандидаты в настоящий конструктор вида.
-
-### HUNT 15 — DTI by name, 12.08.2026 (dump9)
-
-`dti=19`. **Живая карточка гоблина найдена.**
-
-```
-uEm0100  DTI @ 0x01977BA0
-  +00  0x01585604   vtable самой карточки (MtDTI), НЕ create_uEm
-  +04  0x01539C00   "uEm0100"
-  +18  0x060073C0   sizeof = 29632
-  +1C  5            typeId / groupId / obj[0x2D]
-```
-
-То же для волков/скелетов/гаргулий: size совпал с TSV, `+1C` = gid (`8`, `0x1B`, `0x2C`).  
-`uEm0100_20` лежит отдельно @ `0x01978A10`, size 9568 — часть, не актор.
-
-`DTI[0]` ни у кого не равен TSV FactoryVtable. Derive от него даёт общий `create=0x00BFF9A0` / `inst=0x015E0378`. `live=0` правильно: это не чертёж экземпляра. Настоящий factory vt (у `uEm0900` это `0x015B59A8`, у `uPlayer` `0x015E4F34`) в первых 32 байтах карточки **нет** — ищем глубже.
-
-### HUNT 14 — stub parse, 12.08.2026 (dump8)
-
-`hunt.ms=12485`, `live=0` честно (фейковые uPawnIntel отфильтрованы). `facts=11`, `heapMgrs=8` (sPawnManager×3 живы).
-
-**Caller гоблина регистрирует не гоблина.** `nameHex` = ASCII `uEm0100_20`. `sizeImm=0x2560=9568` = TSV sizeof(`uEm0100_20`). После call:
-
-```
-E8 …                call register
-68 40 8C 38 01      push Reset 0x01388C40
-C7 05 10 8A 97 01   mov [0x01978A10], 0x01588B08   ← factory vt
-          08 8B 58 01
-```
-
-`ecx=0x01978A10` — живой MtDTI в `.data`. Раскладка подтверждена на нескольких типах:
-
-```
-+00  factory vt     (у части гоблина 0x01588B08, нет в TSV)
-+04  char* name
-+18  size | (flags<<16)    младшие 16 бит = sizeof
-```
-
-TSV `Caller` часто сосед, не тот тип: `uPlayer` stub → `uShlDeathCircleChild`; `uNpc` → `cShlParamKeyFrameSpeed`; `uHumanEnemy` → `uShlKeyFrameBase`; `uCharacterBase` → `cSetInfoEnemy0402`; `uPawnIntel` → `uEffectExtNoPause`. `uEm0200`/`uEm0500`/`sEnemyManager` — вообще не stub (большое тело).
-
-Rescue `0x01588B08` дал `create=0x00BFF9A0` / `inst=0x015E0378` — общий create (тот же у sSetManager). Не вид гоблина.
-
-Дальше: искать в `.data` DTI, у которого `[+4]` указывает на **точную** строку `"uEm0100\0"`, не на `_20`.
-
-### HUNT 13 — caller rescue, 12.08.2026 (dump7)
-
-`hunt.ms=11734`, 1.29 ГБ, `live=7`, `facts=10`, `heapMgrs=11`, `holders=0`. Zip 13 впервые прогнан.
-
-**live=7 — не гоблины.** Все подписаны `uPawnIntel`, адреса `0x3005EB20`… рядом с heap `sSetManager` `0x3005EB18`. Rescue взял из окна Caller чужой vt `0x0155E04C` (фабрика `sSetManager`). Скан с шагом 8 попал во внутреннее поле менеджера. `uPawnIntel` size=56, это компонент, не актор.
-
-**facts[] — окно Caller работает, парсер нет.**
-
-| Тип | TSV FactoryVtable | rescued | Что в callHex |
-|---|---|---|---|
-| `uEm0100` | строка `\e50\e5000\collision\…` | `0` | stub: `push 0,0,0` / `push 0x2560` / `push 0x019862F4` / `push 0x01588948` / `mov ecx, 0x01978A10` |
-| `uPlayer` | настоящий vt, create=`0x00C76030` | `0x015DAD10` | C7 предыдущей функции + начало своего stub |
-| `uNpc` / `uHumanEnemy` / `uCharacterBase` | строки | `0` | тот же 6×push + `mov ecx` + `call` |
-| `uPawnIntel` | строка «HP…» | **`0x0155E04C` чужой** | хвост `sSetManager` + свой stub (`push 0x0155DEFC`) |
-| `uEm0200` / `uEm0500` / `sEnemyManager` | строки | `0` | не stub — тело другой функции. Их Caller — не 10-инструкционный регистратор |
-
-Zip 13 искал любой dword `LooksLikeVtable` в 48 байтах *до* call. Регистрация пишет адрес через **`push imm32` (`68`)**, не через `C7`. Поэтому гоблин `rescued=0`, хотя рецепт уже в hex.
-
-Скрипт Atvaark `rename_type_factories.py`: 6 push, `mov ecx`, `call`, push reset, `C7 05` factory-vt. `0x01588948` скорее имя/`DTI`, не instance vt (LLV не прошёл). `ecx=0x01978A10` — объект фабрики в `.data`, **не** TSV `FactoryPointer` `0x1992b20` (тот слот по-прежнему 0).
-
-`sPawnManager` снова в heapMgrs (last-write `0x0155ADA4`) — откат near-only из 12 подтверждён. Gid `want=true` без WINMM.dll; 4 слота — ASCII-guid `"1fa439c0"` на vt `0x01426344`, не юниты.
-
-### HUNT 12 — factory heads, 12.08.2026
-
-`facts[uEm0100].hex` = ASCII `\e50\e5000\collision\e5000_3`. Колонка TSV FactoryVtable у гоблина/волка/скелета/`sEnemyManager` — **пул путей**, не vtable. `uPlayer` в той же колонке — настоящий vt (`create=0x00C76030`). Поэтому derive гоблина физически не из чего запускать.
-
-16× `want=true` gid 0x05 — UTF-16 (`SYSTEM32\WINMM.dll`) и плотные таблицы в `0x01CExxxx`. Резерв без LooksLikeVtable забился до реальной кучи. `sPawnManager` случайно сидит в other-gids @ `0x10B66540` vt `0x0155ADA4` (подписан `uEm5902` из-за байта `0x5E`). Near-factory heuristic сменил hunt-ключ менеджера — в heapMgrs его нет.
-
----
-
-## Как добавлять строку
-
-1. Identify объекта (vtable → имя из атласа).
-2. Прочитать поле, изменить в игре, увидеть эффект — или наоборот.
-3. Строка в эту таблицу + статус ✅.
-4. Никаких абсолютных VA в релизном коде. Только RVA или сигнатура.
-
----
-
-## HP из файлов — maxHP известен, current HP теперь ищется однозначно (14.08.2026)
-
-`charparam/em/emXXXX.rst` содержит **максимальное HP**. Сверено с вики: точное совпадение.
-
-| враг | maxHP | LE-байты | нокдаун | флинч |
-|---|---:|---|---:|---:|
-| Goblin `uEm0100` gid 5 | **1000.0** | `00 00 7A 44` | 100 | 100 |
-| Hobgoblin `uEm0101` gid 6 | **2000.0** | `00 00 FA 44` | 650 / 500 | 450 / 300 |
-| Grimgoblin `uEm0102` gid 7 | **6000.0** | `00 80 BB 45` | 2200 / 800 | 1500 / 500 |
-
-**Как это закрывает задачу «HP глубже 256 байт» (ROADMAP §6.1).**
-Раньше искали «какой-то float в 29 КБ». Теперь известно стартовое значение:
-
-```
-в теле uEm0100 искать float == 1000.0
-проверка: тот же оффсет у uEm0101 должен дать 2000.0, у uEm0102 — 6000.0
-тройное совпадение = поле доказано, а не угадано
-```
-
-Смерть = переход этого поля через 0. Это даст честное «энкаунтер кончился»
-и разблокирует полку MEMORY.
-
-**Не путать:** `人間敵 HP = 1000.0` в `_cmn.prp` — поле для *людских* врагов.
-Совпадение с maxHP гоблина случайное. Источник HP — `.rst`, не `.prp`.
-
-Инструменты: `tools/rst_dump.py`, `tools/xfs_dump.py`. Полная спека — `docs/ASSET_FORMATS.md`.
-
-### Поправка 14.08.2026: «HP 61/80/15 при смерти» — это пул сбивания, не HP
-
-Поле: гоблин гибнет при положительном значении (61, 80, 15), значение падает
-и после смерти, скан на 0 не ловится, адрес пропадает.
-
-**Все три числа < 100 = пул из `.rst`, а не HP из `.rst`:**
-
-```
-maxHP гоблина        1000.0   (.rst +0x00)
-пул нокдауна          100.0   (.rst +0x04)  ← 61/80/15 живут здесь
-пул флинча            100.0   (.rst +0x0C)
-восстановление          0.3   (.rst +0x08/+0x10) ← объясняет «падает после смерти»
-```
-
-Отслеживался **не тот float**. Как доля HP это 6.1/8.0/1.5% (бессмыслица),
-как доля пула — 61/80/15% (нормальная шкала).
-
-«Испарение адреса» — не загадка, а **карта 4** (гистерезис выгрузки) + смена
-адресов тел между сессиями. Скан по абсолютному адресу обречён; только
-`WatchAdd(instance vt)` / обход `+0C`.
-
-**Следствие для CombatIntel:** не ждать `hp <= 0`. 67 занятых слотов в
-`e0100_dm.lmt` (из 173) выбираются переменной состояния, а не сравнением
-float с нулём. Флаг/номер состояния — вероятнее, чем «HP дошло до 0».
-
-Отличать HP от пулов при поиске: HP стартует с **1000.0**, пулы со **100.0**;
-и только HP меняется на **2000.0** (`uEm0101`) / **6000.0** (`uEm0102`).
-
----
-
-## ActMap — 812 FSM-состояний с именами (14.08.2026)
-
-`TypeAtlas` содержит не только типы врагов, но и типы их **состояний**:
-`cEm<ID>Act<Имя>`. Сгенерировано в `src/ActMap.Generated.h`
-(`python3 tools/generate_act_map.py`): **812 состояний, 35 видов**.
-
-Идентификация в рантайме: `*(uint32_t*)actObj - moduleBase` → `ActMap::FindByVt(rva)`.
-
-### Гоблин (139 состояний), ключевые
-
-| состояние | vtable RVA | категория |
-|---|---|---|
-| `cEm0100ActDie` | `0x11A223C` | **death** |
-| `cEm0100ActDeadBody` | `0x11A247C` | **death** |
-| `cEm0100ActDieBurn` | `0x11A1E94` | death |
-| `cEm0100ActDieIce` | `0x11A2284` | death |
-| `cEm0100ActThreatHowl` | `0x11A10CC` | taunt |
-| `cEm0100ActPartyDance` | `0x11A0FAC` | taunt |
-| `cEm0100ActHornReinforce` | `0x11A0D24` | taunt |
-| `cEm0100ActNAttack1` | `0x11A178C` | attack |
-| `cEm0100ActWait` | `0x11A04FC` | wait |
-
-**Смерть определяется состоянием, а не HP.** `ActDie` / `ActDeadBody` —
-однозначный признак. Это закрывает «не можем поймать момент смерти»
-без поиска current HP.
-
-### Мост файл ↔ рантайм подтверждён
-
-```
-em0100_cmn.prp  sizeof = 320  ==  cCharParamEnemy size = 320 (TypeAtlas)
-                                   factoryVtRVA 0x118CC10
-```
-
-72 японских имени из `_cmn.prp` = имена полей живого `cCharParamEnemy`.
-
-### Подсистема мышления и целей — адреса из TypeAtlas
-
-| тип | factoryVt RVA | size |
-|---|---|---:|
-| `cThinkMgr` | `0x119E738` | 4704 |
-| `cThinkMgrTargetMgr` | `0x119E714` | 3584 |
-| `cThinkMgrTargetData` | `0x119E704` | 144 |
-| `cThinkMgrAct` | `0x119E730` | 160 |
-| `cThinkFSM` | `0x11940B0` | 208 |
-| `cAIPriorityThink` | `0x1174C34` | 1020 |
-| `cMotionCtrl` | `0x1198484` | 96 |
-
-Есть `cThinkFSM::cThinkFSMParamDisableFlag` — движок сам умеет глушить состояния.
-
-**Следующий шаг:** найти в 29-КБ теле указатель на текущий Act
-(поле, чей `[0]` совпадает с RVA из ActMap). Это даёт смерть, таунт и точку подмены.
-
-### Спавн, веса и пешки — адреса из TypeAtlas (14.08.2026)
-
-**Спавн (полка LIVE, точка мутации «на рождении»):**
-
-| тип | vtRVA | size |
-|---|---|---:|
-| `cLayoutSetEnemy` | `0x118FA10` | 152 |
-| `cLayoutSetDynamic::cLotData` | `0x118F60C` | 112 |
-| `cLayoutSetCharaBase` | `0x118F5B0` | 128 |
-| `cLinkUnitEnemy` | `0x1190164` | 96 |
-| `sEnemyManager` | `0x1157B54` | 2172 |
-
-`cLinkUnitEnemy` = «далёкие гоблины» из dump20/24 (LOT без тела).
-
-**Система весов / оценки:**
-
-| тип | vtRVA | size |
-|---|---|---:|
-| `cEvaluation` | `0x11DB17C` | 10452 |
-| `cEvaluationData` | `0x11DB160` | 652 |
-| `cAIPriorityThink` | `0x1174C34` | 1020 |
-| `rAIPriorityThink::cOrderValue` | `0x120FE4C` | **12** |
-| `cAICheckSituation` | `0x1173A6C` | 384 |
-
-`cOrderValue` 12 байт — вероятно `{id, weight, flags}`. Пара
-`rAIPriorityThink` (ресурс) + `cAIPriorityThink` (инстанс) = правим живой объект.
-
-**Пешки (фаза 3.4, AIPlActParam):**
-
-| тип | vtRVA | size |
-|---|---|---:|
-| `rAIPlayerActionParameter` | `0x120F278` | 120 |
-| `cAIPlayerActionParameter` | `0x120F228` | 112 |
-| `cPlAbilityParam` | `0x1214F78` | 20 |
-| `sPawnManager` | `0x115ADB4` | 5512 |
-
-Есть рантайм-двойник ресурса → веса навыков правятся LIVE, XML не трогаем.
-Плюс 303 типа `cPlAct*` — все действия пешки поимённо.
-
-Поиск: `python3 tools/find_type.py --size 320` / `--em 0100 --cat taunt`.
-
----
-
-## Масштаб существа — ПОДТВЕРЖДЁН НА ЭКРАНЕ (тест 09, билд 21)
-
-| оффсет в теле | тип | смысл |
-|---|---|---|
-| `+0x60` | f32 | множитель **ширины** (W) |
-| `+0x64` | f32 | множитель **высоты** (H) |
-| `+0x68` | f32 | множитель **глубины** (D) |
-
-`1.0` = ваниль. Три оси независимы → задают и рост, и телосложение.
-Движок читает их **каждый кадр**: правка видна немедленно, без перезахода.
-
-Проверено на `uEm0100` (гоблин) и `uEm8000`. Из живого лога:
-
-```
-[1] uEm0100  0x10DD7320  scale=(0.900, 1.233, 0.913)   -> высокий и тощий
-[4] uEm8000  0x10DF0060  scale=(1.566, 1.362, 1.109)   -> широкий
-```
-
-Значения совпали с расчётом `PickScale`+jitter до третьего знака,
-а вид существа на экране — с числами.
-
-**Поведение движка.** В одном случае из ~5 применений он сбросил
-**только высоту** (`+0x64`), не тронув `+0x60`/`+0x68` (в логе:
-`(2 fields) was=0.900 reverts=1`). Похоже на пересчёт при смене
-состояния. Поэтому запись должна быть **постоянной сверкой в тике**,
-а не разовой: «записал и забыл» здесь не работает.
-
-Не путать с `cCharParamEnemy +0x12C` (スケール値) — это параметр ресурса
-из `.prp`, читается при постройке модели, запись туда откатывается.
+| `cAIGoalPlanning + 0x17C` | current priority code / `0xFFFFFFFF` none | ✅ |
+| `planner + 0x190 + code*0x110` | indexed `cPlanCtrl` | ✅ for valid code |
+
+Observed: Wait `0` or none, Follow `1`, Dagger combat `54`.
+
+## 7. `cCmcInfo` and action interface
+
+| Offset | Type | Field | Status |
+|---:|---|---|---|
+| `+0x29C` | float | current HP mirror | ✅ |
+| `+0x2A4` | float | recoverable/secondary HP mirror | 🔎 |
+| `+0x14B8 + id*0x0C` | row | inclination `{state,id,value}` | ✅ |
+| `+0x0288` | ptr | `rHumanEdit` | ✅ |
+| `+0x028C` | ptr | `rBodyEdit` | ✅ |
+| `+0x0290` | ptr | `rFaceEdit` | ✅ |
+| `+0x07EC` | ptr | `cPlLoadManager` | ✅ |
+| `+0x1658` | ptr | `cPwnMsgLoadManager` | ✅ |
+
+`cCmc*` compiled action tuple:
+
+| Offset | Field |
+|---:|---|
+| `+0x258..+0x26C` | six range floats |
+| `+0x270` | ElementAttr |
+| `+0x274` | AtkAttr |
+| `+0x278` | UseAttr |
+
+## 8. Enemy-specific verified fields
+
+### Goblin `uEm0100`
+
+| Contract | Value | Status |
+|---|---:|---|
+| body size | `0x73C0` | ✅ |
+| charparam signature location | observed near `+0x5870` and `+0x59B0` | 🧪 species-specific |
+| charparam size | `0x140` | ✅ |
+| charparam return activate | `+0x100` inside block | ✅ |
+| charparam return duration | `+0x104` inside block | ✅ |
+| charparam scale | `+0x12C` inside block | ✅ |
+
+Offsets of `cCharParamEnemy` inside body must be signature-resolved for other species.
+
+## 9. Open fields
+
+- exact Main Pawn current target;
+- current HP inside generic enemy body;
+- per-main-pawn priority root association when several roots coexist;
+- semantic names for all priority codes;
+- proven runtime fields for GOAP patches;
+- physical damage hitboxes distinct from AI action ranges.

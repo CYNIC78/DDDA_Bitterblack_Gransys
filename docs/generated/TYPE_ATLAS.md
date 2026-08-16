@@ -7,7 +7,7 @@
 Записей: **4405**. Image base TSV: `0x400000`.
 Рантайм-адрес: `GetModuleHandle(NULL) + RVA`.
 
-Смысл колонок и зачем эта карта — в `docs/DEVTOOLS_VISION.md`.
+Правила runtime-resolve — в `docs/ARCHITECTURE.md`.
 Разведанные оффсеты полей — в `docs/FIELD_MAP.md`.
 
 ## Как пользоваться
@@ -29,8 +29,8 @@ TypeId ≠ 0 ровно у 110 типов (враги + то, что игра н
 - колонка TSV `FactoryVtable` — vtable **фабрики**;
 - `*(void**)liveObject` — vtable **экземпляра**.
 Для живых `uEm*` они эмпирически совпали (поэтому `EnemyTypes.Generated.h`
-и CombatIntel работают). Для `s*` менеджеров — неизвестно, пока не прогнан
-эксперимент из `DEVTOOLS_VISION.md` §5.2.
+и CombatIntel работают). Для `s*` managers адрес всё равно должен быть
+подтверждён runtime-resolve, а не принят из generated catalog как singleton.
 
 ## Префиксы
 

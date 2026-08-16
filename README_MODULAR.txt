@@ -7,7 +7,7 @@
 [FRESH] types.tsv теперь работает на полную:
   - src/EnemyTypes.Generated.h — 110 типов (gid + vtableRVA), генерит python tools/generate_bestiary.py
   - src/Bestiary.Generated.h — 72 бестиария, 45/72 уже с gid из TSV
-  - docs/TYPES_TSV_WALL_BREAKTHROUGH.md — вся магия как использовать адреса без ограничений
+  - docs/generated/TYPE_ATLAS.md + docs/SOURCE_OF_TRUTH.md — generated types и runtime contracts
 
 [FRESH] Модульность PawnAI (было 407 строк монолита → стало 117 строк оркестратор):
   - src/pawnai/PawnAI_Common.h — оффсеты и хелперы

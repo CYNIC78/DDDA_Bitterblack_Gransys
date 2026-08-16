@@ -5,7 +5,7 @@ generate_type_atlas.py — человекочитаемая карта 4405 фа
 
 Читает resources/types.tsv (Atvaark/DragonsDogma.Research).
 Пишет:
-  docs/TYPE_ATLAS.md              — каталог для людей
+  docs/generated/TYPE_ATLAS.md    — каталог для людей
   src/TypeAtlas.Generated.h       — runtime Identify (DevTools)
 
 VA в TSV под базу 0x400000. В рантайме: base + (VA - 0x400000).
@@ -18,7 +18,7 @@ from collections import defaultdict
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TSV_PATH = os.path.join(ROOT, "resources", "types.tsv")
-OUT_MD = os.path.join(ROOT, "docs", "TYPE_ATLAS.md")
+OUT_MD = os.path.join(ROOT, "docs", "generated", "TYPE_ATLAS.md")
 OUT_H = os.path.join(ROOT, "src", "TypeAtlas.Generated.h")
 IMAGE_BASE = 0x400000
 
@@ -209,7 +209,7 @@ def write_markdown(rows):
     parts.append(f"Записей: **{len(rows)}**. Image base TSV: `0x{IMAGE_BASE:X}`.")
     parts.append("Рантайм-адрес: `GetModuleHandle(NULL) + RVA`.")
     parts.append("")
-    parts.append("Смысл колонок и зачем эта карта — в `docs/DEVTOOLS_VISION.md`.")
+    parts.append("Правила runtime-resolve — в `docs/ARCHITECTURE.md`.")
     parts.append("Разведанные оффсеты полей — в `docs/FIELD_MAP.md`.")
     parts.append("")
     parts.append("## Как пользоваться")
@@ -231,8 +231,8 @@ def write_markdown(rows):
     parts.append("- колонка TSV `FactoryVtable` — vtable **фабрики**;")
     parts.append("- `*(void**)liveObject` — vtable **экземпляра**.")
     parts.append("Для живых `uEm*` они эмпирически совпали (поэтому `EnemyTypes.Generated.h`")
-    parts.append("и CombatIntel работают). Для `s*` менеджеров — неизвестно, пока не прогнан")
-    parts.append("эксперимент из `DEVTOOLS_VISION.md` §5.2.")
+    parts.append("и CombatIntel работают). Для `s*` managers адрес всё равно должен быть")
+    parts.append("подтверждён runtime-resolve, а не принят из generated catalog как singleton.")
     parts.append("")
     parts.append("## Префиксы")
     parts.append("")
