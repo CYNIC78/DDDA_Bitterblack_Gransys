@@ -1,0 +1,92 @@
+code,usedByPriority,status,resources,interfaceIds,sourceSlots,planHash
+0,1,direct_goap_link,Wait,0,QUEST - 00|QUEST - 00|QUEST - 01|QUEST - 01|QUEST - 02|QUEST - 02|QUEST - 03|QUEST - 03|QUEST - 04|QUEST - 04|QUEST - 05|QUEST - 05|QUEST - 06|QUEST - 06|QUEST - 07|QUEST - 07,0x379B2772
+1,1,direct_goap_link,Follow,1,PL_Party - 01,0xE44AE737
+2,1,direct_goap_link,Jump,2,PL_Party - 03,0x1023263A
+3,1,direct_goap_link,Climb,3,PL_Party - 05,0x1BFF55C6
+4,1,unmatched,,,Wait_Follow - 01,0x2A9292B7
+5,1,unmatched,,,Wait_Follow - 06,0x365C9E9D
+6,1,direct_goap_link,HoldAction,4,Wait_Follow - 07,0x494AFEF9
+7,1,unmatched,,,Enemy - 04,0xB8D6CA01
+8,1,unmatched,,,Situ_Personal - 00,0x9A83F316
+9,0,direct_goap_link,Receive,1,,0x5014BF35
+10,1,direct_goap_link,Cling,21,Situ_Personal - 05,0x1E9E5108
+11,1,direct_goap_link,Cover,1,Situ_Personal - 05,0xA2B2E846
+12,1,direct_goap_link,HelpAction,73,Enemy - 02,0xA98AADE9
+13,1,unmatched,,,PL_Party - 06,0xE63774F9
+14,1,unmatched,,,Situ_Personal - 05,0xB44CECC6
+15,1,direct_goap_link,Air,22|23,PL_Party - 06,0x9EC8ADD2
+16,1,unmatched,,,PL_Party - 04,0x2A9292B7
+17,0,unmatched,,,,0x2A9292B7
+18,1,unmatched,,,Wait_Follow - 06,0x2A9292B7
+19,1,direct_goap_link,Recover,26,Wait_Follow - 05,0xBEE29E11
+20,1,direct_goap_link,Goto,27,Wait_Follow - 05,0x6638E90D
+21,1,direct_goap_link,LadderClimb,60,Wait_Follow - 05,0xD4C3B530
+22,1,direct_goap_link,LadderDismount,60,Wait_Follow - 05,0x88ED004E
+23,1,direct_goap_link,ClimbAttack,63,Wait_Follow - 04,0xBA935BE1
+24,1,direct_goap_link,ClimbEnd,64,Wait_Follow - 04,0xD7B9A61B
+25,0,direct_goap_link,HoldWait,65,,0x1DD96CB7
+26,1,direct_goap_link,HoldWait4Feet,66,Situ_Personal - 00,0x26F03907
+27,1,unmatched,,,Situ_Personal - 00,0x2A9292B7
+28,1,direct_goap_link,StandOff,67,Enemy - 02,0x76F95E03
+29,1,unmatched,,,Situ_Personal - 05,0x2A9292B7
+30,1,unmatched,,,Wait_Follow - 05,0x2A9292B7
+31,1,direct_goap_link,UseItem,71,Wait_Follow - 05,0xD4628514
+32,1,direct_goap_link,Precaution,72,Wait_Follow - 05,0x20FFA8D0
+33,1,unmatched,,,Wait_Follow - 06,0x2A9292B7
+34,1,direct_goap_link,LiftCorpse,116,Wait_Follow - 05,0x966473CC
+35,1,direct_goap_link,VictoryPose,117,Situ_Personal - 01,0x58E231C8
+36,1,direct_goap_link,ItemThrow,158,Situ_Personal - 00,0xC4643917
+37,1,unmatched,,,Wait_Follow - 05,0xC898FC08
+38,1,direct_goap_link,PlCons,128,Wait_Follow - 04,0x1247ECFA
+39,0,unmatched,,,,0x2A9292B7
+40,1,unmatched,,,Situ_Personal - 04,0x2A9292B7
+41,1,unmatched,,,Wait_Follow - 06,0x2A9292B7
+42,1,direct_goap_link,WaitInfinity,0,Wait_Follow - 06,0xDE31AB6B
+43,1,direct_goap_link,OmBreak,142,Wait_Follow - 04,0xC65434C7
+44,1,direct_goap_link,ClimbMove,143,Wait_Follow - 04,0x1E4BBB63
+45,1,unmatched,,,Wait_Follow - 04,0x2A9292B7
+46,1,unmatched,,,Wait_Follow - 04,0x2A9292B7
+47,1,unmatched,,,Wait_Follow - 04,0x2A9292B7
+48,1,unmatched,,,Situ_Personal - 03,0x2A9292B7
+49,1,direct_goap_link,WpnOff,146,Situ_Personal - 00,0x89228C7F
+50,1,direct_goap_link,ItemGet,147,Situ_Personal - 00,0x44C5F55B
+51,1,direct_goap_link,ItemFind,147,Wait_Follow - 07,0xD4C821D7
+52,1,unmatched,,,Enemy - 05,0xE9354E8C
+53,1,unmatched,,,Etc - 04,0x8C656385
+54,1,direct_goap_link,WpnDaggerAtk,9|124|132|133|10,Etc - 04,0xD36B47DF
+55,1,unmatched,,,Etc - 04,0x2841CC2D
+56,1,unmatched,,,PL_Party - 01,0x8900C55D
+57,1,direct_goap_link,WpnBowAtk2,12|107,PL_Party - 03,0x0906CEEE
+58,1,direct_goap_link,DmgUkemi,149,PL_Party - 05,0x1DE76985
+59,1,direct_goap_link,DmgLeverGacha,150,Situ_Personal - 00,0x1AB801D1
+60,1,direct_goap_link,Em0600Cover,151,Etc - 07,0x922C594C
+61,1,direct_goap_link,Em0700HandlingOff,152,Etc - 07,0x0239F120
+62,1,direct_goap_link,Em5200JustGuard,153,Etc - 07,0x914C3244
+63,1,direct_goap_link,Em5300TaruBaku,154,Etc - 00,0x62E3C3B8
+64,1,unmatched,,,PL_Party - 01,0x2A9292B7
+65,1,unmatched,,,Enemy - 02,0x2A9292B7
+66,1,unmatched,,,Etc - 07,0x2A9292B7
+67,1,direct_goap_link,StatusUp,71,Etc - 06,0xF8CE17E4
+68,1,unmatched,,,Etc - 02,0x2A9292B7
+69,1,direct_goap_link,OpenDoor,159,Etc - 04,0xE9BC1551
+70,1,direct_goap_link,CarryGoods,160|161,PL_Party - 01,0x7B4F2E36
+71,1,unmatched,,,Situ_Personal - 02,0x2A9292B7
+72,1,direct_goap_link,TreasureBox,165,Etc - 06,0xD17AA04D
+73,1,direct_goap_link,EscapeNotice1,166,Etc - 06,0xF8E5BD79
+74,0,direct_goap_link,EscapeNotice2,167,,0x76469175
+75,0,unmatched,,,,0x2A9292B7
+76,0,direct_goap_link,GotoOm,168,,0xB7A662E1
+77,0,unmatched,,,,0xA066C0F7
+78,0,direct_goap_link,BarrelBomb,169,,0xC9C4639C
+79,0,unmatched,,,,0x92957C53
+80,0,direct_goap_link,Ballista,170,,0x83BD952C
+81,0,direct_goap_link,DmgCancel,163,,0x18E9ED83
+82,0,direct_goap_link,DmgAbsorb,171,,0x796F1158
+83,0,unmatched,,,,0x2A9292B7
+84,0,direct_goap_link,DashFollow,173,,0x33B1B58C
+85,0,direct_goap_link,DashFollowSt500,176,,0x74501B60
+86,0,direct_goap_link,JumpSt500,177,,0x87F24B7F
+87,0,direct_goap_link,TwoPlatoons,180,,0x97930973
+88,0,unmatched,,,,0xD156F257
+89,0,direct_goap_link,PlEscape,181,,0x8B77EB69
+90,0,direct_goap_link,DmgEscape,182,,0xD6E46020

@@ -1,0 +1,357 @@
+{
+  "schemaVersion": 1,
+  "buildEvidence": "48-pawn-ai-semantic-roots",
+  "resourceCount": 69,
+  "offlineCatalogCount": 68,
+  "allOfflineResourcesPresent": true,
+  "runtimeOnly": [
+    "WpnBowAtk2"
+  ],
+  "resources": [
+    {
+      "name": "Air",
+      "path": "AI\\Goap\\Cmc\\Air",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Ballista",
+      "path": "AI\\Goap\\Cmc\\Ballista",
+      "offlineCatalog": true
+    },
+    {
+      "name": "BarrelBomb",
+      "path": "AI\\Goap\\Cmc\\BarrelBomb",
+      "offlineCatalog": true
+    },
+    {
+      "name": "BattleActionEtc",
+      "path": "AI\\Goap\\Cmc\\BattleActionEtc",
+      "offlineCatalog": true
+    },
+    {
+      "name": "BattlelAssist",
+      "path": "AI\\Goap\\Cmc\\BattlelAssist",
+      "offlineCatalog": true
+    },
+    {
+      "name": "CarryGoods",
+      "path": "AI\\Goap\\Cmc\\CarryGoods",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Climb",
+      "path": "AI\\Goap\\Cmc\\Climb",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ClimbAttack",
+      "path": "AI\\Goap\\Cmc\\ClimbAttack",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ClimbEnd",
+      "path": "AI\\Goap\\Cmc\\ClimbEnd",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ClimbMove",
+      "path": "AI\\Goap\\Cmc\\ClimbMove",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Cling",
+      "path": "AI\\Goap\\Cmc\\Cling",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Cover",
+      "path": "AI\\Goap\\Cmc\\Cover",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DashFollow",
+      "path": "AI\\Goap\\Cmc\\DashFollow",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DashFollowSt500",
+      "path": "AI\\Goap\\Cmc\\DashFollowSt500",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DmgAbsorb",
+      "path": "AI\\Goap\\Cmc\\DmgAbsorb",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DmgCancel",
+      "path": "AI\\Goap\\Cmc\\DmgCancel",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DmgEscape",
+      "path": "AI\\Goap\\Cmc\\DmgEscape",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DmgLeverGacha",
+      "path": "AI\\Goap\\Cmc\\DmgLeverGacha",
+      "offlineCatalog": true
+    },
+    {
+      "name": "DmgUkemi",
+      "path": "AI\\Goap\\Cmc\\DmgUkemi",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Em0600Cover",
+      "path": "AI\\Goap\\Cmc\\Em0600Cover",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Em0700HandlingOff",
+      "path": "AI\\Goap\\Cmc\\Em0700HandlingOff",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Em5200JustGuard",
+      "path": "AI\\Goap\\Cmc\\Em5200JustGuard",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Em5300TaruBaku",
+      "path": "AI\\Goap\\Cmc\\Em5300TaruBaku",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Enchant",
+      "path": "AI\\Goap\\Cmc\\Enchant",
+      "offlineCatalog": true
+    },
+    {
+      "name": "EscapeNotice1",
+      "path": "AI\\Goap\\Cmc\\EscapeNotice1",
+      "offlineCatalog": true
+    },
+    {
+      "name": "EscapeNotice2",
+      "path": "AI\\Goap\\Cmc\\EscapeNotice2",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Follow",
+      "path": "AI\\Goap\\Cmc\\Follow",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Goto",
+      "path": "AI\\Goap\\Cmc\\Goto",
+      "offlineCatalog": true
+    },
+    {
+      "name": "GotoOm",
+      "path": "AI\\Goap\\Cmc\\GotoOm",
+      "offlineCatalog": true
+    },
+    {
+      "name": "HelpAction",
+      "path": "AI\\Goap\\Cmc\\HelpAction",
+      "offlineCatalog": true
+    },
+    {
+      "name": "HoldAction",
+      "path": "AI\\Goap\\Cmc\\HoldAction",
+      "offlineCatalog": true
+    },
+    {
+      "name": "HoldAttack",
+      "path": "AI\\Goap\\Cmc\\HoldAttack",
+      "offlineCatalog": true
+    },
+    {
+      "name": "HoldWait",
+      "path": "AI\\Goap\\Cmc\\HoldWait",
+      "offlineCatalog": true
+    },
+    {
+      "name": "HoldWait4Feet",
+      "path": "AI\\Goap\\Cmc\\HoldWait4Feet",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ItemFind",
+      "path": "AI\\Goap\\Cmc\\ItemFind",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ItemGet",
+      "path": "AI\\Goap\\Cmc\\ItemGet",
+      "offlineCatalog": true
+    },
+    {
+      "name": "ItemThrow",
+      "path": "AI\\Goap\\Cmc\\ItemThrow",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Jump",
+      "path": "AI\\Goap\\Cmc\\Jump",
+      "offlineCatalog": true
+    },
+    {
+      "name": "JumpSt500",
+      "path": "AI\\Goap\\Cmc\\JumpSt500",
+      "offlineCatalog": true
+    },
+    {
+      "name": "LadderClimb",
+      "path": "AI\\Goap\\Cmc\\LadderClimb",
+      "offlineCatalog": true
+    },
+    {
+      "name": "LadderDismount",
+      "path": "AI\\Goap\\Cmc\\LadderDismount",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Launch",
+      "path": "AI\\Goap\\Cmc\\Launch",
+      "offlineCatalog": true
+    },
+    {
+      "name": "LiftCorpse",
+      "path": "AI\\Goap\\Cmc\\LiftCorpse",
+      "offlineCatalog": true
+    },
+    {
+      "name": "MultiPlier",
+      "path": "AI\\Goap\\Cmc\\MultiPlier",
+      "offlineCatalog": true
+    },
+    {
+      "name": "OmBreak",
+      "path": "AI\\Goap\\Cmc\\OmBreak",
+      "offlineCatalog": true
+    },
+    {
+      "name": "OpenDoor",
+      "path": "AI\\Goap\\Cmc\\OpenDoor",
+      "offlineCatalog": true
+    },
+    {
+      "name": "PlCons",
+      "path": "AI\\Goap\\Cmc\\PlCons",
+      "offlineCatalog": true
+    },
+    {
+      "name": "PlEscape",
+      "path": "AI\\Goap\\Cmc\\PlEscape",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Precaution",
+      "path": "AI\\Goap\\Cmc\\Precaution",
+      "offlineCatalog": true
+    },
+    {
+      "name": "PrecautionSub",
+      "path": "AI\\Goap\\Cmc\\PrecautionSub",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Provoke",
+      "path": "AI\\Goap\\Cmc\\Provoke",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Receive",
+      "path": "AI\\Goap\\Cmc\\Receive",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Recover",
+      "path": "AI\\Goap\\Cmc\\Recover",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Recovery",
+      "path": "AI\\Goap\\Cmc\\Recovery",
+      "offlineCatalog": true
+    },
+    {
+      "name": "StandOff",
+      "path": "AI\\Goap\\Cmc\\StandOff",
+      "offlineCatalog": true
+    },
+    {
+      "name": "StatusUp",
+      "path": "AI\\Goap\\Cmc\\StatusUp",
+      "offlineCatalog": true
+    },
+    {
+      "name": "TreasureBox",
+      "path": "AI\\Goap\\Cmc\\TreasureBox",
+      "offlineCatalog": true
+    },
+    {
+      "name": "TwoPlatoons",
+      "path": "AI\\Goap\\Cmc\\TwoPlatoons",
+      "offlineCatalog": true
+    },
+    {
+      "name": "UseItem",
+      "path": "AI\\Goap\\Cmc\\UseItem",
+      "offlineCatalog": true
+    },
+    {
+      "name": "VictoryPose",
+      "path": "AI\\Goap\\Cmc\\VictoryPose",
+      "offlineCatalog": true
+    },
+    {
+      "name": "Wait",
+      "path": "AI\\Goap\\Cmc\\Wait",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WaitInfinity",
+      "path": "AI\\Goap\\Cmc\\WaitInfinity",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnBowAtk2",
+      "path": "tu2\\AI\\Goap\\Cmc\\WpnBowAtk2",
+      "offlineCatalog": false
+    },
+    {
+      "name": "WpnDaggerAtk",
+      "path": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnGSwordAtk",
+      "path": "AI\\Goap\\Cmc\\WpnGSwordAtk",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnOff",
+      "path": "AI\\Goap\\Cmc\\WpnOff",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnShieldAtk",
+      "path": "AI\\Goap\\Cmc\\WpnShieldAtk",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnSwordAtk",
+      "path": "AI\\Goap\\Cmc\\WpnSwordAtk",
+      "offlineCatalog": true
+    },
+    {
+      "name": "WpnWandAtk",
+      "path": "AI\\Goap\\Cmc\\WpnWandAtk",
+      "offlineCatalog": true
+    }
+  ]
+}

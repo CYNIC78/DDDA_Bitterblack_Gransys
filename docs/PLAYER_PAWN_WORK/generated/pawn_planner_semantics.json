@@ -1,0 +1,2383 @@
+{
+  "schemaVersion": 1,
+  "buildEvidence": "52-pawn-semantic-all-slots",
+  "plannerSlotCount": 91,
+  "runtimeGoapResourceCount": 69,
+  "directSlotCount": 56,
+  "mixedSlotCount": 0,
+  "unmatchedSlotCount": 35,
+  "usedPriorityCodeCount": 70,
+  "mappedUsedPriorityCodeCount": 42,
+  "entries": [
+    {
+      "code": 0,
+      "planHash": "0x379B2772",
+      "status": "direct_goap_link",
+      "resources": [
+        "Wait"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Wait",
+          "resourceName": "Wait",
+          "interfaceId": 0,
+          "linkPtr": "0x10B73B20"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "QUEST - 00",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            514
+          ]
+        },
+        {
+          "slot": "QUEST - 00",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            2
+          ]
+        },
+        {
+          "slot": "QUEST - 01",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            516
+          ]
+        },
+        {
+          "slot": "QUEST - 01",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            4
+          ]
+        },
+        {
+          "slot": "QUEST - 02",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            520
+          ]
+        },
+        {
+          "slot": "QUEST - 02",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            8
+          ]
+        },
+        {
+          "slot": "QUEST - 03",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            528
+          ]
+        },
+        {
+          "slot": "QUEST - 03",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            16
+          ]
+        },
+        {
+          "slot": "QUEST - 04",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            544
+          ]
+        },
+        {
+          "slot": "QUEST - 04",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            32
+          ]
+        },
+        {
+          "slot": "QUEST - 05",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            576
+          ]
+        },
+        {
+          "slot": "QUEST - 05",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            64
+          ]
+        },
+        {
+          "slot": "QUEST - 06",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            640
+          ]
+        },
+        {
+          "slot": "QUEST - 06",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            128
+          ]
+        },
+        {
+          "slot": "QUEST - 07",
+          "index": 0,
+          "identity": [
+            0,
+            0,
+            9,
+            1,
+            768
+          ]
+        },
+        {
+          "slot": "QUEST - 07",
+          "index": 1,
+          "identity": [
+            1,
+            0,
+            9,
+            1,
+            256
+          ]
+        }
+      ]
+    },
+    {
+      "code": 1,
+      "planHash": "0xE44AE737",
+      "status": "direct_goap_link",
+      "resources": [
+        "Follow"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Follow",
+          "resourceName": "Follow",
+          "interfaceId": 1,
+          "linkPtr": "0x10B74030"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 01",
+          "index": 2,
+          "identity": [
+            0,
+            1,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 2,
+      "planHash": "0x1023263A",
+      "status": "direct_goap_link",
+      "resources": [
+        "Jump"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Jump",
+          "resourceName": "Jump",
+          "interfaceId": 2,
+          "linkPtr": "0x10B74510"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 03",
+          "index": 1,
+          "identity": [
+            0,
+            2,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 3,
+      "planHash": "0x1BFF55C6",
+      "status": "direct_goap_link",
+      "resources": [
+        "Climb"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Climb",
+          "resourceName": "Climb",
+          "interfaceId": 3,
+          "linkPtr": "0x10B749E0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 05",
+          "index": 1,
+          "identity": [
+            0,
+            3,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 4,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 01",
+          "index": 0,
+          "identity": [
+            0,
+            4,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 5,
+      "planHash": "0x365C9E9D",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 06",
+          "index": 0,
+          "identity": [
+            0,
+            5,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 6,
+      "planHash": "0x494AFEF9",
+      "status": "direct_goap_link",
+      "resources": [
+        "HoldAction"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\HoldAction",
+          "resourceName": "HoldAction",
+          "interfaceId": 4,
+          "linkPtr": "0x10B76E60"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 07",
+          "index": 0,
+          "identity": [
+            0,
+            6,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 7,
+      "planHash": "0xB8D6CA01",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Enemy - 04",
+          "index": 0,
+          "identity": [
+            0,
+            7,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 8,
+      "planHash": "0x9A83F316",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 4,
+          "identity": [
+            0,
+            8,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 9,
+      "planHash": "0x5014BF35",
+      "status": "direct_goap_link",
+      "resources": [
+        "Receive"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Receive",
+          "resourceName": "Receive",
+          "interfaceId": 1,
+          "linkPtr": "0x10B78AC0"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 10,
+      "planHash": "0x1E9E5108",
+      "status": "direct_goap_link",
+      "resources": [
+        "Cling"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Cling",
+          "resourceName": "Cling",
+          "interfaceId": 21,
+          "linkPtr": "0x10B78FA0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 05",
+          "index": 1,
+          "identity": [
+            0,
+            10,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 11,
+      "planHash": "0xA2B2E846",
+      "status": "direct_goap_link",
+      "resources": [
+        "Cover"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Cover",
+          "resourceName": "Cover",
+          "interfaceId": 1,
+          "linkPtr": "0x10B794D0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 05",
+          "index": 0,
+          "identity": [
+            0,
+            11,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 12,
+      "planHash": "0xA98AADE9",
+      "status": "direct_goap_link",
+      "resources": [
+        "HelpAction"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\HelpAction",
+          "resourceName": "HelpAction",
+          "interfaceId": 73,
+          "linkPtr": "0x10B799B0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Enemy - 02",
+          "index": 0,
+          "identity": [
+            1,
+            12,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 13,
+      "planHash": "0xE63774F9",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 06",
+          "index": 1,
+          "identity": [
+            1,
+            13,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 14,
+      "planHash": "0xB44CECC6",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 05",
+          "index": 2,
+          "identity": [
+            0,
+            14,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 15,
+      "planHash": "0x9EC8ADD2",
+      "status": "direct_goap_link",
+      "resources": [
+        "Air"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Air",
+          "resourceName": "Air",
+          "interfaceId": 22,
+          "linkPtr": "0x10B7AF10"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Air",
+          "resourceName": "Air",
+          "interfaceId": 23,
+          "linkPtr": "0x10B7B250"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 06",
+          "index": 0,
+          "identity": [
+            0,
+            15,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 16,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 04",
+          "index": 0,
+          "identity": [
+            1,
+            16,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 17,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 18,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 06",
+          "index": 3,
+          "identity": [
+            0,
+            18,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 19,
+      "planHash": "0xBEE29E11",
+      "status": "direct_goap_link",
+      "resources": [
+        "Recover"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Recover",
+          "resourceName": "Recover",
+          "interfaceId": 26,
+          "linkPtr": "0x10B7B710"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 7,
+          "identity": [
+            0,
+            19,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 20,
+      "planHash": "0x6638E90D",
+      "status": "direct_goap_link",
+      "resources": [
+        "Goto"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Goto",
+          "resourceName": "Goto",
+          "interfaceId": 27,
+          "linkPtr": "0x10B7BBD0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 3,
+          "identity": [
+            0,
+            20,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 21,
+      "planHash": "0xD4C3B530",
+      "status": "direct_goap_link",
+      "resources": [
+        "LadderClimb"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\LadderClimb",
+          "resourceName": "LadderClimb",
+          "interfaceId": 60,
+          "linkPtr": "0x10B7C090"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 4,
+          "identity": [
+            0,
+            21,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 22,
+      "planHash": "0x88ED004E",
+      "status": "direct_goap_link",
+      "resources": [
+        "LadderDismount"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\LadderDismount",
+          "resourceName": "LadderDismount",
+          "interfaceId": 60,
+          "linkPtr": "0x10B7C560"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 5,
+          "identity": [
+            0,
+            22,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 23,
+      "planHash": "0xBA935BE1",
+      "status": "direct_goap_link",
+      "resources": [
+        "ClimbAttack"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ClimbAttack",
+          "resourceName": "ClimbAttack",
+          "interfaceId": 63,
+          "linkPtr": "0x10B7CA30"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 2,
+          "identity": [
+            0,
+            23,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 24,
+      "planHash": "0xD7B9A61B",
+      "status": "direct_goap_link",
+      "resources": [
+        "ClimbEnd"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ClimbEnd",
+          "resourceName": "ClimbEnd",
+          "interfaceId": 64,
+          "linkPtr": "0x10B7CEF0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 0,
+          "identity": [
+            0,
+            24,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 25,
+      "planHash": "0x1DD96CB7",
+      "status": "direct_goap_link",
+      "resources": [
+        "HoldWait"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\HoldWait",
+          "resourceName": "HoldWait",
+          "interfaceId": 65,
+          "linkPtr": "0x10B7D3B0"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 26,
+      "planHash": "0x26F03907",
+      "status": "direct_goap_link",
+      "resources": [
+        "HoldWait4Feet"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\HoldWait4Feet",
+          "resourceName": "HoldWait4Feet",
+          "interfaceId": 66,
+          "linkPtr": "0x10B7D870"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 6,
+          "identity": [
+            0,
+            26,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 27,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 0,
+          "identity": [
+            0,
+            27,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 28,
+      "planHash": "0x76F95E03",
+      "status": "direct_goap_link",
+      "resources": [
+        "StandOff"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\StandOff",
+          "resourceName": "StandOff",
+          "interfaceId": 67,
+          "linkPtr": "0x10B7DD30"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Enemy - 02",
+          "index": 2,
+          "identity": [
+            0,
+            28,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 29,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 05",
+          "index": 3,
+          "identity": [
+            0,
+            29,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 30,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 0,
+          "identity": [
+            0,
+            30,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 31,
+      "planHash": "0xD4628514",
+      "status": "direct_goap_link",
+      "resources": [
+        "UseItem"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\UseItem",
+          "resourceName": "UseItem",
+          "interfaceId": 71,
+          "linkPtr": "0x10B7E230"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 1,
+          "identity": [
+            0,
+            31,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 32,
+      "planHash": "0x20FFA8D0",
+      "status": "direct_goap_link",
+      "resources": [
+        "Precaution"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Precaution",
+          "resourceName": "Precaution",
+          "interfaceId": 72,
+          "linkPtr": "0x10B7E700"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 2,
+          "identity": [
+            0,
+            32,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 33,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 06",
+          "index": 4,
+          "identity": [
+            0,
+            33,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 34,
+      "planHash": "0x966473CC",
+      "status": "direct_goap_link",
+      "resources": [
+        "LiftCorpse"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\LiftCorpse",
+          "resourceName": "LiftCorpse",
+          "interfaceId": 116,
+          "linkPtr": "0x10B7EBE0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 6,
+          "identity": [
+            0,
+            34,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 35,
+      "planHash": "0x58E231C8",
+      "status": "direct_goap_link",
+      "resources": [
+        "VictoryPose"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\VictoryPose",
+          "resourceName": "VictoryPose",
+          "interfaceId": 117,
+          "linkPtr": "0x10B7F0C0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 01",
+          "index": 0,
+          "identity": [
+            0,
+            35,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 36,
+      "planHash": "0xC4643917",
+      "status": "direct_goap_link",
+      "resources": [
+        "ItemThrow"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ItemThrow",
+          "resourceName": "ItemThrow",
+          "interfaceId": 158,
+          "linkPtr": "0x10B7F5E0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 1,
+          "identity": [
+            0,
+            36,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 37,
+      "planHash": "0xC898FC08",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 05",
+          "index": 8,
+          "identity": [
+            0,
+            37,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 38,
+      "planHash": "0x1247ECFA",
+      "status": "direct_goap_link",
+      "resources": [
+        "PlCons"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\PlCons",
+          "resourceName": "PlCons",
+          "interfaceId": 128,
+          "linkPtr": "0x10B85000"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 3,
+          "identity": [
+            0,
+            38,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 39,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 40,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 04",
+          "index": 0,
+          "identity": [
+            0,
+            40,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 41,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 06",
+          "index": 1,
+          "identity": [
+            0,
+            41,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 42,
+      "planHash": "0xDE31AB6B",
+      "status": "direct_goap_link",
+      "resources": [
+        "WaitInfinity"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WaitInfinity",
+          "resourceName": "WaitInfinity",
+          "interfaceId": 0,
+          "linkPtr": "0x10B854C0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 06",
+          "index": 2,
+          "identity": [
+            0,
+            42,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 43,
+      "planHash": "0xC65434C7",
+      "status": "direct_goap_link",
+      "resources": [
+        "OmBreak"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\OmBreak",
+          "resourceName": "OmBreak",
+          "interfaceId": 142,
+          "linkPtr": "0x10B859D0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 1,
+          "identity": [
+            0,
+            43,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 44,
+      "planHash": "0x1E4BBB63",
+      "status": "direct_goap_link",
+      "resources": [
+        "ClimbMove"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ClimbMove",
+          "resourceName": "ClimbMove",
+          "interfaceId": 143,
+          "linkPtr": "0x10B85E90"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 4,
+          "identity": [
+            0,
+            44,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 45,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 7,
+          "identity": [
+            0,
+            45,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 46,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 6,
+          "identity": [
+            0,
+            46,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 47,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 04",
+          "index": 5,
+          "identity": [
+            0,
+            47,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 48,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 03",
+          "index": 0,
+          "identity": [
+            0,
+            48,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 49,
+      "planHash": "0x89228C7F",
+      "status": "direct_goap_link",
+      "resources": [
+        "WpnOff"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnOff",
+          "resourceName": "WpnOff",
+          "interfaceId": 146,
+          "linkPtr": "0x10B86380"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 3,
+          "identity": [
+            0,
+            49,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 50,
+      "planHash": "0x44C5F55B",
+      "status": "direct_goap_link",
+      "resources": [
+        "ItemGet"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ItemGet",
+          "resourceName": "ItemGet",
+          "interfaceId": 147,
+          "linkPtr": "0x10B86850"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 2,
+          "identity": [
+            0,
+            50,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 51,
+      "planHash": "0xD4C821D7",
+      "status": "direct_goap_link",
+      "resources": [
+        "ItemFind"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\ItemFind",
+          "resourceName": "ItemFind",
+          "interfaceId": 147,
+          "linkPtr": "0x10B86D20"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Wait_Follow - 07",
+          "index": 1,
+          "identity": [
+            0,
+            51,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 52,
+      "planHash": "0xE9354E8C",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Enemy - 05",
+          "index": 0,
+          "identity": [
+            1,
+            52,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 53,
+      "planHash": "0x8C656385",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 04",
+          "index": 2,
+          "identity": [
+            1,
+            53,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 54,
+      "planHash": "0xD36B47DF",
+      "status": "direct_goap_link",
+      "resources": [
+        "WpnDaggerAtk"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+          "resourceName": "WpnDaggerAtk",
+          "interfaceId": 9,
+          "linkPtr": "0x10B8C3B0"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+          "resourceName": "WpnDaggerAtk",
+          "interfaceId": 124,
+          "linkPtr": "0x10B8C730"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+          "resourceName": "WpnDaggerAtk",
+          "interfaceId": 132,
+          "linkPtr": "0x10B8CAB0"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+          "resourceName": "WpnDaggerAtk",
+          "interfaceId": 133,
+          "linkPtr": "0x10B8CE30"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\WpnDaggerAtk",
+          "resourceName": "WpnDaggerAtk",
+          "interfaceId": 10,
+          "linkPtr": "0x10B8D870"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 04",
+          "index": 0,
+          "identity": [
+            1,
+            54,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 55,
+      "planHash": "0x2841CC2D",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 04",
+          "index": 1,
+          "identity": [
+            1,
+            55,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 56,
+      "planHash": "0x8900C55D",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 01",
+          "index": 3,
+          "identity": [
+            0,
+            56,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 57,
+      "planHash": "0x0906CEEE",
+      "status": "direct_goap_link",
+      "resources": [
+        "WpnBowAtk2"
+      ],
+      "links": [
+        {
+          "resourcePath": "tu2\\AI\\Goap\\Cmc\\WpnBowAtk2",
+          "resourceName": "WpnBowAtk2",
+          "interfaceId": 12,
+          "linkPtr": "0x10B927A0"
+        },
+        {
+          "resourcePath": "tu2\\AI\\Goap\\Cmc\\WpnBowAtk2",
+          "resourceName": "WpnBowAtk2",
+          "interfaceId": 107,
+          "linkPtr": "0x10B92B20"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 03",
+          "index": 0,
+          "identity": [
+            0,
+            57,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 58,
+      "planHash": "0x1DE76985",
+      "status": "direct_goap_link",
+      "resources": [
+        "DmgUkemi"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DmgUkemi",
+          "resourceName": "DmgUkemi",
+          "interfaceId": 149,
+          "linkPtr": "0x10B95320"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 05",
+          "index": 0,
+          "identity": [
+            0,
+            58,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 59,
+      "planHash": "0x1AB801D1",
+      "status": "direct_goap_link",
+      "resources": [
+        "DmgLeverGacha"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DmgLeverGacha",
+          "resourceName": "DmgLeverGacha",
+          "interfaceId": 150,
+          "linkPtr": "0x10B957F0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 00",
+          "index": 5,
+          "identity": [
+            1,
+            59,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 60,
+      "planHash": "0x922C594C",
+      "status": "direct_goap_link",
+      "resources": [
+        "Em0600Cover"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Em0600Cover",
+          "resourceName": "Em0600Cover",
+          "interfaceId": 151,
+          "linkPtr": "0x10B95CB0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 07",
+          "index": 3,
+          "identity": [
+            1,
+            60,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 61,
+      "planHash": "0x0239F120",
+      "status": "direct_goap_link",
+      "resources": [
+        "Em0700HandlingOff"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Em0700HandlingOff",
+          "resourceName": "Em0700HandlingOff",
+          "interfaceId": 152,
+          "linkPtr": "0x10B96170"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 07",
+          "index": 2,
+          "identity": [
+            1,
+            61,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 62,
+      "planHash": "0x914C3244",
+      "status": "direct_goap_link",
+      "resources": [
+        "Em5200JustGuard"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Em5200JustGuard",
+          "resourceName": "Em5200JustGuard",
+          "interfaceId": 153,
+          "linkPtr": "0x10B96630"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 07",
+          "index": 1,
+          "identity": [
+            1,
+            62,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 63,
+      "planHash": "0x62E3C3B8",
+      "status": "direct_goap_link",
+      "resources": [
+        "Em5300TaruBaku"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Em5300TaruBaku",
+          "resourceName": "Em5300TaruBaku",
+          "interfaceId": 154,
+          "linkPtr": "0x10B96B10"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 00",
+          "index": 0,
+          "identity": [
+            0,
+            63,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 64,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 01",
+          "index": 0,
+          "identity": [
+            0,
+            64,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 65,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Enemy - 02",
+          "index": 1,
+          "identity": [
+            0,
+            65,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 66,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 07",
+          "index": 0,
+          "identity": [
+            1,
+            66,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 67,
+      "planHash": "0xF8CE17E4",
+      "status": "direct_goap_link",
+      "resources": [
+        "StatusUp"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\StatusUp",
+          "resourceName": "StatusUp",
+          "interfaceId": 71,
+          "linkPtr": "0x10B96FD0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 06",
+          "index": 0,
+          "identity": [
+            0,
+            67,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 68,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 02",
+          "index": 0,
+          "identity": [
+            1,
+            68,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 69,
+      "planHash": "0xE9BC1551",
+      "status": "direct_goap_link",
+      "resources": [
+        "OpenDoor"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\OpenDoor",
+          "resourceName": "OpenDoor",
+          "interfaceId": 159,
+          "linkPtr": "0x10B981E0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 04",
+          "index": 3,
+          "identity": [
+            1,
+            69,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 70,
+      "planHash": "0x7B4F2E36",
+      "status": "direct_goap_link",
+      "resources": [
+        "CarryGoods"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\CarryGoods",
+          "resourceName": "CarryGoods",
+          "interfaceId": 160,
+          "linkPtr": "0x10B986A0"
+        },
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\CarryGoods",
+          "resourceName": "CarryGoods",
+          "interfaceId": 161,
+          "linkPtr": "0x10B98A00"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "PL_Party - 01",
+          "index": 1,
+          "identity": [
+            0,
+            70,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 71,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Situ_Personal - 02",
+          "index": 0,
+          "identity": [
+            0,
+            71,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 72,
+      "planHash": "0xD17AA04D",
+      "status": "direct_goap_link",
+      "resources": [
+        "TreasureBox"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\TreasureBox",
+          "resourceName": "TreasureBox",
+          "interfaceId": 165,
+          "linkPtr": "0x10B98EC0"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 06",
+          "index": 1,
+          "identity": [
+            1,
+            72,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 73,
+      "planHash": "0xF8E5BD79",
+      "status": "direct_goap_link",
+      "resources": [
+        "EscapeNotice1"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\EscapeNotice1",
+          "resourceName": "EscapeNotice1",
+          "interfaceId": 166,
+          "linkPtr": "0x10B99380"
+        }
+      ],
+      "usedByPriority": true,
+      "sourceRows": [
+        {
+          "slot": "Etc - 06",
+          "index": 2,
+          "identity": [
+            1,
+            73,
+            0,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "code": 74,
+      "planHash": "0x76469175",
+      "status": "direct_goap_link",
+      "resources": [
+        "EscapeNotice2"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\EscapeNotice2",
+          "resourceName": "EscapeNotice2",
+          "interfaceId": 167,
+          "linkPtr": "0x10B99850"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 75,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 76,
+      "planHash": "0xB7A662E1",
+      "status": "direct_goap_link",
+      "resources": [
+        "GotoOm"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\GotoOm",
+          "resourceName": "GotoOm",
+          "interfaceId": 168,
+          "linkPtr": "0x10B99D20"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 77,
+      "planHash": "0xA066C0F7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 78,
+      "planHash": "0xC9C4639C",
+      "status": "direct_goap_link",
+      "resources": [
+        "BarrelBomb"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\BarrelBomb",
+          "resourceName": "BarrelBomb",
+          "interfaceId": 169,
+          "linkPtr": "0x10B9AA20"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 79,
+      "planHash": "0x92957C53",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 80,
+      "planHash": "0x83BD952C",
+      "status": "direct_goap_link",
+      "resources": [
+        "Ballista"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\Ballista",
+          "resourceName": "Ballista",
+          "interfaceId": 170,
+          "linkPtr": "0x10B9C1A0"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 81,
+      "planHash": "0x18E9ED83",
+      "status": "direct_goap_link",
+      "resources": [
+        "DmgCancel"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DmgCancel",
+          "resourceName": "DmgCancel",
+          "interfaceId": 163,
+          "linkPtr": "0x10B9C660"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 82,
+      "planHash": "0x796F1158",
+      "status": "direct_goap_link",
+      "resources": [
+        "DmgAbsorb"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DmgAbsorb",
+          "resourceName": "DmgAbsorb",
+          "interfaceId": 171,
+          "linkPtr": "0x10B9CB60"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 83,
+      "planHash": "0x2A9292B7",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 84,
+      "planHash": "0x33B1B58C",
+      "status": "direct_goap_link",
+      "resources": [
+        "DashFollow"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DashFollow",
+          "resourceName": "DashFollow",
+          "interfaceId": 173,
+          "linkPtr": "0x10B9D030"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 85,
+      "planHash": "0x74501B60",
+      "status": "direct_goap_link",
+      "resources": [
+        "DashFollowSt500"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DashFollowSt500",
+          "resourceName": "DashFollowSt500",
+          "interfaceId": 176,
+          "linkPtr": "0x10B9D510"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 86,
+      "planHash": "0x87F24B7F",
+      "status": "direct_goap_link",
+      "resources": [
+        "JumpSt500"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\JumpSt500",
+          "resourceName": "JumpSt500",
+          "interfaceId": 177,
+          "linkPtr": "0x10B9DA20"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 87,
+      "planHash": "0x97930973",
+      "status": "direct_goap_link",
+      "resources": [
+        "TwoPlatoons"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\TwoPlatoons",
+          "resourceName": "TwoPlatoons",
+          "interfaceId": 180,
+          "linkPtr": "0x10B9DF30"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 88,
+      "planHash": "0xD156F257",
+      "status": "unmatched",
+      "resources": [],
+      "links": [],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 89,
+      "planHash": "0x8B77EB69",
+      "status": "direct_goap_link",
+      "resources": [
+        "PlEscape"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\PlEscape",
+          "resourceName": "PlEscape",
+          "interfaceId": 181,
+          "linkPtr": "0x10B9F670"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    },
+    {
+      "code": 90,
+      "planHash": "0xD6E46020",
+      "status": "direct_goap_link",
+      "resources": [
+        "DmgEscape"
+      ],
+      "links": [
+        {
+          "resourcePath": "AI\\Goap\\Cmc\\DmgEscape",
+          "resourceName": "DmgEscape",
+          "interfaceId": 182,
+          "linkPtr": "0x10B9FB40"
+        }
+      ],
+      "usedByPriority": false,
+      "sourceRows": []
+    }
+  ]
+}

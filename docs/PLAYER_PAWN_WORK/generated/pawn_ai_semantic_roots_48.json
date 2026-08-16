@@ -1,0 +1,68 @@
+{
+  "build": "48-pawn-ai-semantic-roots",
+  "snapshots": [
+    {
+      "state": "Wait",
+      "selectedCodeRaw": 4294967295,
+      "selectedCode": null,
+      "targetRefs": []
+    },
+    {
+      "state": "Follow",
+      "selectedCode": 1,
+      "semantic": "follow_arisen",
+      "targetRefs": [
+        {
+          "owner": "cCmcWait",
+          "offset": "0x0048",
+          "targetKind": "uMultiNpc",
+          "classification": "not accepted as main current-target proof"
+        }
+      ]
+    },
+    {
+      "state": "DaggerCombat",
+      "selectedCode": 54,
+      "semantic": "weapon_attack_dagger",
+      "targetRefs": [
+        {
+          "owner": "uCmc",
+          "offset": "0x14E0",
+          "targetKind": "uEm0100",
+          "classification": "strong current-target candidate; second enemy-type validation pending"
+        }
+      ]
+    }
+  ],
+  "census": {
+    "candidates": 450,
+    "cap": 1024,
+    "capReached": false,
+    "priorityRows": 85,
+    "priorityBuckets": 48,
+    "goapResources": 69,
+    "plannerRoots": 1,
+    "priorityRoots": 1
+  },
+  "mainPawnDecisionChain": {
+    "uCmcToAiCtrl": "uCmc+0x2E64 -> cAICtrl",
+    "aiCtrlBackRef": "cAICtrl+0x04 -> uCmc",
+    "planner": "cAICtrl+0x68 -> cAIGoalPlanning",
+    "priority": "cAICtrl+0x70 -> cAIPriorityThink",
+    "rootOwner": "cAIGoalPlanning/cAIPriorityThink+0x04 -> same cAICtrl",
+    "status": "confirmed in Wait/Follow/Combat"
+  },
+  "runtimeGoapManifest": {
+    "resourceCount": 69,
+    "offlineCatalogCount": 68,
+    "allOfflineResourcesPresent": true,
+    "runtimeOnlyResources": ["WpnBowAtk2"],
+    "pathField": "rAIGoalPlanning inline ASCII path at +0x08",
+    "plannerDefaultResource": "cAIGoalPlanning+0x08 -> AI\\Goap\\Cmc\\Wait"
+  },
+  "nextProbe": {
+    "selectedPlanArrays": ["cPlanCtrl+0x14", "cPlanCtrl+0x48", "cPlanCtrl+0x5C", "cPlanCtrl+0x78"],
+    "goal": "dump typed compiled children and match their Interface IDs/fingerprint to one rAIGoalPlanning path",
+    "targetValidation": "observe uCmc+0x14E0 across two different enemy bodies"
+  }
+}

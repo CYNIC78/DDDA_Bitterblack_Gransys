@@ -29,6 +29,18 @@ def f32(data: bytes, offset: int) -> float:
     return struct.unpack_from("<f", data, offset)[0]
 
 
+def inline_resource_path(hex_text: str) -> str | None:
+    data = bytes.fromhex(hex_text)
+    if len(data) < 0x10:
+        return None
+    raw = data[0x08:0x48].split(b"\0", 1)[0]
+    try:
+        value = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    return value if value.startswith(("AI\\", "tu2\\")) else None
+
+
 def object_map(snapshot: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
     return {(obj["name"], obj["ptr"]): obj for obj in snapshot["objects"]}
 
@@ -476,10 +488,21 @@ def main() -> None:
         "--catalog", type=Path,
         default=Path("docs/PLAYER_PAWN_WORK/generated/pawn_ai_catalog.json"),
     )
+    parser.add_argument(
+        "--semantics", type=Path,
+        default=Path("docs/PLAYER_PAWN_WORK/generated/pawn_priority_semantics.json"),
+    )
     args = parser.parse_args()
 
     snapshots = [json.loads(path.read_text(encoding="utf-8")) for path in args.snapshots]
     catalog = json.loads(args.catalog.read_text(encoding="utf-8"))
+    semantics_payload = (
+        json.loads(args.semantics.read_text(encoding="utf-8"))
+        if args.semantics.exists() else {"entries": []}
+    )
+    semantics_by_code = {
+        entry["code"]: entry for entry in semantics_payload.get("entries", [])
+    }
     param_index = parameter_index(catalog)
     maps = [object_map(snapshot) for snapshot in snapshots]
     common = set.intersection(*(set(mapping) for mapping in maps))
@@ -498,9 +521,29 @@ def main() -> None:
     }
 
     for path, snapshot in zip(args.snapshots, snapshots):
-        planner = one_by_name(snapshot, "cAIGoalPlanning")
-        selected_code_raw = None
-        if planner:
+        pawn_body = int(snapshot["pawnBody"], 16)
+        main_decision_root = None
+        for root in snapshot.get("decisionRoots", []):
+            if root.get("name") != "cAIGoalPlanning":
+                continue
+            owner = bytes.fromhex(root.get("ownerHex", ""))
+            if len(owner) >= 8 and u32(owner, 0x04) == pawn_body:
+                main_decision_root = root
+                break
+
+        planner = None
+        if main_decision_root:
+            planner = object_map(snapshot).get(
+                ("cAIGoalPlanning", main_decision_root["ptr"])
+            )
+        if planner is None:
+            planner = one_by_name(snapshot, "cAIGoalPlanning")
+
+        selected_code_raw = (
+            main_decision_root.get("selectedCode")
+            if main_decision_root else None
+        )
+        if selected_code_raw is None and planner:
             planner_data = bytes.fromhex(planner["headHex"])
             if len(planner_data) >= 0x180:
                 selected_code_raw = u32(planner_data, 0x17C)
@@ -521,17 +564,117 @@ def main() -> None:
             plan_ptr = int(planner["ptr"], 16) + 0x190 + selected_code * 0x110
             plan_key = ("cAIGoalPlanning::cPlanCtrl", f"0x{plan_ptr:08X}")
             plan_obj = object_map(snapshot).get(plan_key)
+            root_plan_hex = (
+                main_decision_root.get("selectedPlanHex", "")
+                if main_decision_root else ""
+            )
             active_plan = {
                 "ptr": f"0x{plan_ptr:08X}",
-                "found": plan_obj is not None,
-                "hash": plan_obj["hash"] if plan_obj else None,
+                "found": plan_obj is not None or bool(root_plan_hex),
+                "hash": (
+                    plan_obj["hash"] if plan_obj
+                    else main_decision_root.get("selectedPlanHash")
+                    if main_decision_root else None
+                ),
             }
+        goap_resources = snapshot.get("goapResources", [])
+        goap_interface_by_ptr = {}
+        for resource in goap_resources:
+            resource_path = inline_resource_path(resource["hex"])
+            for target in resource.get("targets", []):
+                for child in target.get("children", []):
+                    if child.get("name") != "rAIGoalPlanning::ActionInterfaceParam":
+                        continue
+                    child_data = bytes.fromhex(child.get("hex", ""))
+                    if len(child_data) < 12:
+                        continue
+                    goap_interface_by_ptr[int(child["ptr"], 16)] = {
+                        "resourcePath": resource_path,
+                        "resourceName": resource_path.split("\\")[-1] if resource_path else None,
+                        "interfaceId": u32(child_data, 0x04),
+                        "actionInterfacePtr": f"0x{u32(child_data, 0x08):08X}",
+                    }
+
+        decision_roots = []
+        for root in snapshot.get("decisionRoots", []):
+            root_report = dict(root)
+            root_code = root.get("selectedCode")
+            root_report["semantic"] = (
+                semantics_by_code.get(root_code)
+                if root.get("name") == "cAIGoalPlanning"
+                and root_code not in (None, NO_PRIORITY)
+                else None
+            )
+            goap_links = []
+            seen_goap_links = set()
+            for target in root.get("selectedPlanTargets", []):
+                for child in target.get("children", []):
+                    if child.get("name") != "cAIGoalPlanning::cGoalPlanningNode":
+                        continue
+                    link_ptr = int(child.get("linkPtr", "0x0"), 16)
+                    match = goap_interface_by_ptr.get(link_ptr)
+                    if not match:
+                        continue
+                    key = (match["resourceName"], match["interfaceId"], match["actionInterfacePtr"])
+                    if key in seen_goap_links:
+                        continue
+                    seen_goap_links.add(key)
+                    goap_links.append({
+                        "nodePtr": child["ptr"],
+                        "linkPtr": child["linkPtr"],
+                        **match,
+                    })
+            root_report["selectedPlanGoapLinks"] = goap_links
+            decision_roots.append(root_report)
+
+        planner_slots = []
+        for slot in snapshot.get("plannerSlots", []):
+            slot_report = dict(slot)
+            slot_links = []
+            seen_slot_links = set()
+            for node_link in slot.get("nodeLinks", []):
+                link_ptr = int(node_link["linkPtr"], 16)
+                match = goap_interface_by_ptr.get(link_ptr)
+                if not match:
+                    continue
+                key = (match["resourceName"], match["interfaceId"], match["actionInterfacePtr"])
+                if key in seen_slot_links:
+                    continue
+                seen_slot_links.add(key)
+                slot_links.append({**node_link, **match})
+            slot_report["goapLinks"] = slot_links
+            planner_slots.append(slot_report)
+
+        goap_summary = {
+            "count": len(goap_resources),
+            "resources": [
+                {
+                    "ptr": resource["ptr"],
+                    "hash": resource["hash"],
+                    "path": inline_resource_path(resource["hex"]),
+                    "namedChildCount": sum(
+                        len(target.get("children", []))
+                        for target in resource.get("targets", [])
+                    ),
+                }
+                for resource in goap_resources
+            ],
+        }
+
         result["snapshots"].append({
             "file": str(path),
             "seq": snapshot["seq"],
             "selectedPriorityCodeRaw": selected_code_raw,
+            "pawnAction": snapshot.get("pawnAction"),
             "selectedPriorityCode": selected_code,
+            "selectedPrioritySemantic": semantics_by_code.get(selected_code),
             "hasSelectedPriority": selected_code is not None,
+            "decisionRoots": decision_roots,
+            "plannerSlots": planner_slots,
+            "aiCtrlGraph": snapshot.get("aiCtrlGraph"),
+            "goapResources": goap_summary,
+            "mainPawnTargetSlots": snapshot.get("mainPawnTargetSlots", []),
+            "targetRefs": snapshot.get("targetRefs", []),
             "priorityMutation": snapshot.get("priorityMutation"),
             "priorityProfile": snapshot.get("priorityProfile"),
             "profileRules": snapshot.get("profileRules", []),

@@ -1,6 +1,8 @@
 # Roadmap DDDA AI Overhaul
 
-**Текущий milestone:** Build 47 — `pawn-ai-platform-milestone`
+**Stable milestone:** Build 47 — `pawn-ai-platform-milestone`
+
+**Current research:** Build 53 validated — 747-row main-pawn intent/action/target trace; live planner-only codes 74/76 discovered
 
 **Дата состояния:** 2026-08-16
 
@@ -41,12 +43,13 @@
 
 ### P1 — закончить priority platform
 
-1. Связать priority codes с понятными именами намерений/GOAP.
-2. Убрать диагностический census cap и не смешивать несколько pawn roots.
-3. Закрепить main-pawn-specific root association.
-4. Найти live current target главной пешки.
-5. Построить семантические profile entries вместо чисел `code45/46`.
-6. Создать первые продуктовые профили только после mapping, без угадывания.
+- [ ] Связать priority codes с именами намерений/GOAP: 42/70 `cmc.prt` codes mapped; runtime map extended to all 91 slots and Build 53 selected planner-only `74/76`.
+- [x] Реализовать и проверить read-only main-pawn fast path: 570.7 s, 747 rows, readable intent, exact `cPlAct`, packed code, `uCmc+0x2EB8` target and PlanCtrl links.
+- [x] Убрать диагностический census cap: Build 48 — 450/1024 candidates.
+- [x] Закрепить main-pawn root association: `uCmc+2E64 → cAICtrl+68/+70`.
+- [x] Закрыть live current target: `uCmc+0x2EB8` — primary planning/combat target; Build 53 подтвердил 9 bodies и retention во время near-death.
+- [ ] Построить семантические profile entries вместо чисел `code45/46`.
+- [ ] Создать первые продуктовые профили только после mapping, без угадывания.
 
 ### P2 — action eligibility
 

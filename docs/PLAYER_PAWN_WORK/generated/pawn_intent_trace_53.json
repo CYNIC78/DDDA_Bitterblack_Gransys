@@ -1,0 +1,1282 @@
+{
+  "schema": "ddda-pawn-intent-trace-analysis-v2",
+  "source": {
+    "snapshot": "ddda_pawn_ai_bridge_001m.json",
+    "trace": "ddda_pawn_intent_trace_001m.csv",
+    "build": "53-pawn-intent-transition-trace"
+  },
+  "summary": {
+    "durationMs": 570671,
+    "transitionRowCount": 747,
+    "uniquePriorityCodes": [
+      0,
+      1,
+      2,
+      3,
+      28,
+      31,
+      32,
+      35,
+      36,
+      43,
+      49,
+      50,
+      54,
+      57,
+      72,
+      73,
+      74,
+      76,
+      4294967295
+    ],
+    "priorityCodeCounts": {
+      "0": 19,
+      "1": 234,
+      "2": 16,
+      "3": 5,
+      "28": 27,
+      "31": 1,
+      "32": 6,
+      "35": 4,
+      "36": 11,
+      "43": 8,
+      "49": 5,
+      "50": 10,
+      "54": 117,
+      "57": 120,
+      "72": 12,
+      "73": 8,
+      "74": 9,
+      "76": 35,
+      "4294967295": 100
+    },
+    "exactActionCounts": {
+      "cPlActRun": 248,
+      "cPlActWpnBow": 108,
+      "cPlActWalk": 76,
+      "cPlActWait": 66,
+      "cPlActWpnDaggerCstmHyakuretsu": 22,
+      "cPlActLifted": 20,
+      "cPlActWpnDaggerAtckLandL": 18,
+      "cPlActLand": 18,
+      "cPlActGather": 18,
+      "cPlActDash": 17,
+      "cPlActJump": 16,
+      "cPlActCmcNeardeath": 16,
+      "cPlActWpnDaggerAtckLandS": 15,
+      "cPlActHoldWeaponMv": 9,
+      "cPlActDmgBlow": 8,
+      "cPlActJumpBegin": 8,
+      "cPlActDmgStandUp": 7,
+      "cPlActDashBegin": 7,
+      "cPlActRunEnd": 7,
+      "cPlCliffHangClimb": 7,
+      "cPlActFall": 5,
+      "cPlActCmcGenericAction": 5,
+      "cPlActDmgMiddle": 5,
+      "cPlActDmgCrumbleDead": 5,
+      "cPlActPickUp": 4,
+      "cPlActDmgDown": 3,
+      "cPlCliffHangBegin": 2,
+      "cPlActDmgNormalB": 2,
+      "cPlActLiftBeginSmallItem": 1,
+      "cPlActLiftGeneric": 1,
+      "cPlActOpenTreasureBox": 1,
+      "cPlActLiftedEnd": 1,
+      "cPlActCmcReturn": 1
+    },
+    "notableActionSpans": [
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 109031,
+        "endMs": 109031,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 109187,
+        "endMs": 109187,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 110515,
+        "endMs": 110515,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 110671,
+        "endMs": 110671,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 112984,
+        "endMs": 112984,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWalk",
+        "nextAction": "cPlActFall"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 116625,
+        "endMs": 116625,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActOpenTreasureBox",
+        "startMs": 160765,
+        "endMs": 160765,
+        "rows": 1,
+        "priorityCodes": [
+          72
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 168859,
+        "endMs": 168859,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 203609,
+        "endMs": 203609,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlCliffHangBegin"
+      },
+      {
+        "actionName": "cPlCliffHangBegin",
+        "startMs": 204125,
+        "endMs": 204125,
+        "rows": 1,
+        "priorityCodes": [
+          3
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJump",
+        "nextAction": "cPlCliffHangClimb"
+      },
+      {
+        "actionName": "cPlCliffHangClimb",
+        "startMs": 204437,
+        "endMs": 205437,
+        "rows": 2,
+        "priorityCodes": [
+          3
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlCliffHangBegin",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 207078,
+        "endMs": 207078,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWalk",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 216171,
+        "endMs": 216171,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWalk",
+        "nextAction": "cPlCliffHangBegin"
+      },
+      {
+        "actionName": "cPlCliffHangBegin",
+        "startMs": 216328,
+        "endMs": 216328,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlCliffHangClimb"
+      },
+      {
+        "actionName": "cPlCliffHangClimb",
+        "startMs": 216500,
+        "endMs": 216687,
+        "rows": 2,
+        "priorityCodes": [
+          2,
+          3
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlCliffHangBegin",
+        "nextAction": "cPlActWalk"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 219156,
+        "endMs": 219156,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 219312,
+        "endMs": 219312,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlCliffHangClimb"
+      },
+      {
+        "actionName": "cPlCliffHangClimb",
+        "startMs": 219484,
+        "endMs": 219796,
+        "rows": 3,
+        "priorityCodes": [
+          2,
+          3,
+          4294967295
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActJump",
+        "nextAction": "cPlActRun"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 252359,
+        "endMs": 254671,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 256656,
+        "endMs": 258656,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 261484,
+        "endMs": 263625,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 265781,
+        "endMs": 267937,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 270406,
+        "endMs": 272578,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActGather",
+        "startMs": 274734,
+        "endMs": 277046,
+        "rows": 3,
+        "priorityCodes": [
+          76
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActWait",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 287156,
+        "endMs": 287156,
+        "rows": 1,
+        "priorityCodes": [
+          2
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActWalk"
+      },
+      {
+        "actionName": "cPlActLifted",
+        "startMs": 304046,
+        "endMs": 323625,
+        "rows": 20,
+        "priorityCodes": [
+          4294967295
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActLiftedEnd"
+      },
+      {
+        "actionName": "cPlActLiftedEnd",
+        "startMs": 324125,
+        "endMs": 324125,
+        "rows": 1,
+        "priorityCodes": [
+          1
+        ],
+        "targetTypes": [
+          "none"
+        ],
+        "previousAction": "cPlActLifted",
+        "nextAction": "cPlActWalk"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 379234,
+        "endMs": 379234,
+        "rows": 1,
+        "priorityCodes": [
+          74
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActWpnBow",
+        "nextAction": "cPlActWpnBow"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 380718,
+        "endMs": 380718,
+        "rows": 1,
+        "priorityCodes": [
+          57
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActWpnBow",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 382718,
+        "endMs": 382718,
+        "rows": 1,
+        "priorityCodes": [
+          74
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 382890,
+        "endMs": 383046,
+        "rows": 2,
+        "priorityCodes": [
+          54,
+          4294967295
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 395375,
+        "endMs": 395375,
+        "rows": 1,
+        "priorityCodes": [
+          74
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActWalk",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 395546,
+        "endMs": 395546,
+        "rows": 1,
+        "priorityCodes": [
+          54
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 439796,
+        "endMs": 439796,
+        "rows": 1,
+        "priorityCodes": [
+          74
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActWalk",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 439953,
+        "endMs": 439953,
+        "rows": 1,
+        "priorityCodes": [
+          57
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActLand"
+      },
+      {
+        "actionName": "cPlActCmcNeardeath",
+        "startMs": 485546,
+        "endMs": 501671,
+        "rows": 16,
+        "priorityCodes": [
+          4294967295
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActDmgCrumbleDead",
+        "nextAction": "cPlActCmcReturn"
+      },
+      {
+        "actionName": "cPlActCmcReturn",
+        "startMs": 502671,
+        "endMs": 502671,
+        "rows": 1,
+        "priorityCodes": [
+          57
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActCmcNeardeath",
+        "nextAction": "cPlActWait"
+      },
+      {
+        "actionName": "cPlActJumpBegin",
+        "startMs": 509468,
+        "endMs": 509468,
+        "rows": 1,
+        "priorityCodes": [
+          74
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActRun",
+        "nextAction": "cPlActJump"
+      },
+      {
+        "actionName": "cPlActJump",
+        "startMs": 509625,
+        "endMs": 509625,
+        "rows": 1,
+        "priorityCodes": [
+          57
+        ],
+        "targetTypes": [
+          "uHumanEnemy"
+        ],
+        "previousAction": "cPlActJumpBegin",
+        "nextAction": "cPlActRun"
+      }
+    ],
+    "targetSummary": {
+      "nonNullRows": 335,
+      "modes": {
+        "none": 412,
+        "planner_target": 290,
+        "retained_no_priority": 45
+      },
+      "types": {
+        "uHumanEnemy": 271,
+        "uEm0100": 62,
+        "uMultiNpc": 2
+      },
+      "uniquePointersByType": {
+        "uEm0100": 2,
+        "uHumanEnemy": 6,
+        "uMultiNpc": 1
+      }
+    },
+    "plannerInactiveActions": {
+      "cPlActLifted": 20,
+      "cPlActWait": 19,
+      "cPlActCmcNeardeath": 16,
+      "cPlActDmgBlow": 6,
+      "cPlActWpnBow": 6,
+      "cPlActDmgMiddle": 5,
+      "cPlActDmgCrumbleDead": 5,
+      "cPlActWpnDaggerAtckLandL": 4,
+      "cPlActDmgDown": 3,
+      "cPlActDmgStandUp": 3,
+      "cPlActWpnDaggerCstmHyakuretsu": 3,
+      "cPlActLand": 2,
+      "cPlActFall": 2,
+      "cPlActDmgNormalB": 2,
+      "cPlActDashBegin": 1,
+      "cPlActRunEnd": 1,
+      "cPlCliffHangClimb": 1,
+      "cPlActJump": 1
+    },
+    "unmappedCodeActions": {},
+    "codeSummaries": {
+      "0": {
+        "semantic": "Wait / quest fallback (code-level ambiguous)",
+        "confidence": "observed_ambiguous",
+        "rows": 19,
+        "actions": {
+          "cPlActWait": 12,
+          "cPlActCmcGenericAction": 5,
+          "cPlActFall": 2
+        },
+        "packedCodes": {
+          "0x00000000": 12,
+          "0x000000F2": 5,
+          "0x0000000D": 2
+        },
+        "targetTypes": {
+          "none": 19
+        },
+        "goapResources": {
+          "Wait": {
+            "rowsLinked": 19,
+            "interfaceIds": [
+              0
+            ]
+          }
+        }
+      },
+      "1": {
+        "semantic": "Follow Arisen",
+        "confidence": "compiled_links",
+        "rows": 234,
+        "actions": {
+          "cPlActRun": 127,
+          "cPlActWalk": 63,
+          "cPlActDash": 17,
+          "cPlActDashBegin": 6,
+          "cPlActRunEnd": 5,
+          "cPlActWpnBow": 4,
+          "cPlActHoldWeaponMv": 4,
+          "cPlActLand": 3,
+          "cPlActWait": 2,
+          "cPlActPickUp": 1,
+          "cPlActFall": 1,
+          "cPlActLiftedEnd": 1
+        },
+        "packedCodes": {
+          "0x00000002": 127,
+          "0x00000001": 63,
+          "0x00000005": 17,
+          "0x0000007D": 6,
+          "0x00000003": 5,
+          "0x02060000": 4,
+          "0x00000028": 4,
+          "0x0000000E": 3,
+          "0x00000000": 2,
+          "0x00000092": 1,
+          "0x0000000D": 1,
+          "0x000000A8": 1
+        },
+        "targetTypes": {
+          "none": 212,
+          "uHumanEnemy": 18,
+          "uEm0100": 4
+        },
+        "goapResources": {
+          "Follow": {
+            "rowsLinked": 234,
+            "interfaceIds": [
+              1
+            ]
+          }
+        }
+      },
+      "2": {
+        "semantic": "Jump",
+        "confidence": "planner_static_links",
+        "rows": 16,
+        "actions": {
+          "cPlActJump": 9,
+          "cPlActJumpBegin": 4,
+          "cPlCliffHangClimb": 2,
+          "cPlCliffHangBegin": 1
+        },
+        "packedCodes": {
+          "0x00000009": 9,
+          "0x00000007": 4,
+          "0x00000036": 2,
+          "0x00000034": 1
+        },
+        "targetTypes": {
+          "none": 16
+        },
+        "goapResources": {
+          "Jump": {
+            "rowsLinked": 16,
+            "interfaceIds": [
+              2
+            ]
+          }
+        }
+      },
+      "3": {
+        "semantic": "Climb",
+        "confidence": "planner_static_links",
+        "rows": 5,
+        "actions": {
+          "cPlCliffHangClimb": 4,
+          "cPlCliffHangBegin": 1
+        },
+        "packedCodes": {
+          "0x00000036": 4,
+          "0x00000034": 1
+        },
+        "targetTypes": {
+          "none": 5
+        },
+        "goapResources": {
+          "Climb": {
+            "rowsLinked": 5,
+            "interfaceIds": [
+              3
+            ]
+          }
+        }
+      },
+      "28": {
+        "semantic": "Stand Off",
+        "confidence": "planner_static_links",
+        "rows": 27,
+        "actions": {
+          "cPlActRun": 9,
+          "cPlActWalk": 9,
+          "cPlActWpnDaggerAtckLandS": 3,
+          "cPlActWpnDaggerCstmHyakuretsu": 3,
+          "cPlActWpnDaggerAtckLandL": 1,
+          "cPlActWait": 1,
+          "cPlActWpnBow": 1
+        },
+        "packedCodes": {
+          "0x00000002": 9,
+          "0x00000001": 9,
+          "0x01050002": 3,
+          "0x0105002A": 3,
+          "0x01050003": 1,
+          "0x00000000": 1,
+          "0x02060000": 1
+        },
+        "targetTypes": {
+          "uHumanEnemy": 15,
+          "none": 7,
+          "uEm0100": 5
+        },
+        "goapResources": {
+          "StandOff": {
+            "rowsLinked": 27,
+            "interfaceIds": [
+              67
+            ]
+          }
+        }
+      },
+      "31": {
+        "semantic": "Use Item",
+        "confidence": "planner_static_links",
+        "rows": 1,
+        "actions": {
+          "cPlActDmgStandUp": 1
+        },
+        "packedCodes": {
+          "0x0000001D": 1
+        },
+        "targetTypes": {
+          "uEm0100": 1
+        },
+        "goapResources": {
+          "UseItem": {
+            "rowsLinked": 1,
+            "interfaceIds": [
+              71
+            ]
+          }
+        }
+      },
+      "32": {
+        "semantic": "Precaution",
+        "confidence": "planner_static_links",
+        "rows": 6,
+        "actions": {
+          "cPlActWait": 3,
+          "cPlActHoldWeaponMv": 1,
+          "cPlActWalk": 1,
+          "cPlActRun": 1
+        },
+        "packedCodes": {
+          "0x00000000": 3,
+          "0x00000027": 1,
+          "0x00000001": 1,
+          "0x00000002": 1
+        },
+        "targetTypes": {
+          "none": 6
+        },
+        "goapResources": {
+          "Precaution": {
+            "rowsLinked": 6,
+            "interfaceIds": [
+              72
+            ]
+          }
+        }
+      },
+      "35": {
+        "semantic": "Victory Pose",
+        "confidence": "planner_static_links",
+        "rows": 4,
+        "actions": {
+          "cPlActWpnBow": 1,
+          "cPlActRun": 1,
+          "cPlActWait": 1,
+          "cPlActWpnDaggerCstmHyakuretsu": 1
+        },
+        "packedCodes": {
+          "0x02060000": 1,
+          "0x00000002": 1,
+          "0x00000000": 1,
+          "0x0105002A": 1
+        },
+        "targetTypes": {
+          "none": 4
+        },
+        "goapResources": {
+          "VictoryPose": {
+            "rowsLinked": 4,
+            "interfaceIds": [
+              117
+            ]
+          }
+        }
+      },
+      "36": {
+        "semantic": "Item Throw",
+        "confidence": "planner_static_links",
+        "rows": 11,
+        "actions": {
+          "cPlActWpnBow": 6,
+          "cPlActDmgStandUp": 1,
+          "cPlActLiftBeginSmallItem": 1,
+          "cPlActLiftGeneric": 1,
+          "cPlActHoldWeaponMv": 1,
+          "cPlActWait": 1
+        },
+        "packedCodes": {
+          "0x02060000": 6,
+          "0x0000001D": 1,
+          "0x000000DB": 1,
+          "0x00000063": 1,
+          "0x00000027": 1,
+          "0x00000000": 1
+        },
+        "targetTypes": {
+          "uEm0100": 10,
+          "none": 1
+        },
+        "goapResources": {
+          "ItemThrow": {
+            "rowsLinked": 11,
+            "interfaceIds": [
+              158
+            ]
+          }
+        }
+      },
+      "43": {
+        "semantic": "Om Break",
+        "confidence": "planner_static_links",
+        "rows": 8,
+        "actions": {
+          "cPlActWpnDaggerAtckLandL": 8
+        },
+        "packedCodes": {
+          "0x01050003": 8
+        },
+        "targetTypes": {
+          "none": 6,
+          "uHumanEnemy": 2
+        },
+        "goapResources": {
+          "OmBreak": {
+            "rowsLinked": 8,
+            "interfaceIds": [
+              142
+            ]
+          }
+        }
+      },
+      "49": {
+        "semantic": "Weapon Off",
+        "confidence": "planner_static_links",
+        "rows": 5,
+        "actions": {
+          "cPlActWpnDaggerAtckLandL": 3,
+          "cPlActWpnDaggerCstmHyakuretsu": 1,
+          "cPlActHoldWeaponMv": 1
+        },
+        "packedCodes": {
+          "0x01050003": 3,
+          "0x0105002A": 1,
+          "0x00000028": 1
+        },
+        "targetTypes": {
+          "none": 5
+        },
+        "goapResources": {
+          "WpnOff": {
+            "rowsLinked": 5,
+            "interfaceIds": [
+              146
+            ]
+          }
+        }
+      },
+      "50": {
+        "semantic": "Item Get",
+        "confidence": "planner_static_links",
+        "rows": 10,
+        "actions": {
+          "cPlActWait": 3,
+          "cPlActRun": 2,
+          "cPlActPickUp": 2,
+          "cPlActLand": 2,
+          "cPlActHoldWeaponMv": 1
+        },
+        "packedCodes": {
+          "0x00000000": 3,
+          "0x00000002": 2,
+          "0x00000092": 2,
+          "0x0000000E": 2,
+          "0x00000028": 1
+        },
+        "targetTypes": {
+          "none": 10
+        },
+        "goapResources": {
+          "ItemGet": {
+            "rowsLinked": 10,
+            "interfaceIds": [
+              147
+            ]
+          }
+        }
+      },
+      "54": {
+        "semantic": "Dagger weapon attack",
+        "confidence": "compiled_links",
+        "rows": 117,
+        "actions": {
+          "cPlActRun": 67,
+          "cPlActWpnDaggerCstmHyakuretsu": 14,
+          "cPlActWpnDaggerAtckLandS": 11,
+          "cPlActWpnBow": 10,
+          "cPlActLand": 9,
+          "cPlActWpnDaggerAtckLandL": 2,
+          "cPlActJump": 2,
+          "cPlActHoldWeaponMv": 1,
+          "cPlActWait": 1
+        },
+        "packedCodes": {
+          "0x00000002": 67,
+          "0x0105002A": 14,
+          "0x02060000": 10,
+          "0x0000000E": 9,
+          "0x01050000": 5,
+          "0x01050001": 3,
+          "0x01050002": 3,
+          "0x01050003": 2,
+          "0x00000009": 2,
+          "0x00000027": 1,
+          "0x00000000": 1
+        },
+        "targetTypes": {
+          "uHumanEnemy": 101,
+          "uEm0100": 8,
+          "none": 6,
+          "uMultiNpc": 2
+        },
+        "goapResources": {
+          "WpnDaggerAtk": {
+            "rowsLinked": 117,
+            "interfaceIds": [
+              9,
+              10,
+              124,
+              132,
+              133
+            ]
+          }
+        }
+      },
+      "57": {
+        "semantic": "Bow weapon attack",
+        "confidence": "compiled_links",
+        "rows": 120,
+        "actions": {
+          "cPlActWpnBow": 77,
+          "cPlActRun": 30,
+          "cPlActJump": 3,
+          "cPlActDmgBlow": 2,
+          "cPlActDmgStandUp": 2,
+          "cPlActWait": 2,
+          "cPlActLand": 2,
+          "cPlActWalk": 1,
+          "cPlActCmcReturn": 1
+        },
+        "packedCodes": {
+          "0x02060000": 77,
+          "0x00000002": 30,
+          "0x00000009": 3,
+          "0x00000017": 2,
+          "0x0000001D": 2,
+          "0x00000000": 2,
+          "0x0000000E": 2,
+          "0x00000001": 1,
+          "0x00000081": 1
+        },
+        "targetTypes": {
+          "uHumanEnemy": 80,
+          "uEm0100": 27,
+          "none": 13
+        },
+        "goapResources": {
+          "WpnBowAtk2": {
+            "rowsLinked": 120,
+            "interfaceIds": [
+              12,
+              107
+            ]
+          }
+        }
+      },
+      "72": {
+        "semantic": "Treasure Box",
+        "confidence": "planner_static_links",
+        "rows": 12,
+        "actions": {
+          "cPlActWait": 9,
+          "cPlActRun": 1,
+          "cPlActOpenTreasureBox": 1,
+          "cPlActPickUp": 1
+        },
+        "packedCodes": {
+          "0x00000000": 9,
+          "0x00000002": 1,
+          "0x000000A3": 1,
+          "0x00000092": 1
+        },
+        "targetTypes": {
+          "none": 12
+        },
+        "goapResources": {
+          "TreasureBox": {
+            "rowsLinked": 12,
+            "interfaceIds": [
+              165
+            ]
+          }
+        }
+      },
+      "73": {
+        "semantic": "Escape Notice1",
+        "confidence": "planner_static_links",
+        "rows": 8,
+        "actions": {
+          "cPlActRun": 6,
+          "cPlActWpnDaggerAtckLandS": 1,
+          "cPlActWpnBow": 1
+        },
+        "packedCodes": {
+          "0x00000002": 6,
+          "0x01050000": 1,
+          "0x02060000": 1
+        },
+        "targetTypes": {
+          "uHumanEnemy": 7,
+          "uEm0100": 1
+        },
+        "goapResources": {
+          "EscapeNotice1": {
+            "rowsLinked": 8,
+            "interfaceIds": [
+              166
+            ]
+          }
+        }
+      },
+      "74": {
+        "semantic": "Combat evasive response",
+        "confidence": "runtime_exact",
+        "rows": 9,
+        "actions": {
+          "cPlActJumpBegin": 4,
+          "cPlActWpnBow": 2,
+          "cPlActWalk": 2,
+          "cPlActJump": 1
+        },
+        "packedCodes": {
+          "0x00000007": 4,
+          "0x02060000": 2,
+          "0x00000001": 2,
+          "0x00000009": 1
+        },
+        "targetTypes": {
+          "uHumanEnemy": 9
+        },
+        "goapResources": {
+          "EscapeNotice2": {
+            "rowsLinked": 9,
+            "interfaceIds": [
+              167
+            ]
+          }
+        }
+      },
+      "76": {
+        "semantic": "Gather / inspect object",
+        "confidence": "runtime_exact",
+        "rows": 35,
+        "actions": {
+          "cPlActGather": 18,
+          "cPlActWait": 12,
+          "cPlActRun": 4,
+          "cPlActRunEnd": 1
+        },
+        "packedCodes": {
+          "0x00000091": 18,
+          "0x00000000": 12,
+          "0x00000002": 4,
+          "0x00000003": 1
+        },
+        "targetTypes": {
+          "none": 35
+        },
+        "goapResources": {
+          "GotoOm": {
+            "rowsLinked": 35,
+            "interfaceIds": [
+              168
+            ]
+          }
+        }
+      },
+      "4294967295": {
+        "semantic": "No selected priority",
+        "confidence": "planner_not_selected",
+        "rows": 100,
+        "actions": {
+          "cPlActLifted": 20,
+          "cPlActWait": 19,
+          "cPlActCmcNeardeath": 16,
+          "cPlActDmgBlow": 6,
+          "cPlActWpnBow": 6,
+          "cPlActDmgMiddle": 5,
+          "cPlActDmgCrumbleDead": 5,
+          "cPlActWpnDaggerAtckLandL": 4,
+          "cPlActDmgDown": 3,
+          "cPlActDmgStandUp": 3,
+          "cPlActWpnDaggerCstmHyakuretsu": 3,
+          "cPlActLand": 2,
+          "cPlActFall": 2,
+          "cPlActDmgNormalB": 2,
+          "cPlActDashBegin": 1,
+          "cPlActRunEnd": 1,
+          "cPlCliffHangClimb": 1,
+          "cPlActJump": 1
+        },
+        "packedCodes": {
+          "0x000000A4": 20,
+          "0x00000000": 19,
+          "0x00000080": 16,
+          "0x00000017": 6,
+          "0x02060000": 6,
+          "0x000000AD": 5,
+          "0x0000001E": 5,
+          "0x01050003": 4,
+          "0x000000EE": 3,
+          "0x0000001D": 3,
+          "0x0105002A": 3,
+          "0x0000000E": 2,
+          "0x0000000D": 2,
+          "0x00000013": 2,
+          "0x0000007D": 1,
+          "0x00000003": 1,
+          "0x00000036": 1,
+          "0x00000009": 1
+        },
+        "targetTypes": {
+          "none": 55,
+          "uHumanEnemy": 39,
+          "uEm0100": 6
+        },
+        "goapResources": {}
+      }
+    }
+  }
+}

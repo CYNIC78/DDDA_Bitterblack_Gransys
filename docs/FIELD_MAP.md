@@ -108,16 +108,30 @@ Do not treat offsets `+0x4AE8/+0x32D8/+0x1C94/+0x4B14` as sprint flags; hypothes
 
 Only entries `[0,count)` are valid. Allocator spacing/trailing storage is not a score node.
 
-## 6. Planner
+## 6. Main Pawn fast decision chain
+
+| Object/offset | Field | Status |
+|---|---|---|
+| `uCmc + 0x2E64` | `cAICtrl*` | ✅ |
+| `cAICtrl + 0x04` | owner `uCmc*` | ✅ |
+| `cAICtrl + 0x68` | `cAIGoalPlanning*` | ✅ |
+| `cAICtrl + 0x70` | `cAIPriorityThink*` | ✅ |
+| `cAIGoalPlanning + 0x04` | owner `cAICtrl*` | ✅ |
+| `cAIPriorityThink + 0x04` | owner `cAICtrl*` | ✅ |
+| `uCmc + 0x2EB8` | primary planner/combat target; may persist while planner code is `0xFFFFFFFF` | ✅ 335 Build 53 rows, 9 target bodies; retained through near-death/revival |
+| `uCmc + 0x4B28` | secondary/previous/lock target | 🔎 may equal current or retain prior Wolf |
+| `uCmc + 0x14E0` | late/context-specific look-at/lock reference | 🔎 appears in later bow snapshot |
+
+## 7. Planner
 
 | Object/offset | Field | Status |
 |---|---|---|
 | `cAIGoalPlanning + 0x17C` | current priority code / `0xFFFFFFFF` none | ✅ |
 | `planner + 0x190 + code*0x110` | indexed `cPlanCtrl` | ✅ for valid code |
 
-Observed: Wait `0` or none, Follow `1`, Dagger combat `54`.
+Build 52 traversed all 91 slots: 56 have direct GOAP links and 42/70 codes used by `cmc.prt` have exact resource identities. Build 53 then selected planner-only codes `74 = EscapeNotice2` and `76 = GotoOm` during live play, so runtime semantics cover the full `0..90` planner range, not only `cmc.prt` rows. Canonical maps: `PLAYER_PAWN_WORK/generated/pawn_planner_semantics.{json,csv}` and `pawn_priority_semantics.{json,csv}`.
 
-## 7. `cCmcInfo` and action interface
+## 8. `cCmcInfo` and action interface
 
 | Offset | Type | Field | Status |
 |---:|---|---|---|
@@ -139,7 +153,7 @@ Observed: Wait `0` or none, Follow `1`, Dagger combat `54`.
 | `+0x274` | AtkAttr |
 | `+0x278` | UseAttr |
 
-## 8. Enemy-specific verified fields
+## 9. Enemy-specific verified fields
 
 ### Goblin `uEm0100`
 
@@ -154,11 +168,9 @@ Observed: Wait `0` or none, Follow `1`, Dagger combat `54`.
 
 Offsets of `cCharParamEnemy` inside body must be signature-resolved for other species.
 
-## 9. Open fields
+## 10. Open fields
 
-- exact Main Pawn current target;
 - current HP inside generic enemy body;
-- per-main-pawn priority root association when several roots coexist;
-- semantic names for all priority codes;
+- semantic names/GOAP links for all priority codes;
 - proven runtime fields for GOAP patches;
 - physical damage hitboxes distinct from AI action ranges.

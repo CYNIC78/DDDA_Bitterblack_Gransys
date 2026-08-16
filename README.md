@@ -121,6 +121,7 @@ Sensors / target selection
 
 ## Credits
 
+- [Arena.ai](https://arena.ai) — ИИ-ассистент и лид-программист runtime-платформы;
 - kubik-jaroslav — ddda-dinput8 architecture;
 - Cielos — Cheat Engine research;
 - Atvaark — DragonsDogma.Research/types;
@@ -128,7 +129,6 @@ Sensors / target selection
 - Lefein — World Difficulty and DDDA AI modding groundwork;
 - FluffyQuack — ARCtool;
 - TsudaKageyu — MinHook;
-- ocornut — Dear ImGui;
-- arena.ai - ИИ ассистент. 
+- ocornut — Dear ImGui.
 
 MIT License.

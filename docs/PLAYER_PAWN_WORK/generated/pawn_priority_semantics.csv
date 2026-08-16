@@ -1,0 +1,92 @@
+code,intentKey,displayName,confidence,families,goapCandidates,sourceRowCount,sourceSlots,evidence
+0,wait_or_quest_fallback,Wait / quest fallback (code-level ambiguous),observed_ambiguous,quest,Wait,16,QUEST - 00|QUEST - 00|QUEST - 01|QUEST - 01|QUEST - 02|QUEST - 02|QUEST - 03|QUEST - 03|QUEST - 04|QUEST - 04|QUEST - 05|QUEST - 05|QUEST - 06|QUEST - 06|QUEST - 07|QUEST - 07,Build 41/45: cPlActWait with planner code 0|Build 50: selected PlanCtrl nodes link to Wait ID 0 and Follow ID 1 fallback|cmc.prt: code 0 is shared by 16 quest rows; full tuple is required|Build 52 static planner slot: Wait
+1,follow_arisen,Follow Arisen,compiled_links,party,Follow,1,PL_Party - 01,Build 40/42: cPlActRun while following with planner code 1|Build 50: selected PlanCtrl nodes link directly to Follow ID 1 and Jump ID 2|Build 52 static planner slot: Follow
+2,jump,Jump,planner_static_links,party,Jump,1,PL_Party - 03,Build 52: planner slot 2 links directly to Jump ActionInterfaceParam
+3,climb,Climb,planner_static_links,party,Climb,1,PL_Party - 05,Build 52: planner slot 3 links directly to Climb ActionInterfaceParam
+4,unknown_code_4,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 01,Only cmc.prt source-slot family is known
+5,unknown_code_5,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 06,Only cmc.prt source-slot family is known
+6,hold_action,Hold Action,planner_static_links,wait_follow,HoldAction,1,Wait_Follow - 07,Build 52: planner slot 6 links directly to HoldAction ActionInterfaceParam
+7,unknown_code_7,Enemy-related response,family_only,enemy,,1,Enemy - 04,Only cmc.prt source-slot family is known
+8,unknown_code_8,Personal/situation response,family_only,personal,,1,Situ_Personal - 00,Only cmc.prt source-slot family is known
+9,receive,Receive,planner_only,,Receive,0,,"Build 52: planner slot exists and links to Receive, but cmc.prt has no source row"
+10,cling,Cling,planner_static_links,personal,Cling,1,Situ_Personal - 05,Build 52: planner slot 10 links directly to Cling ActionInterfaceParam
+11,cover,Cover,planner_static_links,personal,Cover,1,Situ_Personal - 05,Build 52: planner slot 11 links directly to Cover ActionInterfaceParam
+12,help_action,Help Action,planner_static_links,enemy,HelpAction,1,Enemy - 02,Build 52: planner slot 12 links directly to HelpAction ActionInterfaceParam
+13,unknown_code_13,Party/Arisen relation,family_only,party,,1,PL_Party - 06,Only cmc.prt source-slot family is known
+14,unknown_code_14,Personal/situation response,family_only,personal,,1,Situ_Personal - 05,Only cmc.prt source-slot family is known
+15,air,Air,planner_static_links,party,Air,1,PL_Party - 06,Build 52: planner slot 15 links directly to Air ActionInterfaceParam
+16,unknown_code_16,Party/Arisen relation,family_only,party,,1,PL_Party - 04,Only cmc.prt source-slot family is known
+17,unused_or_missing_code_17,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+18,unknown_code_18,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 06,Only cmc.prt source-slot family is known
+19,recover,Recover,planner_static_links,wait_follow,Recover,1,Wait_Follow - 05,Build 52: planner slot 19 links directly to Recover ActionInterfaceParam
+20,goto,Goto,planner_static_links,wait_follow,Goto,1,Wait_Follow - 05,Build 52: planner slot 20 links directly to Goto ActionInterfaceParam
+21,ladder_climb,Ladder Climb,planner_static_links,wait_follow,LadderClimb,1,Wait_Follow - 05,Build 52: planner slot 21 links directly to LadderClimb ActionInterfaceParam
+22,ladder_dismount,Ladder Dismount,planner_static_links,wait_follow,LadderDismount,1,Wait_Follow - 05,Build 52: planner slot 22 links directly to LadderDismount ActionInterfaceParam
+23,climb_attack,Climb Attack,planner_static_links,wait_follow,ClimbAttack,1,Wait_Follow - 04,Build 52: planner slot 23 links directly to ClimbAttack ActionInterfaceParam
+24,climb_end,Climb End,planner_static_links,wait_follow,ClimbEnd,1,Wait_Follow - 04,Build 52: planner slot 24 links directly to ClimbEnd ActionInterfaceParam
+25,hold_wait,Hold Wait,planner_only,,HoldWait,0,,"Build 52: planner slot exists and links to HoldWait, but cmc.prt has no source row"
+26,hold_wait4_feet,Hold Wait4 Feet,planner_static_links,personal,HoldWait4Feet,1,Situ_Personal - 00,Build 52: planner slot 26 links directly to HoldWait4Feet ActionInterfaceParam
+27,unknown_code_27,Personal/situation response,family_only,personal,,1,Situ_Personal - 00,Only cmc.prt source-slot family is known
+28,stand_off,Stand Off,planner_static_links,enemy,StandOff,1,Enemy - 02,Build 52: planner slot 28 links directly to StandOff ActionInterfaceParam
+29,unknown_code_29,Personal/situation response,family_only,personal,,1,Situ_Personal - 05,Only cmc.prt source-slot family is known
+30,unknown_code_30,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 05,Only cmc.prt source-slot family is known
+31,use_item,Use Item,planner_static_links,wait_follow,UseItem,1,Wait_Follow - 05,Build 52: planner slot 31 links directly to UseItem ActionInterfaceParam
+32,precaution,Precaution,planner_static_links,wait_follow,Precaution,1,Wait_Follow - 05,Build 52: planner slot 32 links directly to Precaution ActionInterfaceParam
+33,unknown_code_33,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 06,Only cmc.prt source-slot family is known
+34,lift_corpse,Lift Corpse,planner_static_links,wait_follow,LiftCorpse,1,Wait_Follow - 05,Build 52: planner slot 34 links directly to LiftCorpse ActionInterfaceParam
+35,victory_pose,Victory Pose,planner_static_links,personal,VictoryPose,1,Situ_Personal - 01,Build 52: static planner slot 35 links directly to VictoryPose ID 117|Build 50 selected runtime graph also carried ItemThrow/Follow transient links; they are not the slot's primary resource|Build 52 static planner slot: VictoryPose
+36,item_throw,Item Throw,planner_static_links,personal,ItemThrow,1,Situ_Personal - 00,Build 52: planner slot 36 links directly to ItemThrow ActionInterfaceParam
+37,unknown_code_37,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 05,Only cmc.prt source-slot family is known
+38,pl_cons,Pl Cons,planner_static_links,wait_follow,PlCons,1,Wait_Follow - 04,Build 52: planner slot 38 links directly to PlCons ActionInterfaceParam
+39,unused_or_missing_code_39,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+40,unknown_code_40,Personal/situation response,family_only,personal,,1,Situ_Personal - 04,Only cmc.prt source-slot family is known
+41,unknown_code_41,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 06,Only cmc.prt source-slot family is known
+42,wait_infinity,Wait Infinity,planner_static_links,wait_follow,WaitInfinity,1,Wait_Follow - 06,Build 52: planner slot 42 links directly to WaitInfinity ActionInterfaceParam
+43,om_break,Om Break,planner_static_links,wait_follow,OmBreak,1,Wait_Follow - 04,Build 52: planner slot 43 links directly to OmBreak ActionInterfaceParam
+44,climb_move,Climb Move,planner_static_links,wait_follow,ClimbMove,1,Wait_Follow - 04,Build 52: planner slot 44 links directly to ClimbMove ActionInterfaceParam
+45,unknown_code_45,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 04,Only cmc.prt source-slot family is known
+46,unknown_code_46,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 04,Only cmc.prt source-slot family is known
+47,unknown_code_47,Wait/follow tactical response,family_only,wait_follow,,1,Wait_Follow - 04,Only cmc.prt source-slot family is known
+48,unknown_code_48,Personal/situation response,family_only,personal,,1,Situ_Personal - 03,Only cmc.prt source-slot family is known
+49,wpn_off,Weapon Off,planner_static_links,personal,WpnOff,1,Situ_Personal - 00,Build 52: planner slot 49 links directly to WpnOff ActionInterfaceParam
+50,item_get,Item Get,planner_static_links,personal,ItemGet,1,Situ_Personal - 00,Build 52: planner slot 50 links directly to ItemGet ActionInterfaceParam
+51,item_find,Item Find,planner_static_links,wait_follow,ItemFind,1,Wait_Follow - 07,Build 52: planner slot 51 links directly to ItemFind ActionInterfaceParam
+52,unknown_code_52,Enemy-related response,family_only,enemy,,1,Enemy - 05,Only cmc.prt source-slot family is known
+53,unknown_code_53,Miscellaneous/battle response,family_only,misc,,1,Etc - 04,Only cmc.prt source-slot family is known
+54,weapon_attack_dagger,Dagger weapon attack,compiled_links,misc,WpnDaggerAtk,1,Etc - 04,"Build 40/42: dagger attack/Hyakuretsu with planner code 54|Build 51: exact cPlActWpnDaggerAtckLandL, packed 0x01050003|Build 51: PlanCtrl links to WpnDaggerAtk Interface IDs 9,124,132,133,10|Build 52 static planner slot: WpnDaggerAtk"
+55,unknown_code_55,Miscellaneous/battle response,family_only,misc,,1,Etc - 04,Only cmc.prt source-slot family is known
+56,unknown_code_56,Party/Arisen relation,family_only,party,,1,PL_Party - 01,Only cmc.prt source-slot family is known
+57,weapon_attack_bow,Bow weapon attack,compiled_links,party,WpnBowAtk2,1,PL_Party - 03,"Build 51: exact cPlActWpnBow, packed 0x02060000, planner code 57|Build 51: PlanCtrl links to runtime-only WpnBowAtk2 IDs 12/107|Build 51: DmgUkemi ID 149 is present as auxiliary/fallback link|Build 52 static planner slot: WpnBowAtk2"
+58,dmg_ukemi,Dmg Ukemi,planner_static_links,party,DmgUkemi,1,PL_Party - 05,Build 52: planner slot 58 links directly to DmgUkemi ActionInterfaceParam
+59,dmg_lever_gacha,Dmg Lever Gacha,planner_static_links,personal,DmgLeverGacha,1,Situ_Personal - 00,Build 52: planner slot 59 links directly to DmgLeverGacha ActionInterfaceParam
+60,em0600_cover,Em0600 Cover,planner_static_links,misc,Em0600Cover,1,Etc - 07,Build 52: planner slot 60 links directly to Em0600Cover ActionInterfaceParam
+61,em0700_handling_off,Em0700 Handling Off,planner_static_links,misc,Em0700HandlingOff,1,Etc - 07,Build 52: planner slot 61 links directly to Em0700HandlingOff ActionInterfaceParam
+62,em5200_just_guard,Em5200 Just Guard,planner_static_links,misc,Em5200JustGuard,1,Etc - 07,Build 52: planner slot 62 links directly to Em5200JustGuard ActionInterfaceParam
+63,em5300_taru_baku,Em5300 Taru Baku,planner_static_links,misc,Em5300TaruBaku,1,Etc - 00,Build 52: planner slot 63 links directly to Em5300TaruBaku ActionInterfaceParam
+64,unknown_code_64,Party/Arisen relation,family_only,party,,1,PL_Party - 01,Only cmc.prt source-slot family is known
+65,unknown_code_65,Enemy-related response,family_only,enemy,,1,Enemy - 02,Only cmc.prt source-slot family is known
+66,unknown_code_66,Miscellaneous/battle response,family_only,misc,,1,Etc - 07,Only cmc.prt source-slot family is known
+67,status_up,Status Up,planner_static_links,misc,StatusUp,1,Etc - 06,Build 52: planner slot 67 links directly to StatusUp ActionInterfaceParam
+68,unknown_code_68,Miscellaneous/battle response,family_only,misc,,1,Etc - 02,Only cmc.prt source-slot family is known
+69,open_door,Open Door,planner_static_links,misc,OpenDoor,1,Etc - 04,Build 52: planner slot 69 links directly to OpenDoor ActionInterfaceParam
+70,carry_goods,Carry Goods,planner_static_links,party,CarryGoods,1,PL_Party - 01,Build 52: planner slot 70 links directly to CarryGoods ActionInterfaceParam
+71,unknown_code_71,Personal/situation response,family_only,personal,,1,Situ_Personal - 02,Only cmc.prt source-slot family is known
+72,treasure_box,Treasure Box,planner_static_links,misc,TreasureBox,1,Etc - 06,Build 52: planner slot 72 links directly to TreasureBox ActionInterfaceParam
+73,escape_notice1,Escape Notice1,planner_static_links,misc,EscapeNotice1,1,Etc - 06,Build 52: planner slot 73 links directly to EscapeNotice1 ActionInterfaceParam
+74,combat_evasive_response,Combat evasive response,runtime_exact,,EscapeNotice2,0,,Build 53: planner-only code 74 selected for 9 trace rows|Build 53: exact EscapeNotice2 ID 167 link and uHumanEnemy target in every row|Build 53: jump/walk/bow execution during this evasive combat intent|Build 52 static planner slot: EscapeNotice2
+75,unused_or_missing_code_75,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+76,gather_at_object,Gather / inspect object,runtime_exact,,GotoOm,0,,Build 53: planner-only code 76 selected for 35 trace rows|Build 53: exact GotoOm ID 168 link in every row|Build 53: cPlActGather packed 0x00000091 in 18 rows while looting/inspecting bodies|Build 52 static planner slot: GotoOm
+77,unused_or_missing_code_77,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+78,barrel_bomb,Barrel Bomb,planner_only,,BarrelBomb,0,,"Build 52: planner slot exists and links to BarrelBomb, but cmc.prt has no source row"
+79,unused_or_missing_code_79,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+80,ballista,Ballista,planner_only,,Ballista,0,,"Build 52: planner slot exists and links to Ballista, but cmc.prt has no source row"
+81,dmg_cancel,Dmg Cancel,planner_only,,DmgCancel,0,,"Build 52: planner slot exists and links to DmgCancel, but cmc.prt has no source row"
+82,dmg_absorb,Dmg Absorb,planner_only,,DmgAbsorb,0,,"Build 52: planner slot exists and links to DmgAbsorb, but cmc.prt has no source row"
+83,unused_or_missing_code_83,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+84,dash_follow,Dash Follow,planner_only,,DashFollow,0,,"Build 52: planner slot exists and links to DashFollow, but cmc.prt has no source row"
+85,dash_follow_st500,Dash Follow St500,planner_only,,DashFollowSt500,0,,"Build 52: planner slot exists and links to DashFollowSt500, but cmc.prt has no source row"
+86,jump_st500,Jump St500,planner_only,,JumpSt500,0,,"Build 52: planner slot exists and links to JumpSt500, but cmc.prt has no source row"
+87,two_platoons,Two Platoons,planner_only,,TwoPlatoons,0,,"Build 52: planner slot exists and links to TwoPlatoons, but cmc.prt has no source row"
+88,unused_or_missing_code_88,Unused/missing in cmc.prt,missing,,,0,,No cmc.prt row uses this planner code
+89,pl_escape,Pl Escape,planner_only,,PlEscape,0,,"Build 52: planner slot exists and links to PlEscape, but cmc.prt has no source row"
+90,dmg_escape,Dmg Escape,planner_only,,DmgEscape,0,,"Build 52: planner slot exists and links to DmgEscape, but cmc.prt has no source row"

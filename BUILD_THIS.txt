@@ -1,58 +1,48 @@
-Build 47 — Main Pawn AI platform milestone
+Build 52 — Main Pawn semantic map: all planner slots (read-only)
 
 Собрать:
   Visual Studio → Release | Win32 → Build Solution
 
 Проверить в F12:
-  build 47-pawn-ai-platform-milestone
+  build 52-pawn-semantic-all-slots
 
-Статус:
-  - Это зафиксированный итог Builds 40–46.
-  - Дополнительный обязательный тест не требуется.
-  - Build 46 уже подтвердил generalized multi-rule profile transaction.
+Build 51 подтвердил:
+  - exact bow action: cPlActWpnBow / packed 0x02060000 / priority code 57;
+  - code 57 PlanCtrl -> WpnBowAtk2 IDs 12/107 + DmgUkemi 149 fallback;
+  - exact dagger action: cPlActWpnDaggerAtckLandL / code 54;
+  - code 54 -> WpnDaggerAtk IDs 9/124/132/133/10;
+  - current combat target: uCmc+0x2EB8;
+  - cAICtrl child layout подписан.
 
-Рабочая платформа главной пешки:
-  - 83 AI resources разобраны в канонический каталог.
-  - 85 priority rows и 48 runtime buckets mapped.
-  - Personality cCodeParam и order cOrderValue mapped.
-  - Persistent sidecar поддерживает 0..48 exact rule entries.
-  - Rule identity:
-      sensor / code / category / objectId / extra / ruleIndex
-  - Profile apply выполняется транзакционно.
-  - Ошибка любого entry запрещает/откатывает всю транзакцию.
-  - Transient addresses не сохраняются.
-  - Active profile автоматически применяется после загрузки мира.
-  - Vanilla выполняет runtime rollback.
-  - Bucket convergence отображается в F12 и пишется в JSON.
+Цель Build 52:
+  - не ловить каждый priority code вручную;
+  - за один snapshot пройти все 91 cPlanCtrl slots;
+  - для каждого slot собрать cGoalPlanningNode+0x04 links;
+  - сопоставить links с 69 rAIGoalPlanning resources и Interface IDs;
+  - массово заполнить pawn_priority_semantics.json/csv.
 
-Sidecar:
-  DDDA_AI_Overhaul\ddda_pawn_ai_profiles.ini
+Добавлен JSON section:
+  plannerSlots[91]
+    code
+    PlanCtrl ptr/hash
+    nodeLinks[]
 
-Клавиши:
-  -       переключить vanilla / research_pair45_46
-  = или + сделать pawn AI snapshot
-  F9      инструментом не используется
+Analyzer автоматически переводит каждый node link в:
+  GOAP resource path
+  InterfaceID
+  cCmc action-interface pointer
 
-Тестовый двухправиловый профиль:
-  code 45 rule 0: AddS32 -1 -> -2
-  code 46 rule 0: AddS32 -1 -> -2
+ТЕСТ — ОДИН снимок
 
-Подтверждённый результат:
-  vanilla:
-    slot 34: []
-    slot 35: [47, 46, 45]
+1. Только Arisen + Main Pawn.
+2. Priority profile = green vanilla.
+3. Загрузить сейв и подождать 20 секунд, чтобы AI resources были полностью готовы.
+4. F12 → Player + Main Pawn recon.
+5. Нажать "Find both + capture baseline".
+6. Дождаться AI bridge 001.
 
-  research_pair45_46:
-    slot 34: [46, 45]
-    slot 35: [47]
+Прислать:
+  ddda_pawn_ai_bridge_001m.json
 
-Generated AI action-parameter catalogs:
-  docs\PLAYER_PAWN_WORK\generated\AIPlActParam*.csv
-
-Они содержат AI target/use ranges и eligibility attributes для девяти weapon
-families на Lv1/Lv2/LvEX. Это не доказанные damage hitboxes; параметры относятся
-к выбору и допустимости действий AI. Их будущая мутация должна проходить через
-отдельный runtime A/B и rollback, как priority platform.
-
-Документация PLAYER_PAWN_WORK очищена от завершённых protocol-файлов и тяжёлых
-промежуточных snapshot reports. Канонический catalog и compact evidence оставлены.
+Состояние пешки не критично: Build 52 читает все planner slots, а не только selected.
+Build 52 read-only. F9 не использовать.

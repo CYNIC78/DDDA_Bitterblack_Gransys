@@ -1,0 +1,37 @@
+{
+  "build": "50-pawn-intent-target-links",
+  "planLinks": {
+    "0": {
+      "sourceState": "Wait",
+      "goapInterfaces": [
+        {"resource": "Wait", "interfaceId": 0},
+        {"resource": "Follow", "interfaceId": 1, "role": "fallback"}
+      ]
+    },
+    "1": {
+      "sourceState": "Follow",
+      "goapInterfaces": [
+        {"resource": "Follow", "interfaceId": 1},
+        {"resource": "Jump", "interfaceId": 2, "role": "optional/fallback"}
+      ]
+    },
+    "35": {
+      "sourceState": "tester expected bow shot but exact cPlAct was not captured",
+      "goapInterfaces": [
+        {"resource": "Follow", "interfaceId": 1},
+        {"resource": "VictoryPose", "interfaceId": 117},
+        {"resource": "ItemThrow", "interfaceId": 158}
+      ],
+      "semantic": "situational_victory_or_item_throw",
+      "notConfirmedAs": "bow attack"
+    }
+  },
+  "linkMethod": "cGoalPlanningNode+0x04 equals rAIGoalPlanning::ActionInterfaceParam address; ActionInterfaceParam+0x04 is InterfaceID and +0x08 points to cCmc interface",
+  "targetSlots": {
+    "0x14E0": "zero in all Build 50 snapshots",
+    "0x2EB8": "zero in all Build 50 snapshots",
+    "0x4B28": "zero in all Build 50 snapshots"
+  },
+  "targetConclusion": "Build 49 wolf pointers were context-specific. Universal current target must be found through cAICtrl/target-manager graph rather than fixed body slots.",
+  "next": "Build 51 records exact cPlAct name and scans cAICtrl children for enemy refs"
+}

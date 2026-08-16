@@ -1,0 +1,78 @@
+{
+  "build": "51-pawn-action-target-graph",
+  "states": [
+    {
+      "snapshot": "001l",
+      "pawnAction": "cPlActWait",
+      "packedAction": "0x00000000",
+      "selectedPriority": null,
+      "target2EB8": null
+    },
+    {
+      "snapshot": "002l",
+      "pawnAction": "cPlActDash",
+      "packedAction": "0x00000005",
+      "selectedPriority": 1,
+      "goapLinks": ["Follow:1", "Jump:2"],
+      "target2EB8": null
+    },
+    {
+      "snapshot": "003l",
+      "pawnAction": "cPlActWpnDaggerAtckLandL",
+      "packedAction": "0x01050003",
+      "selectedPriority": 54,
+      "goapLinks": [
+        "WpnDaggerAtk:9",
+        "WpnDaggerAtk:124",
+        "WpnDaggerAtk:132",
+        "WpnDaggerAtk:133",
+        "WpnDaggerAtk:10"
+      ],
+      "target2EB8": "uEm0100"
+    },
+    {
+      "snapshot": "004l",
+      "pawnAction": "cPlActWpnBow",
+      "packedAction": "0x02060000",
+      "selectedPriority": 57,
+      "goapLinks": ["WpnBowAtk2:12", "WpnBowAtk2:107", "DmgUkemi:149"],
+      "target2EB8": "uEm0100"
+    },
+    {
+      "snapshot": "005l",
+      "pawnAction": "cPlActWpnBow",
+      "packedAction": "0x02060000",
+      "selectedPriority": 57,
+      "goapLinks": ["WpnBowAtk2:12", "WpnBowAtk2:107", "DmgUkemi:149"],
+      "target2EB8": "uEm0100",
+      "additionalReferences": ["uCmc+0x14E0", "uCmc+0x4B28"]
+    }
+  ],
+  "currentTarget": {
+    "field": "uCmc+0x2EB8",
+    "status": "confirmed for active combat target",
+    "evidence": [
+      "zero in Wait/Follow",
+      "same Goblin body during exact dagger and bow actions",
+      "Build 49 changed Wolf A to Wolf B between combat snapshots"
+    ],
+    "secondaryFields": {
+      "uCmc+0x4B28": "secondary/previous/lock candidate; often equals current target",
+      "uCmc+0x14E0": "late/context-specific lock/look-at candidate"
+    }
+  },
+  "aiCtrlChildren": {
+    "0x30": "cAIFieldPathTrace",
+    "0x34": "cAINavPathTrace",
+    "0x38": "cAISensorExt",
+    "0x3C": "cAIRouteInfo",
+    "0x40": "cAIActionInterfaceCtrl",
+    "0x5C": "cAICheckSituationCmc",
+    "0x60": "cAIMessageCtrl",
+    "0x64": "cAIGrid",
+    "0x68": "cAIGoalPlanning",
+    "0x6C": "cAIStudy",
+    "0x70": "cAIPriorityThink",
+    "0x74": "cAILookAtCtrl"
+  }
+}

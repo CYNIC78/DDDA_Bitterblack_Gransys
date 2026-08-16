@@ -1,0 +1,65 @@
+{
+  "build": "49-pawn-plan-fingerprint",
+  "census": {
+    "candidates": 513,
+    "cap": 1024,
+    "capReached": false,
+    "decisionRootCandidates": 8,
+    "mainPlannerRootsAfterOwnerCheck": 1,
+    "mainRootRule": "decisionRoot.field4 -> cAICtrl and cAICtrl+0x04 == snapshot pawnBody"
+  },
+  "states": [
+    {
+      "snapshot": "001j",
+      "selectedCodeRaw": 4294967295,
+      "state": "Wait/no current priority"
+    },
+    {
+      "snapshot": "002j",
+      "selectedCode": 1,
+      "semantic": "follow_arisen",
+      "planCtrl": "0x10F487A0",
+      "planFingerprint": "0x4B19524F",
+      "compiledNodeEvidence": [
+        "cGoalPlanningNode graph captured",
+        "one leaf link is near cCmcFollow; direct nearby-object scan added in Build 50"
+      ]
+    },
+    {
+      "snapshot": "003j",
+      "selectedCode": 54,
+      "semantic": "weapon_attack_dagger",
+      "planCtrl": "0x10F4BFF0",
+      "planFingerprint": "0xFB02591E",
+      "targetSlot2EB8": "0x114D0060 uEm0200",
+      "compiledLeafLinkCandidates": [
+        "cCmcDaggerCombo",
+        "cCmcDaggerComboDly",
+        "cCmcDaggerComboL",
+        "cCmcDaggerAirL",
+        "cCmc100Slash"
+      ]
+    },
+    {
+      "snapshot": "004j",
+      "selectedCode": 54,
+      "semantic": "weapon_attack_dagger",
+      "planCtrl": "0x10F4BFF0",
+      "planFingerprint": "0xFB02591E",
+      "targetSlot2EB8": "0x114A82B0 uEm0200",
+      "secondarySlot4B28": "0x114D0060 uEm0200"
+    }
+  ],
+  "targetConclusion": {
+    "strongestCurrentTargetCandidate": "uCmc+0x2EB8",
+    "reason": "points to a wolf in combat and changes from one wolf body to another between snapshots 003j/004j",
+    "secondaryCandidate": "uCmc+0x4B28",
+    "secondaryInterpretation": "previous/secondary/attacker target candidate; appears alongside 0x2EB8 in 004j",
+    "rejectedAsUniversal": "uCmc+0x14E0 was a Goblin reference in Build 48 but did not follow wolf combat in Build 49"
+  },
+  "nextProbe": {
+    "build": 50,
+    "plan": "scan around every cGoalPlanningNode+0x04 link and name nearby cCmc action interfaces",
+    "target": "read/name uCmc offsets 0x14E0,0x2EB8,0x4B28 directly, independent of WorldScan list"
+  }
+}

@@ -16,6 +16,6 @@
 - `PAWN_AI_PRIORITY_AB_RESULT_44.md` — успешный AddS32 A/B, точное bucket-смещение и доказательство отдельной rebuild-фазы.
 - `PAWN_AI_PROFILE_SIDECAR_RESULT_45.md` — persistent профиль, auto-discovery/apply после перезапуска и clean vanilla rollback.
 - `FUTURE_PAWN_SIGNAL_BUS.md` — отложенный мост боевых реплик пешек в CombatBus.
-- `generated/` — канонический resource-каталог, компактное Build 46 evidence и необходимые CSV; тяжёлые промежуточные snapshot reports удалены.
+- `generated/` — канонический resource-каталог, weapon CSV, full 91-slot priority semantics, planner map, runtime GOAP manifest и compact Build 51/53 evidence; semantic generator также обновляет runtime include `src/devtools/generated/PawnPrioritySemantics.inl`; тяжёлые промежуточные reports удалены.
 
 Завершённые test protocol-файлы удалены после подтверждения результатов. Главные факты пока также продублированы в центральных `docs/FIELD_MAP.md` и `docs/SOURCE_OF_TRUTH.md`; их общая чистка проводится отдельно.

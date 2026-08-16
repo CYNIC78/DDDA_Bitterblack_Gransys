@@ -51,15 +51,32 @@ Current Act использует стабильный placement-new buffer: ме
 
 ## 3. Main Pawn priority pipeline
 
-### 3.1 Resource/runtime roots
+### 3.1 Fast main-pawn decision chain (Build 48)
+
+```text
+uCmc + 0x2E64 -> cAICtrl
+cAICtrl + 0x04 -> same uCmc (owner back-reference)
+cAICtrl + 0x68 -> cAIGoalPlanning
+cAICtrl + 0x70 -> cAIPriorityThink
+cAIGoalPlanning + 0x04 -> same cAICtrl
+cAIPriorityThink + 0x04 -> same cAICtrl
+```
+
+Цепочка совпала в Wait/Follow/Combat. После разрешения live `uCmc` глобальный AI heap census для planner/priority roots не требуется.
+
+### 3.2 Resource/runtime roots
 
 ```text
 cAIPriorityThink + 0x08 -> rAIPriorityThink (cmc.prt)
+cAIGoalPlanning + 0x08 -> default rAIGoalPlanning (observed Wait resource)
 ```
+
+`rAIGoalPlanning` содержит inline ASCII resource path по `+0x08`. Runtime manifest Build 48 дал 69 уникальных GOAP resources: все 68 импортированных файлов плюс `WpnBowAtk2`.
+
 
 `rAIPriorityThink` содержит 85 `cPrioParam` rows. `cAIPriorityThink` материализует 48 runtime buckets (`QUEST`, `PL_Party`, `Situ_Personal`, `Enemy`, `Wait_Follow`, `Etc`; по 8 slots).
 
-### 3.2 `cPrioParam`
+### 3.3 `cPrioParam`
 
 | Offset | Type | Field |
 |---:|---|---|
@@ -71,7 +88,7 @@ cAIPriorityThink + 0x08 -> rAIPriorityThink (cmc.prt)
 | `+0x18..+0x28` | cArray | personality `cCodeParam**` |
 | `+0x2C..+0x3C` | cArray | order `cOrderValue**` |
 
-### 3.3 Runtime bucket descriptor
+### 3.4 Runtime bucket descriptor
 
 ```text
 cAIPriorityThink + 0x38 + slot*0x14:
@@ -84,7 +101,7 @@ cAIPriorityThink + 0x38 + slot*0x14:
 
 Только первые `count` pointers действительны. Шаг allocator `0x90` не является размером score object; trailing memory не анализируется как score.
 
-### 3.4 Personality/order rules
+### 3.5 Personality/order rules
 
 `rAIPriorityThink::cCodeParam` (104 B):
 
@@ -109,7 +126,7 @@ AddS32 -2 -> slot 34
 
 Build 46 доказал transaction для codes 45/46 одновременно: slot 34 `[46,45]`, slot 35 `[47]`; vanilla — slot 35 `[47,46,45]`.
 
-### 3.5 Persistent profiles
+### 3.6 Persistent profiles
 
 Runtime sidecar:
 
@@ -133,10 +150,48 @@ sensor/code/category/objectId/extra/ruleIndex
 |---|---|
 | `cAIGoalPlanning + 0x17C` | current priority code; `0xFFFFFFFF` = no selected priority |
 | `planner + 0x190 + code*0x110` | indexed `cPlanCtrl` для валидного code |
-| observed codes | Wait `0` или no-priority, Follow `1`, Dagger combat `54` |
+| observed codes | Build 53: 18 valid selected codes plus `0xFFFFFFFF`; full aggregate in `pawn_intent_trace_53.json` |
 | GOAP resources | 68 goals / 167 interfaces в pawn catalog |
 
-GOAP semantic mapping и patch framework ещё не завершены. Не применять формулу `PlanCtrl` к `0xFFFFFFFF`.
+Build 48 runtime GOAP manifest: 69 unique `rAIGoalPlanning` paths, включая runtime-only `WpnBowAtk2`. Default pointer planner root всегда указывал на `Wait` и не равен selected plan.
+
+Build 50 подтвердил compiled link:
+
+```text
+cGoalPlanningNode + 0x04 -> rAIGoalPlanning::ActionInterfaceParam
+ActionInterfaceParam + 0x04 = InterfaceID
+ActionInterfaceParam + 0x08 -> cCmc action interface
+```
+
+Primary static PlanCtrl identities, подтверждённые Build 52:
+
+- code `0`: Wait ID 0;
+- code `1`: Follow ID 1;
+- code `35`: VictoryPose ID 117;
+- code `36`: ItemThrow ID 158;
+- code `54`: `WpnDaggerAtk` IDs 9/124/132/133/10; exact action `cPlActWpnDaggerAtckLandL`;
+- code `57`: runtime-only `WpnBowAtk2` IDs 12/107; exact action `cPlActWpnBow`;
+- code `58`: `DmgUkemi` ID 149.
+
+Selected runtime graphs могут одновременно нести transient/auxiliary links (например Follow/Jump или ItemThrow/Follow); их нельзя смешивать с primary slot identity.
+
+Build 52 прошёл все 91 planner slots за один snapshot: 56 slots имеют direct GOAP links, из 70 codes, используемых `cmc.prt`, семантически mapped 42. Build 53 подтвердил стабильность карты 56/91 и впервые поймал live planner-only slots `74 = EscapeNotice2` и `76 = GotoOm`. Следовательно, selected runtime code использует весь диапазон `0..90`, даже если часть slots отсутствует в parsed `cmc.prt` rows. Не применять формулу `PlanCtrl` к `0xFFFFFFFF`.
+
+### Current target
+
+`uCmc+0x2EB8` подтверждён как current combat target:
+
+- zero в Wait/Follow;
+- Build 49 переключился Wolf A → Wolf B между combat snapshots;
+- Build 51 указывал на тот же Goblin body во время exact dagger и bow actions;
+- Build 53: non-null в 335/747 trace rows, 9 уникальных bodies (`uHumanEnemy`, `uEm0100`, `uMultiNpc`);
+- при `cPlActCmcNeardeath` code был `0xFFFFFFFF`, но target `uHumanEnemy` сохранялся все 16 heartbeat rows и пережил переход в `cPlActCmcReturn`.
+
+Итого: `+0x2EB8` — primary planning/combat target, но не гарантия активного execution: ссылка может сохраняться в planner-disabled damage/near-death states. `+0x4B28` — secondary/previous/lock candidate: может совпадать с current target или хранить предыдущего Wolf. `+0x14E0` появляется позднее/контекстно и похож на look-at/lock reference.
+
+Build 51 также подписал основные `cAICtrl` children: path/nav traces (`+0x30/+0x34`), sensor (`+0x38`), route (`+0x3C`), action-interface ctrl (`+0x40`), situation (`+0x5C`), message (`+0x60`), grid (`+0x64`), planner (`+0x68`), study (`+0x6C`), priority (`+0x70`), look-at (`+0x74`).
+
+Build 53 подтвердил компактный read-only fast path без heap census: за 570.7 s записано 747 rows, 18 valid selected codes, 33 exact action types и clean DLL-detach stop без ошибок. Semantic intent, selected code, exact `cPlAct`, packed code, primary target `+0x2EB8` и selected PlanCtrl links пишутся только при переходе плюс heartbeat раз в секунду. Compact evidence: `PLAYER_PAWN_WORK/generated/pawn_intent_trace_53.json`.
 
 ## 5. Action eligibility
 
@@ -178,10 +233,8 @@ Current target pointer не подтверждён.
 
 ## 8. Что не является подтверждённым
 
-- live current target main pawn;
 - универсальный enemy current HP offset внутри body;
-- main-pawn-specific priority root при нескольких roots;
-- семантика всех priority codes;
+- семантика/GOAP links всех priority codes;
 - physical hitbox из `AIPlActParam` ranges;
 - безопасные generalized GOAP/action-eligibility writes;
 - monster priority/planner bridge.
@@ -192,5 +245,12 @@ Current target pointer не подтверждён.
 - `PLAYER_PAWN_WORK/` — детальный pawn vertical slice;
 - `PLAYER_PAWN_WORK/generated/pawn_ai_catalog.json` — 83 pawn AI resources;
 - `PLAYER_PAWN_WORK/generated/pawn_ai_profile_46_evidence.json` — compact transaction evidence;
+- `PLAYER_PAWN_WORK/generated/pawn_priority_semantics.{json,csv}` — conservative code map;
+- `PLAYER_PAWN_WORK/generated/pawn_ai_semantic_roots_48.json` — fast root/GOAP manifest evidence;
+- `PLAYER_PAWN_WORK/generated/pawn_ai_plan_fingerprint_49.json` — compiled planner/target candidates;
+- `PLAYER_PAWN_WORK/generated/pawn_ai_plan_links_50.json` — direct PlanCtrl→GOAP interface links;
+- `PLAYER_PAWN_WORK/generated/pawn_ai_action_target_51.json` — exact actions, bow/dagger semantics and target evidence;
+- `PLAYER_PAWN_WORK/generated/pawn_planner_semantics.{json,csv}` — all 91 slots, 42/70 `cmc.prt` priority codes mapped;
+- `PLAYER_PAWN_WORK/generated/pawn_intent_trace_53.json` — compact 747-row aggregate, live codes/actions/targets and lifecycle spans;
 - `generated/TYPE_ATLAS.md` / `src/TypeAtlas.Generated.h` — generated type catalog;
 - `ASSET_FORMATS.md` — static resource formats.

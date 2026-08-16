@@ -92,6 +92,7 @@
 #include "ActMap.Generated.h"
 #include "devtools/DevTools.h"
 #include "devtools/TypeCallers.Generated.h"
+#include "devtools/generated/PawnPrioritySemantics.inl"
 #include "CombatBus.h"
 #include "ModPaths.h"
 #include <stdio.h>
@@ -2614,6 +2615,24 @@ static int            g_partyTraceSeq = 0;
 static DWORD          g_partyTraceStartMs = 0;
 static char           g_partyTraceFile[MAX_PATH] = "";
 
+// Build 53: compact semantic transition trace. One baseline JSON provides the
+// GOAP ActionInterfaceParam address map; CSV rows only record changing intent,
+// exact cPlAct, current target and selected PlanCtrl node links.
+static FILE*          g_intentTrace = nullptr;
+static int            g_intentTraceSeq = 0;
+static DWORD          g_intentTraceStartMs = 0;
+static DWORD          g_intentTraceLastMs = 0;
+static uint32_t       g_intentTraceLastCode = 0xFFFFFFFEu;
+static uintptr_t      g_intentTraceLastActionVt = 0;
+static uint32_t       g_intentTraceLastPacked = 0xFFFFFFFFu;
+static uintptr_t      g_intentTraceLastTarget = 0;
+static char           g_intentTraceFile[MAX_PATH] = "";
+static bool           g_intentLiveValid = false;
+static uint32_t       g_intentLiveCode = 0xFFFFFFFFu;
+static char           g_intentLiveAction[64] = "";
+static uintptr_t      g_intentLiveTarget = 0;
+static char           g_intentLiveTargetName[64] = "";
+
 static bool PartyStartsWith(const char* s, const char* prefix)
 {
     if (!s || !prefix) return false;
@@ -2748,24 +2767,19 @@ static bool PawnAiRelevantName(const char* name)
 {
     if (!name || !name[0]) return false;
 
-    // Build 40 proved the complete resource census: 85 priority rows and
-    // hundreds of rAIGoalPlanning leaf objects. Those leaves are static and
-    // already mapped from files; keeping all of them filled the 1024 cap
-    // before several roots were reached. Keep only data needed for the live
-    // bridge, computed priority buckets, and their nested rule arrays.
+    // Build 48 is a semantic-linking census. Hundreds of inline runtime
+    // PlanCtrl/PlanResult/GoalInfoParam objects are derivable from the planner
+    // root and previously exhausted the 1024 cap after reload. Keep only the
+    // roots plus compact resources needed to link priority code -> GOAP.
     if (PartyStartsWith(name, "cCmc")) return true;
-    if (!strcmp(name, "cAIGoalPlanning")
-        || !strcmp(name, "cAIGoalPlanning::cPlanCtrl")
-        || !strcmp(name, "cAIGoalPlanning::cPlanResult")
-        || !strcmp(name, "cAIGoalPlanning::cGoalInfoParam"))
-        return true;
+    if (!strcmp(name, "cAIGoalPlanning")) return true;
+    if (!strcmp(name, "rAIGoalPlanning")) return true;
     if (!strcmp(name, "rAIPriorityThink")
         || !strcmp(name, "cAIPriorityThink")
         || !strcmp(name, "rAIPriorityThink::cPrioParam")
         || !strcmp(name, "rAIPriorityThink::cOrderValue")
         || !strcmp(name, "rAIPriorityThink::cCodeParam")
         || !strcmp(name, "rAIPlayerActionParameter")
-        || !strcmp(name, "cAIPlayerActionParameter")
         || !strcmp(name, "cAICheckSituationCmc")
         || !strcmp(name, "cAIActionInterfaceCmc"))
         return true;
@@ -3722,6 +3736,14 @@ static void PartyWriteAiBridgeJson()
     }
 
     PartyPriorityProfileUpdateState();
+    uintptr_t pawnAction = 0;
+    uint32_t pawnPackedAction = 0xFFFFFFFFu;
+    char pawnActionName[64] = {};
+    if (pawn->bodyOk) {
+        pawnAction = *(uint32_t*)(pawn->body + 0x2DC8);
+        pawnPackedAction = *(uint32_t*)(pawn->body + 0x2DD4);
+        if (pawnAction) NameOfLiveObject(pawnAction, pawnActionName, sizeof(pawnActionName));
+    }
     int profileAppliedRules = 0;
     int profileResolvedRules = 0;
     for (int i = 0; i < g_nPriorityProfileRules; ++i) {
@@ -3732,6 +3754,8 @@ static void PartyWriteAiBridgeJson()
     fprintf(f,
         "{\n  \"build\":\"%s\",\n  \"seq\":%d,\n"
         "  \"pawnBody\":\"0x%08X\",\n  \"cmcInfo\":\"0x%08X\",\n"
+        "  \"pawnAction\":{\"ptr\":\"0x%08X\",\"name\":\"%s\","
+        "\"packedCode\":\"0x%08X\"},\n"
         "  \"cmcInfoSize\":%u,\n  \"censusCandidates\":%d,\n"
         "  \"priorityProfile\":{\"active\":\"%s\","
         "\"ruleCount\":%d,\"resolvedRules\":%d,\"appliedRules\":%d,"
@@ -3739,6 +3763,7 @@ static void PartyWriteAiBridgeJson()
         "\"writes\":%d,\"restores\":%d},\n"
         "  \"cmcInfoHex\":\"",
         MOD_BUILD_TAG, g_partyAiSeq, (unsigned)pawn->ptr, (unsigned)cmcInfo,
+        (unsigned)pawnAction, pawnActionName, pawnPackedAction,
         cmcSize, g_nPawnAi, g_priorityProfileActive,
         g_nPriorityProfileRules, profileResolvedRules, profileAppliedRules,
         g_priorityProfileFileOk ? "true" : "false",
@@ -3784,7 +3809,429 @@ static void PartyWriteAiBridgeJson()
         ++written;
         free(bytes);
     }
-    fputs("  ],\n  \"priorityBuckets\":[", f);
+    fputs("  ],\n  \"aiCtrlGraph\":{", f);
+    uintptr_t aiCtrl = 0;
+    if (pawn->bodyOk) aiCtrl = *(uint32_t*)(pawn->body + 0x2E64);
+    const TypeAtlas::Info* aiCtrlType = TypeAtlas::FindByName("cAICtrl");
+    const uint32_t aiCtrlSize = aiCtrlType ? aiCtrlType->size : 704u;
+    BYTE aiCtrlRaw[704] = {};
+    const bool aiCtrlOk = aiCtrl && aiCtrlSize <= sizeof(aiCtrlRaw)
+        && Rd((void*)aiCtrl, aiCtrlRaw, aiCtrlSize);
+    fprintf(f,
+        "\"ptr\":\"0x%08X\",\"ok\":%s,\"size\":%u,\"hex\":\"",
+        (unsigned)aiCtrl, aiCtrlOk ? "true" : "false", aiCtrlSize);
+    if (aiCtrlOk)
+        for (uint32_t b = 0; b < aiCtrlSize; ++b) fprintf(f, "%02X", aiCtrlRaw[b]);
+    fputs("\",\"children\":[", f);
+
+    int aiChildWritten = 0;
+    uintptr_t seenAiChild[128] = {};
+    int nSeenAiChild = 0;
+    if (aiCtrlOk) {
+        for (uint32_t off = 0; off + 4u <= aiCtrlSize; off += 4u) {
+            const uintptr_t child = *(uint32_t*)(aiCtrlRaw + off);
+            if (!LooksHeap(child)) continue;
+            bool duplicate = false;
+            for (int s = 0; s < nSeenAiChild; ++s)
+                if (seenAiChild[s] == child) { duplicate = true; break; }
+            if (duplicate || nSeenAiChild >= 128) continue;
+            char childName[64] = {};
+            if (!NameOfLiveObject(child, childName, sizeof(childName))) continue;
+            const TypeAtlas::Info* childType = TypeAtlas::FindByName(childName);
+            uint32_t childSize = childType ? childType->size : 0u;
+            if (!childSize || childSize > 0x1000u) childSize = 0x1000u;
+            BYTE* childRaw = (BYTE*)malloc(childSize);
+            if (!childRaw || !Rd((void*)child, childRaw, childSize)) {
+                if (childRaw) free(childRaw);
+                continue;
+            }
+            seenAiChild[nSeenAiChild++] = child;
+            fprintf(f,
+                "%s{\"fieldOff\":\"0x%04X\",\"ptr\":\"0x%08X\","
+                "\"name\":\"%s\",\"size\":%u,\"mainBodyRefOff\":%d,"
+                "\"targetRefs\":[",
+                aiChildWritten ? "," : "", off, (unsigned)child, childName,
+                childSize, PartyFindPtrOffset(childRaw, childSize, pawn->ptr));
+            int aiTargetWritten = 0;
+            for (int e = 0; e < g_nAct; ++e) {
+                if (!g_act[e].ptr) continue;
+                const int hit = PartyFindPtrOffset(childRaw, childSize, g_act[e].ptr);
+                if (hit < 0) continue;
+                fprintf(f,
+                    "%s{\"off\":\"0x%04X\",\"targetPtr\":\"0x%08X\","
+                    "\"targetKind\":\"%s\"}",
+                    aiTargetWritten ? "," : "", hit, (unsigned)g_act[e].ptr,
+                    g_act[e].kind ? g_act[e].kind : "?");
+                ++aiTargetWritten;
+            }
+            fputs("]}", f);
+            ++aiChildWritten;
+            free(childRaw);
+        }
+    }
+    fputs("]},\n  \"decisionRoots\":[", f);
+    int decisionWritten = 0;
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        const bool plannerRoot = !strcmp(A.name, "cAIGoalPlanning");
+        const bool priorityRoot = !strcmp(A.name, "cAIPriorityThink");
+        if (!plannerRoot && !priorityRoot) continue;
+
+        uint32_t size = A.typeSize;
+        if (!size || size > 0x10000u) continue;
+        BYTE* raw = (BYTE*)malloc(size);
+        if (!raw || !Rd((void*)A.ptr, raw, size)) {
+            if (raw) free(raw);
+            continue;
+        }
+        const uintptr_t field4 = size >= 8 ? *(uint32_t*)(raw + 0x04) : 0;
+        const uintptr_t field8 = size >= 12 ? *(uint32_t*)(raw + 0x08) : 0;
+        char field4Name[64] = {};
+        char field8Name[64] = {};
+        if (LooksHeap(field4)) NameOfLiveObject(field4, field4Name, sizeof(field4Name));
+        if (LooksHeap(field8)) NameOfLiveObject(field8, field8Name, sizeof(field8Name));
+        uint32_t selectedCode = 0xFFFFFFFFu;
+        if (plannerRoot && size >= 0x180u) selectedCode = *(uint32_t*)(raw + 0x17C);
+        const int bodyRef = pawn->bodyOk
+            ? PartyFindPtrOffset(raw, size, pawn->ptr) : -1;
+        const int infoRef = PartyFindPtrOffset(raw, size, cmcInfo);
+        BYTE ownerHex[0x100] = {};
+        bool ownerHexOk = LooksHeap(field4)
+            && Rd((void*)field4, ownerHex, sizeof(ownerHex));
+        const uint32_t selectedPlanOff = selectedCode < 91u
+            ? 0x190u + selectedCode * 0x110u : 0u;
+        const bool selectedPlanOk = plannerRoot && selectedCode < 91u
+            && selectedPlanOff + 0x110u <= size;
+
+        fprintf(f,
+            "%s{\"censusIndex\":%d,\"name\":\"%s\","
+            "\"ptr\":\"0x%08X\",\"size\":%u,\"hash\":\"0x%08X\","
+            "\"field4\":\"0x%08X\",\"field4Name\":\"%s\","
+            "\"field8\":\"0x%08X\",\"field8Name\":\"%s\","
+            "\"selectedCode\":%u,\"mainBodyRefOff\":%d,"
+            "\"mainInfoRefOff\":%d,\"ownerHex\":\"",
+            decisionWritten ? "," : "", i, A.name, (unsigned)A.ptr,
+            size, PartyHashBytes(raw, size), (unsigned)field4, field4Name,
+            (unsigned)field8, field8Name, selectedCode, bodyRef, infoRef);
+        if (ownerHexOk)
+            for (int b = 0; b < (int)sizeof(ownerHex); ++b)
+                fprintf(f, "%02X", ownerHex[b]);
+        fprintf(f, "\",\"selectedPlanHash\":\"0x%08X\",\"selectedPlanHex\":\"",
+            selectedPlanOk
+                ? PartyHashBytes(raw + selectedPlanOff, 0x110u) : 0u);
+        if (selectedPlanOk)
+            for (uint32_t b = 0; b < 0x110u; ++b)
+                fprintf(f, "%02X", raw[selectedPlanOff + b]);
+        fputs("\",\"selectedPlanTargets\":[", f);
+
+        int planTargetWritten = 0;
+        uintptr_t seenPlanTarget[32] = {};
+        int nSeenPlanTarget = 0;
+        if (selectedPlanOk) {
+            BYTE* plan = raw + selectedPlanOff;
+            for (int off = 0; off + 4 <= 0x110; off += 4) {
+                const uintptr_t target = *(uint32_t*)(plan + off);
+                if (!LooksHeap(target)) continue;
+                bool duplicate = false;
+                for (int s = 0; s < nSeenPlanTarget; ++s)
+                    if (seenPlanTarget[s] == target) { duplicate = true; break; }
+                if (duplicate || nSeenPlanTarget >= 32) continue;
+                BYTE targetRaw[0x200] = {};
+                if (!Rd((void*)target, targetRaw, sizeof(targetRaw))) continue;
+                seenPlanTarget[nSeenPlanTarget++] = target;
+                fprintf(f,
+                    "%s{\"fieldOff\":\"0x%02X\",\"ptr\":\"0x%08X\","
+                    "\"hash\":\"0x%08X\",\"hex\":\"",
+                    planTargetWritten ? "," : "", off, (unsigned)target,
+                    PartyHashBytes(targetRaw, sizeof(targetRaw)));
+                for (int b = 0; b < (int)sizeof(targetRaw); ++b)
+                    fprintf(f, "%02X", targetRaw[b]);
+                fputs("\",\"children\":[", f);
+
+                int planChildWritten = 0;
+                uintptr_t seenPlanChild[64] = {};
+                int nSeenPlanChild = 0;
+                for (int po = 0; po + 4 <= 0x100; po += 4) {
+                    const uintptr_t child = *(uint32_t*)(targetRaw + po);
+                    if (!LooksHeap(child)) continue;
+                    bool childDuplicate = false;
+                    for (int s = 0; s < nSeenPlanChild; ++s)
+                        if (seenPlanChild[s] == child) { childDuplicate = true; break; }
+                    if (childDuplicate || nSeenPlanChild >= 64) continue;
+                    char childName[64] = {};
+                    if (!NameOfLiveObject(child, childName, sizeof(childName))) continue;
+                    if (!(PartyStartsWith(childName, "cAIGoalPlanning::")
+                        || PartyStartsWith(childName, "cCmc")
+                        || !strcmp(childName, "cAIActionInterfaceCmc")))
+                        continue;
+                    const TypeAtlas::Info* childType = TypeAtlas::FindByName(childName);
+                    uint32_t childSize = childType ? childType->size : 0;
+                    if (!childSize || childSize > 0x400u) continue;
+                    BYTE childRaw[0x400] = {};
+                    if (!Rd((void*)child, childRaw, childSize)) continue;
+                    seenPlanChild[nSeenPlanChild++] = child;
+                    fprintf(f,
+                        "%s{\"payloadOff\":\"0x%02X\","
+                        "\"ptr\":\"0x%08X\",\"name\":\"%s\","
+                        "\"size\":%u,\"hex\":\"",
+                        planChildWritten ? "," : "", po, (unsigned)child,
+                        childName, childSize);
+                    for (uint32_t b = 0; b < childSize; ++b)
+                        fprintf(f, "%02X", childRaw[b]);
+                    const bool planningNode = !strcmp(
+                        childName, "cAIGoalPlanning::cGoalPlanningNode");
+                    const uintptr_t linkPtr = planningNode && childSize >= 8u
+                        ? *(uint32_t*)(childRaw + 0x04) : 0;
+                    fprintf(f, "\",\"linkPtr\":\"0x%08X\",\"nearbyCmc\":[",
+                        (unsigned)linkPtr);
+                    int nearbyWritten = 0;
+                    uintptr_t seenNearby[32] = {};
+                    int nSeenNearby = 0;
+                    if (LooksHeap(linkPtr)) {
+                        const uintptr_t begin = linkPtr > 0x100u
+                            ? linkPtr - 0x100u : linkPtr;
+                        const uintptr_t end = linkPtr + 0x800u;
+                        for (uintptr_t at = begin; at + 4u <= end; at += 4u) {
+                            uintptr_t vt = 0;
+                            if (!RdPtr((void*)at, &vt) || !LooksLikeVtable(vt))
+                                continue;
+                            char nearbyName[64] = {};
+                            if (!NameOfLiveObject(at, nearbyName, sizeof(nearbyName))
+                                || !PartyStartsWith(nearbyName, "cCmc"))
+                                continue;
+                            bool duplicateNearby = false;
+                            for (int s = 0; s < nSeenNearby; ++s)
+                                if (seenNearby[s] == at) { duplicateNearby = true; break; }
+                            if (duplicateNearby || nSeenNearby >= 32) continue;
+                            seenNearby[nSeenNearby++] = at;
+                            const TypeAtlas::Info* nearbyType = TypeAtlas::FindByName(nearbyName);
+                            fprintf(f,
+                                "%s{\"ptr\":\"0x%08X\",\"delta\":%d,"
+                                "\"name\":\"%s\",\"size\":%u}",
+                                nearbyWritten ? "," : "", (unsigned)at,
+                                (int)(at - linkPtr), nearbyName,
+                                nearbyType ? nearbyType->size : 0u);
+                            ++nearbyWritten;
+                        }
+                    }
+                    fputs("]}", f);
+                    ++planChildWritten;
+                }
+                fputs("]}", f);
+                ++planTargetWritten;
+            }
+        }
+        fputs("]}", f);
+        ++decisionWritten;
+        free(raw);
+    }
+
+    fputs("],\n  \"goapResources\":[", f);
+    int goapWritten = 0;
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        if (strcmp(A.name, "rAIGoalPlanning")) continue;
+        BYTE rootRaw[160] = {};
+        if (!Rd((void*)A.ptr, rootRaw, sizeof(rootRaw))) continue;
+        fprintf(f,
+            "%s{\"ptr\":\"0x%08X\",\"hash\":\"0x%08X\","
+            "\"hex\":\"",
+            goapWritten ? "," : "", (unsigned)A.ptr,
+            PartyHashBytes(rootRaw, sizeof(rootRaw)));
+        for (int b = 0; b < (int)sizeof(rootRaw); ++b) fprintf(f, "%02X", rootRaw[b]);
+        fputs("\",\"targets\":[", f);
+
+        uintptr_t seenTarget[32] = {};
+        int nSeenTarget = 0;
+        int targetWritten = 0;
+        for (int off = 0; off + 4 <= (int)sizeof(rootRaw); off += 4) {
+            const uintptr_t target = *(uint32_t*)(rootRaw + off);
+            if (!LooksHeap(target)) continue;
+            bool duplicate = false;
+            for (int s = 0; s < nSeenTarget; ++s)
+                if (seenTarget[s] == target) { duplicate = true; break; }
+            if (duplicate || nSeenTarget >= 32) continue;
+            BYTE targetRaw[0x100] = {};
+            if (!Rd((void*)target, targetRaw, sizeof(targetRaw))) continue;
+            seenTarget[nSeenTarget++] = target;
+            fprintf(f,
+                "%s{\"fieldOff\":\"0x%02X\",\"ptr\":\"0x%08X\","
+                "\"hash\":\"0x%08X\",\"hex\":\"",
+                targetWritten ? "," : "", off, (unsigned)target,
+                PartyHashBytes(targetRaw, sizeof(targetRaw)));
+            for (int b = 0; b < (int)sizeof(targetRaw); ++b)
+                fprintf(f, "%02X", targetRaw[b]);
+            fputs("\",\"children\":[", f);
+
+            int childWritten = 0;
+            uintptr_t seenChild[32] = {};
+            int nSeenChild = 0;
+            for (int po = 0; po + 4 <= 0x80; po += 4) {
+                const uintptr_t child = *(uint32_t*)(targetRaw + po);
+                if (!LooksHeap(child)) continue;
+                bool childDuplicate = false;
+                for (int s = 0; s < nSeenChild; ++s)
+                    if (seenChild[s] == child) { childDuplicate = true; break; }
+                if (childDuplicate || nSeenChild >= 32) continue;
+                char childName[64] = {};
+                if (!NameOfLiveObject(child, childName, sizeof(childName))
+                    || !PartyStartsWith(childName, "rAIGoalPlanning::"))
+                    continue;
+                const TypeAtlas::Info* childType = TypeAtlas::FindByName(childName);
+                uint32_t childSize = childType ? childType->size : 0;
+                if (!childSize || childSize > 0xA0u) continue;
+                BYTE childRaw[0xA0] = {};
+                if (!Rd((void*)child, childRaw, childSize)) continue;
+                seenChild[nSeenChild++] = child;
+                fprintf(f,
+                    "%s{\"payloadOff\":\"0x%02X\",\"ptr\":\"0x%08X\","
+                    "\"name\":\"%s\",\"size\":%u,\"hex\":\"",
+                    childWritten ? "," : "", po, (unsigned)child,
+                    childName, childSize);
+                for (uint32_t b = 0; b < childSize; ++b) fprintf(f, "%02X", childRaw[b]);
+                fputs("\"}", f);
+                ++childWritten;
+            }
+            fputs("]}", f);
+            ++targetWritten;
+        }
+        fputs("]}", f);
+        ++goapWritten;
+    }
+
+    fputs("],\n  \"plannerSlots\":[", f);
+    uintptr_t mainPlanner = 0;
+    if (aiCtrlOk && aiCtrlSize >= 0x6Cu)
+        mainPlanner = *(uint32_t*)(aiCtrlRaw + 0x68);
+    int plannerSlotWritten = 0;
+    static const uint32_t kPlanArrayDesc[] = { 0x04u, 0x38u, 0x4Cu, 0x68u };
+    for (uint32_t code = 0; code < 91u; ++code) {
+        const uintptr_t plan = mainPlanner + 0x190u + code * 0x110u;
+        BYTE planRaw[0x110] = {};
+        if (!mainPlanner || !Rd((void*)plan, planRaw, sizeof(planRaw))) continue;
+        fprintf(f,
+            "%s{\"code\":%u,\"ptr\":\"0x%08X\","
+            "\"hash\":\"0x%08X\",\"nodeLinks\":[",
+            plannerSlotWritten ? "," : "", code, (unsigned)plan,
+            PartyHashBytes(planRaw, sizeof(planRaw)));
+
+        uintptr_t seenLinks[64] = {};
+        int nSeenLinks = 0;
+        int linkWritten = 0;
+        for (int d = 0; d < (int)(sizeof(kPlanArrayDesc) / sizeof(kPlanArrayDesc[0])); ++d) {
+            const uint32_t desc = kPlanArrayDesc[d];
+            const uint32_t count = *(uint32_t*)(planRaw + desc + 0x04u);
+            const uint32_t capacity = *(uint32_t*)(planRaw + desc + 0x08u);
+            const uintptr_t arrayPtr = *(uint32_t*)(planRaw + desc + 0x10u);
+            if (!count || count > 16u || capacity > 16u || count > capacity
+                || !LooksHeap(arrayPtr))
+                continue;
+            uintptr_t entries[16] = {};
+            if (!Rd((void*)arrayPtr, entries, count * sizeof(uintptr_t))) continue;
+            for (uint32_t n = 0; n < count; ++n) {
+                const uintptr_t node = entries[n];
+                char nodeName[64] = {};
+                if (!NameOfLiveObject(node, nodeName, sizeof(nodeName))
+                    || strcmp(nodeName, "cAIGoalPlanning::cGoalPlanningNode"))
+                    continue;
+                uint32_t nodeRaw[8] = {};
+                if (!Rd((void*)node, nodeRaw, sizeof(nodeRaw))) continue;
+                const uintptr_t link = nodeRaw[1];
+                bool duplicate = false;
+                for (int s = 0; s < nSeenLinks; ++s)
+                    if (seenLinks[s] == link) { duplicate = true; break; }
+                if (duplicate || nSeenLinks >= 64) continue;
+                seenLinks[nSeenLinks++] = link;
+                fprintf(f,
+                    "%s{\"descriptorOff\":\"0x%02X\","
+                    "\"nodePtr\":\"0x%08X\",\"linkPtr\":\"0x%08X\"}",
+                    linkWritten ? "," : "", desc, (unsigned)node,
+                    (unsigned)link);
+                ++linkWritten;
+            }
+        }
+        fputs("]}", f);
+        ++plannerSlotWritten;
+    }
+
+    fputs("],\n  \"mainPawnTargetSlots\":[", f);
+    static const uint32_t kTargetSlotOffs[] = { 0x14E0u, 0x2EB8u, 0x4B28u };
+    for (int i = 0; i < (int)(sizeof(kTargetSlotOffs) / sizeof(kTargetSlotOffs[0])); ++i) {
+        const uint32_t off = kTargetSlotOffs[i];
+        uintptr_t value = 0;
+        if (pawn->bodyOk && off + 4u <= pawn->bodySize)
+            value = *(uint32_t*)(pawn->body + off);
+        char valueName[64] = {};
+        if (LooksHeap(value)) NameOfLiveObject(value, valueName, sizeof(valueName));
+        const char* knownKind = "";
+        for (int e = 0; e < g_nAct; ++e)
+            if (g_act[e].ptr == value) {
+                knownKind = g_act[e].kind ? g_act[e].kind : "?";
+                break;
+            }
+        fprintf(f,
+            "%s{\"off\":\"0x%04X\",\"value\":\"0x%08X\","
+            "\"name\":\"%s\",\"knownEnemyKind\":\"%s\"}",
+            i ? "," : "", off, (unsigned)value, valueName, knownKind);
+    }
+
+    fputs("],\n  \"targetRefs\":[", f);
+    int targetRefWritten = 0;
+    // Direct references from the selected main pawn body and cCmcInfo.
+    for (int e = 0; e < g_nAct; ++e) {
+        if (!g_act[e].ptr) continue;
+        int hit = pawn->bodyOk
+            ? PartyFindPtrOffset(pawn->body, pawn->bodySize, g_act[e].ptr) : -1;
+        if (hit >= 0) {
+            fprintf(f,
+                "%s{\"owner\":\"uCmc\",\"ownerPtr\":\"0x%08X\","
+                "\"off\":\"0x%04X\",\"targetPtr\":\"0x%08X\","
+                "\"targetKind\":\"%s\"}",
+                targetRefWritten ? "," : "", (unsigned)pawn->ptr, hit,
+                (unsigned)g_act[e].ptr, g_act[e].kind ? g_act[e].kind : "?");
+            ++targetRefWritten;
+        }
+        hit = PartyFindPtrOffset(cmcBytes, cmcSize, g_act[e].ptr);
+        if (hit >= 0) {
+            fprintf(f,
+                "%s{\"owner\":\"cCmcInfo\",\"ownerPtr\":\"0x%08X\","
+                "\"off\":\"0x%04X\",\"targetPtr\":\"0x%08X\","
+                "\"targetKind\":\"%s\"}",
+                targetRefWritten ? "," : "", (unsigned)cmcInfo, hit,
+                (unsigned)g_act[e].ptr, g_act[e].kind ? g_act[e].kind : "?");
+            ++targetRefWritten;
+        }
+    }
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        if (!(PartyStartsWith(A.name, "cCmc")
+            || !strcmp(A.name, "cAICheckSituationCmc")
+            || !strcmp(A.name, "cAIGoalPlanning")
+            || !strcmp(A.name, "cAIPriorityThink")))
+            continue;
+        uint32_t scanSize = A.typeSize;
+        if (!scanSize || scanSize > 0x1000u) scanSize = 0x1000u;
+        BYTE* raw = (BYTE*)malloc(scanSize);
+        if (!raw || !Rd((void*)A.ptr, raw, scanSize)) {
+            if (raw) free(raw);
+            continue;
+        }
+        for (int e = 0; e < g_nAct; ++e) {
+            if (!g_act[e].ptr) continue;
+            const int hit = PartyFindPtrOffset(raw, scanSize, g_act[e].ptr);
+            if (hit < 0) continue;
+            fprintf(f,
+                "%s{\"owner\":\"%s\",\"ownerPtr\":\"0x%08X\","
+                "\"off\":\"0x%04X\",\"targetPtr\":\"0x%08X\","
+                "\"targetKind\":\"%s\"}",
+                targetRefWritten ? "," : "", A.name, (unsigned)A.ptr, hit,
+                (unsigned)g_act[e].ptr, g_act[e].kind ? g_act[e].kind : "?");
+            ++targetRefWritten;
+        }
+        free(raw);
+    }
+
+    fputs("],\n  \"priorityBuckets\":[", f);
 
     // Build 42 proved that cAIPriorityThink owns 48 cArray descriptors, not
     // separate 0x90-byte score objects. Each descriptor is 0x14 bytes at
@@ -4115,6 +4562,139 @@ static void PartyTraceHotkeyTick()
     wasDown = down;
 }
 
+static int PartyCollectIntentLinks(uintptr_t planner, uint32_t code,
+    uintptr_t* links, int cap)
+{
+    if (!planner || code >= 91u || !links || cap <= 0) return 0;
+    BYTE plan[0x110] = {};
+    if (!Rd((void*)(planner + 0x190u + code * 0x110u), plan, sizeof(plan))) return 0;
+    static const uint32_t descs[] = { 0x04u, 0x38u, 0x4Cu, 0x68u };
+    int countOut = 0;
+    for (int d = 0; d < (int)(sizeof(descs) / sizeof(descs[0])); ++d) {
+        const uint32_t desc = descs[d];
+        const uint32_t count = *(uint32_t*)(plan + desc + 0x04u);
+        const uint32_t capacity = *(uint32_t*)(plan + desc + 0x08u);
+        const uintptr_t arrayPtr = *(uint32_t*)(plan + desc + 0x10u);
+        if (!count || count > 16u || capacity > 16u || count > capacity
+            || !LooksHeap(arrayPtr))
+            continue;
+        uintptr_t nodes[16] = {};
+        if (!Rd((void*)arrayPtr, nodes, count * sizeof(uintptr_t))) continue;
+        for (uint32_t n = 0; n < count && countOut < cap; ++n) {
+            char name[64] = {};
+            if (!NameOfLiveObject(nodes[n], name, sizeof(name))
+                || strcmp(name, "cAIGoalPlanning::cGoalPlanningNode"))
+                continue;
+            uintptr_t link = 0;
+            if (!RdPtr((void*)(nodes[n] + 0x04), &link)) continue;
+            bool duplicate = false;
+            for (int i = 0; i < countOut; ++i)
+                if (links[i] == link) { duplicate = true; break; }
+            if (!duplicate) links[countOut++] = link;
+        }
+    }
+    return countOut;
+}
+
+static void PartyIntentTraceStop(const char* reason)
+{
+    if (!g_intentTrace) return;
+    fprintf(g_intentTrace, "# stopped,%s\n", reason ? reason : "manual");
+    fclose(g_intentTrace);
+    g_intentTrace = nullptr;
+    g_intentLiveValid = false;
+    logFile << "PartyRecon: intent trace stopped reason="
+            << (reason ? reason : "manual") << std::endl;
+}
+
+static void PartyIntentTraceStart()
+{
+    PartyIntentTraceStop("restart");
+    ++g_intentTraceSeq;
+    char fileName[72] = {};
+    sprintf_s(fileName, sizeof(fileName),
+        "ddda_pawn_intent_trace_%03d.csv", g_intentTraceSeq);
+    const char* path = ModPaths::File(fileName, 3);
+    if (fopen_s(&g_intentTrace, path, "w") != 0 || !g_intentTrace) return;
+    lstrcpynA(g_intentTraceFile, path, sizeof(g_intentTraceFile));
+    g_intentTraceStartMs = MsNow();
+    g_intentTraceLastMs = 0;
+    g_intentTraceLastCode = 0xFFFFFFFEu;
+    g_intentTraceLastActionVt = 0;
+    g_intentTraceLastPacked = 0xFFFFFFFFu;
+    g_intentTraceLastTarget = 0;
+    g_intentLiveValid = false;
+    fprintf(g_intentTrace, "# build,%s\n", MOD_BUILD_TAG);
+    fputs("ms,priorityCode,intentName,intentMapped,actionName,actionPtr,packedCode,targetPtr,targetName,targetMode,nodeLinks\n",
+        g_intentTrace);
+    fflush(g_intentTrace);
+    logFile << "PartyRecon: intent trace started file=" << path << std::endl;
+}
+
+static void PartyIntentTraceTick()
+{
+    if (!g_intentTrace) return;
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    if (!pawn || !pawn->ptr) return;
+    uintptr_t bodyVt = 0;
+    if (!RdPtr((void*)pawn->ptr, &bodyVt) || bodyVt != pawn->vt) {
+        PartyIntentTraceStop("pawn lost");
+        return;
+    }
+
+    uintptr_t action = 0;
+    uintptr_t actionVt = 0;
+    uint32_t packed = 0xFFFFFFFFu;
+    uintptr_t target = 0;
+    uintptr_t aiCtrl = 0;
+    uintptr_t planner = 0;
+    uint32_t code = 0xFFFFFFFFu;
+    RdPtr((void*)(pawn->ptr + 0x2DC8), &action);
+    if (action) RdPtr((void*)action, &actionVt);
+    Rd((void*)(pawn->ptr + 0x2DD4), &packed, 4);
+    RdPtr((void*)(pawn->ptr + 0x2EB8), &target);
+    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
+    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
+    if (planner) Rd((void*)(planner + 0x17C), &code, 4);
+
+    DWORD now = MsNow();
+    const bool changed = code != g_intentTraceLastCode
+        || actionVt != g_intentTraceLastActionVt
+        || packed != g_intentTraceLastPacked
+        || target != g_intentTraceLastTarget;
+    if (!changed && g_intentTraceLastMs && now - g_intentTraceLastMs < 1000u)
+        return;
+
+    char actionName[64] = {};
+    char targetName[64] = {};
+    if (action) NameOfLiveObject(action, actionName, sizeof(actionName));
+    if (target) NameOfLiveObject(target, targetName, sizeof(targetName));
+    g_intentLiveValid = true;
+    g_intentLiveCode = code;
+    lstrcpynA(g_intentLiveAction, actionName, sizeof(g_intentLiveAction));
+    g_intentLiveTarget = target;
+    lstrcpynA(g_intentLiveTargetName, targetName, sizeof(g_intentLiveTargetName));
+    uintptr_t links[64] = {};
+    const int nLinks = PartyCollectIntentLinks(planner, code, links, 64);
+
+    fprintf(g_intentTrace,
+        "%u,%u,%s,%u,%s,0x%08X,0x%08X,0x%08X,%s,%s,",
+        now - g_intentTraceStartMs, code, PawnPriorityIntentName(code),
+        PawnPriorityIntentMapped(code) ? 1u : 0u, actionName,
+        (unsigned)action, packed, (unsigned)target, targetName,
+        !target ? "none" : (code == 0xFFFFFFFFu
+            ? "retained_no_priority" : "planner_target"));
+    for (int i = 0; i < nLinks; ++i)
+        fprintf(g_intentTrace, "%s0x%08X", i ? ";" : "", (unsigned)links[i]);
+    fputc('\n', g_intentTrace);
+    fflush(g_intentTrace);
+    g_intentTraceLastMs = now;
+    g_intentTraceLastCode = code;
+    g_intentTraceLastActionVt = actionVt;
+    g_intentTraceLastPacked = packed;
+    g_intentTraceLastTarget = target;
+}
+
 static void PartyCapture(bool forceFind)
 {
     if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
@@ -4151,6 +4731,7 @@ static void PartyCapture(bool forceFind)
     }
 
     PartyWriteAiBridgeJson();
+    if (!g_intentTrace) PartyIntentTraceStart();
 
     logFile << "PartyRecon: snapshot " << g_partySeq << " bodies=" << g_nParty
             << " rawCandidates=" << g_partyRawCandidates
@@ -4175,6 +4756,7 @@ static void PartyHotkeyTick()
     // The legacy dense trace remains file-only but has no hotkey in this build.
     PartyPriorityProfileHotkeyTick();
     PartyTraceTick();
+    PartyIntentTraceTick();
 
     static bool wasDown = false;
     // Physical '=' key beside Backspace (VK_OEM_PLUS without Shift).
@@ -4590,6 +5172,7 @@ void DevTools::WorldScan_Tick()
     // Do not invent a distance despawn.
     if (!g_enabled) return;
     if (!InWorld()) {
+        PartyIntentTraceStop("world unload");
         PartyPriorityProfileRestoreAll("world unload");
         PartyPriorityProfileResetRuntime();
         g_priorityProfileWorldSince = 0;
@@ -5530,6 +6113,21 @@ static void RenderDevToolsUI()
         ImGui::TextColored(profileColor, "%s", g_priorityProfileStatus);
         if (g_partyAiLastFile[0])
             ImGui::TextDisabled("AI snapshot: ddda_pawn_ai_bridge_%03d.json", g_partyAiSeq);
+        if (g_intentTrace)
+            ImGui::TextColored(ImVec4(0.45f, 1.0f, 0.75f, 1.0f),
+                "Intent trace recording: ddda_pawn_intent_trace_%03d.csv",
+                g_intentTraceSeq);
+        if (g_intentLiveValid) {
+            ImGui::Text("Intent [%u]: %s%s", g_intentLiveCode,
+                PawnPriorityIntentName(g_intentLiveCode),
+                PawnPriorityIntentMapped(g_intentLiveCode) ? "" : " [family only]");
+            ImGui::Text("Exact action: %s", g_intentLiveAction[0]
+                ? g_intentLiveAction : "none");
+            ImGui::Text("Current target: %s (0x%08X)%s", g_intentLiveTargetName[0]
+                ? g_intentLiveTargetName : "none", (unsigned)g_intentLiveTarget,
+                g_intentLiveTarget && g_intentLiveCode == 0xFFFFFFFFu
+                    ? " [retained; planner inactive]" : "");
+        }
         ImGui::TextDisabled("DTI AI candidates in census: %d", g_nPawnAi);
     }
 
@@ -6028,6 +6626,7 @@ void Hooks::DevTools()
 
 void Hooks::DevTools_Shutdown()
 {
+    PartyIntentTraceStop("DLL detach");
     // Guarded rule rollback only; no waits or thread joins.
     PartyPriorityProfileRestoreAll("DLL detach");
 }

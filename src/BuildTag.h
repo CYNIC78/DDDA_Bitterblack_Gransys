@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "47-pawn-ai-platform-milestone"
+#define MOD_BUILD_TAG "54-pawn-runtime-semantics-91"
