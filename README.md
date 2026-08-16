@@ -128,6 +128,7 @@ Sensors / target selection
 - Lefein — World Difficulty and DDDA AI modding groundwork;
 - FluffyQuack — ARCtool;
 - TsudaKageyu — MinHook;
-- ocornut — Dear ImGui.
+- ocornut — Dear ImGui;
+- arena.ai - ИИ ассистент. 
 
 MIT License.
