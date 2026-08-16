@@ -191,6 +191,18 @@ mAtemiRot
 
 Это target points, а не current target selector.
 
+Подтверждено на `param\lockon\m000cmc.ltg` (Build 59.x, через xfs_dump):
+- XFS ver `0x0109.2.1`, 2 класса, 2 инстанса;
+- класс `rLockOnTarget` (120 B): `mQuality` u32, `mArray` classref;
+- класс записи (128 B, packed 80): `mJoint` s32, `mOffset` vector3,
+  `mRadius` f32, `mAttr` u32, `mAtemiOffset` vector3, `mAtemiRot` vector3;
+- **`m000cmc.ltg` — конфиг локона ГЛАВНОЙ ПЕШКИ: `mQuality=2` (две точки
+  локона), `mRadius=10.0`** (мировые единицы ~см → 10 м).
+
+`mRadius=10.0` совпадает с live `sLockOnManager::cLockOnTarget +0x38`
+(Build 59.2) и с нашим Guardian preempt-радиусом 10 м — то есть 10 м это
+штатная дальность локона/engagement пешки, а не произвольная наша константа.
+
 ## 9. Motion `.lmt`
 
 ```text

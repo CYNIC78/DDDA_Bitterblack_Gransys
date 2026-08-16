@@ -55,6 +55,11 @@ namespace DevTools {
     // Возвращает компактную строку-отчёт (внутренний буфер, лог — полный).
     const char* GuardianPenaltyAudit();
 
+    // Build 59 — разведка target-selection слоя (read-only).
+    // Дамп жилых объектов выбора цели (sRecognition::cEnemyInfo, sLockOnManager
+    // и т.д.) в лог + корреляция с текущей целью пешки (uCmc+0x2EB8) и телами
+    // врагов. Возвращает компактный статус; полные байты — в логе.
+    const char* TargetSelectionAudit();
     // Build 57.1 — динамический Guardian-фикс (code 54 rule 0, штраф -3 → 0).
     // Транзакционный apply/rollback ОДНОГО правила, управляется флагом armed.
     // Кортеж подтверждён дампом Build 57 (GuardianAudit):

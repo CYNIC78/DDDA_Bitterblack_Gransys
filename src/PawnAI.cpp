@@ -290,6 +290,17 @@ void RenderPawnAIUI(){
         ImGui::TextWrapped("%s", auditCache);
 
         ImGui::Separator();
+        // Build 59: разведка target-selection (read-only).
+        static char targetAuditCache[512] = "Target audit: press the button (needs census).";
+        if (ImGui::Button("Audit target selection (sRecognition/sLockOn)")) {
+            const char* r = DevTools::TargetSelectionAudit();
+            if (r) lstrcpynA(targetAuditCache, r, sizeof(targetAuditCache));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("read-only, logs raw bytes");
+        ImGui::TextWrapped("%s", targetAuditCache);
+
+        ImGui::Separator();
         ImGui::Text("Response mode: %s | combat %s",
             rep.responseMode, sit.inCombat ? "YES" : "no");
 

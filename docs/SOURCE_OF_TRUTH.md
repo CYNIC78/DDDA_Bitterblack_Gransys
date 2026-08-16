@@ -270,6 +270,25 @@ Build 52 прошёл все 91 planner slots за один snapshot: 56 slots �
 
 Итого: `+0x2EB8` — primary planning/combat target, но не гарантия активного execution: ссылка может сохраняться в planner-disabled damage/near-death states. `+0x4B28` — secondary/previous/lock candidate: может совпадать с current target или хранить предыдущего Wolf. `+0x14E0` появляется позднее/контекстно и похож на look-at/lock reference.
 
+### 4.1 Target-selection / lock-on слой (Build 59.x, read-only)
+
+Цель пешки (`uCmc+0x2EB8`) — это само **тело врага** (`uHumanEnemy`/`uEm*`), не отдельная карточка. Скоринг «кого бить» живёт в объектах, что ссылаются на тело. Вскрытые типы (все в TypeAtlas):
+
+| Тип | Размер | Роль | Статус |
+|---|---:|---|---|
+| `rLockOnTarget` | 120 B | РЕСУРС конфига локона. ASCII-путь `param\lockon\m000cmc` (гл. пешка), `...\HumanEnemy`, `...\m000` | ✅ read-only |
+| `sLockOnManager` | 56 B | менеджер локона | ✅ |
+| `sLockOnManager::cLockOnTarget` | 112 B | живая карточка локона: `+0x38` float радиус (~10.0), `+0x40` owner body ptr (uPlayer/uCmc), в конце world XYZ | ✅ частично |
+| `cLockOnTarget` | 80 B | по одной записи на врага (десятки) | 🧪 раскладка не закреплена |
+| `sRecognition` | 72 B | менеджер распознавания; float 1.0/2.0/10.0, счётчики, ptr | ✅ частично |
+| `sRecognition::cEnemyInfo` | 80 B | карточка врага (в live НЕ инстанцируется как vtable-объект) | 🧪 |
+
+Обратных ссылок «карточка → тело врага» в первых байтах этих объектов НЕ найдено — связь, вероятно, от тела врага к карточке или через индекс. Открыто: найти поле threat-скора для бонуса «враги в радиусе Аризена приоритетнее».
+
+Подтверждение по ресурсу (Build 59.x): `param\lockon\m000cmc.ltg` — конфиг локона
+главной пешки, `mQuality=2`, `mRadius=10.0` (см. ASSET_FORMATS §8). Радиус 10 м
+совпадает с live `cLockOnTarget +0x38` и с Guardian preempt-радиусом.
+
 Build 51 также подписал основные `cAICtrl` children: path/nav traces (`+0x30/+0x34`), sensor (`+0x38`), route (`+0x3C`), action-interface ctrl (`+0x40`), situation (`+0x5C`), message (`+0x60`), grid (`+0x64`), planner (`+0x68`), study (`+0x6C`), priority (`+0x70`), look-at (`+0x74`).
 
 Build 53 подтвердил компактный read-only fast path без heap census: за 570.7 s записано 747 rows, 18 valid selected codes, 33 exact action types и clean DLL-detach stop без ошибок. Semantic intent, selected code, exact `cPlAct`, packed code, primary target `+0x2EB8` и selected PlanCtrl links пишутся только при переходе плюс heartbeat раз в секунду. Compact evidence: `PLAYER_PAWN_WORK/generated/pawn_intent_trace_53.json`.

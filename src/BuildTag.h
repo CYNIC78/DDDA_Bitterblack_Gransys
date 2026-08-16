@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "58-guardian-bodyguard-gradient"
+#define MOD_BUILD_TAG "60-positions-fast-fix"

@@ -2509,6 +2509,19 @@ struct PawnAiCandidate {
     char      name[64];
 };
 
+// Build 59 — разведка target-selection слоя. Объекты выбора цели:
+// sRecognition/sRecognition::cEnemyInfo, sLockOnManager/*, sUnitSearchManager,
+// cTarget* (все есть в TypeAtlas). Census их отсекал (PawnAiRelevantName не
+// пропускал) — здесь отдельная коллекция с сырым дампом для offline-анализа.
+struct TargetSelCandidate {
+    uintptr_t ptr;
+    uintptr_t vt;
+    uint32_t  typeSize;
+    char      name[64];
+    BYTE      raw[256];   // первые 256 байт (cEnemyInfo=80, cLockOnTarget=112 — целиком)
+    int       rawLen;
+};
+
 struct PartyChildDump {
     uint32_t  off;
     uintptr_t ptr;
@@ -2564,6 +2577,8 @@ static PartyRuntimeProbe g_partyRuntime[kPartyMaxRuntimeProbes];
 static int            g_nPartyRuntime = 0;
 static PawnAiCandidate g_pawnAi[kPawnAiMaxCandidates];
 static int            g_nPawnAi = 0;
+static TargetSelCandidate g_targetSel[128];
+static int            g_nTargetSel = 0;
 static int            g_partyAiSeq = 0;
 static char           g_partyAiLastFile[MAX_PATH] = "";
 static char           g_partyAiStatus[192] = "AI bridge not captured";
@@ -2807,6 +2822,38 @@ static void PartyAddPawnAiCandidate(uintptr_t obj, uintptr_t vt, const char* nam
     A.vt = vt;
     A.typeSize = info ? info->size : 0;
     lstrcpynA(A.name, name, sizeof(A.name));
+}
+
+// Build 59 — target-selection кандидаты (имена из TypeAtlas).
+// Build 59.1: убраны мелкие пул-типы (cTargetEnemy 16B, cTargetInfoFromList 20B,
+// cTargetLink 24B) — они забивали кап 128 слотов одинаковыми FF FF-заглушками
+// и вытесняли содержательные объекты. Оставляем только объекты с реальным
+// состоянием: sRecognition*, sLockOnManager*, sUnitSearchManager, rLockOnTarget.
+static bool TargetSelRelevantName(const char* name)
+{
+    if (!name || !name[0]) return false;
+    if (PartyStartsWith(name, "sRecognition")) return true;
+    if (PartyStartsWith(name, "sLockOnManager")) return true;
+    if (PartyStartsWith(name, "sUnitSearchManager")) return true;
+    if (!strcmp(name, "rLockOnTarget") || !strcmp(name, "cLockOnTarget")) return true;
+    return false;
+}
+
+static void PartyAddTargetSelCandidate(uintptr_t obj, uintptr_t vt, const char* name)
+{
+    if (!obj || !TargetSelRelevantName(name)) return;
+    for (int i = 0; i < g_nTargetSel; ++i)
+        if (g_targetSel[i].ptr == obj) return;
+    if (g_nTargetSel >= 128) return;
+    const TypeAtlas::Info* info = TypeAtlas::FindByName(name);
+    TargetSelCandidate& T = g_targetSel[g_nTargetSel++];
+    memset(&T, 0, sizeof(T));
+    T.ptr = obj;
+    T.vt = vt;
+    T.typeSize = info ? info->size : 0;
+    lstrcpynA(T.name, name, sizeof(T.name));
+    int n = T.typeSize ? (T.typeSize < 256 ? T.typeSize : 256) : 256;
+    T.rawLen = Rd((void*)obj, T.raw, n) ? n : 0;
 }
 
 static bool PartyPriorityProfileAutoDiscover();
@@ -3332,7 +3379,12 @@ static void PartyAddPawnManagerCandidate(uintptr_t obj, uintptr_t wantVt)
     g_partyPawnMgr[g_nPartyPawnMgr++] = obj;
 }
 
-static void PartyFindBodies()
+// Build 60: partyOnly=true — ранний выход, как только найдены ОБА тела
+// (uPlayer и uCmc). Позиции нужны лишь от этих двух; полный проход до
+// 0x7FFF0000 ради priority/targetSel при позиционном трекинге не нужен и
+// давал ~1.5 с на каждую итерацию. При partyOnly не собираем runtime/pawnAi/
+// targetSel (они для профиля/аудита) — только тела.
+static void PartyFindBodies(bool partyOnly = false)
 {
     g_nParty = 0;
     g_partyRawCandidates = 0;
@@ -3342,16 +3394,19 @@ static void PartyFindBodies()
     g_nPartyNear = 0;
     g_nPartyRuntime = 0;
     g_nPawnAi = 0;
+    g_nTargetSel = 0;
     memset(g_partyRuntime, 0, sizeof(g_partyRuntime));
     memset(g_pawnAi, 0, sizeof(g_pawnAi));
     memset(g_partyVtCache, 0, sizeof(g_partyVtCache));
     if (!g_base) return;
 
+    bool havePlayer = false, haveCmc = false;
     DWORD t0 = MsNow();
     uintptr_t addr = 0x00010000u;
     MEMORY_BASIC_INFORMATION mbi;
     memset(&mbi, 0, sizeof(mbi));
-    while (addr < 0x7FFF0000u) {
+    bool done = false;
+    while (addr < 0x7FFF0000u && !done) {
         SIZE_T got = VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi));
         if (!got) break;
         uintptr_t start = (uintptr_t)mbi.BaseAddress;
@@ -3377,14 +3432,23 @@ static void PartyFindBodies()
                     // genuine vtable once by asking the live object for its DTI name.
                     PartyVtClass* C = PartyClassifyVt(vt, obj);
                     if (!C) continue;
-                    if (C->name[0]) {
+                    if (C->kind == PVK_PARTY_BODY) {
+                        PartyAddBodyCandidate(obj, vt, C->name);
+                        if (partyOnly) {
+                            if (!strcmp(C->name, "uPlayer")) havePlayer = true;
+                            else if (!strcmp(C->name, "uCmc")) haveCmc = true;
+                            if (havePlayer && haveCmc) { done = true; break; }
+                            continue; // не собираем pawnAi/targetSel в fast-режиме
+                        }
+                    } else if (C->kind == PVK_PAWN_MANAGER) {
+                        PartyAddPawnManagerCandidate(obj, vt);
+                        if (partyOnly) continue;
+                    }
+                    if (!partyOnly && C->name[0]) {
                         PartyAddRuntimeProbe(obj, vt, C->name);
                         PartyAddPawnAiCandidate(obj, vt, C->name);
+                        PartyAddTargetSelCandidate(obj, vt, C->name); // Build 59
                     }
-                    if (C->kind == PVK_PARTY_BODY)
-                        PartyAddBodyCandidate(obj, vt, C->name);
-                    else if (C->kind == PVK_PAWN_MANAGER)
-                        PartyAddPawnManagerCandidate(obj, vt);
                 }
             } __except (EXCEPTION_EXECUTE_HANDLER) {
             }
@@ -3588,6 +3652,7 @@ static float  g_arisenPosX = 0, g_arisenPosY = 0, g_arisenPosZ = 0;
 static float  g_pawnPosX = 0, g_pawnPosY = 0, g_pawnPosZ = 0;
 
 static DWORD  g_pawnPosLastFailLog = 0;  // rate-limit диагностики
+static bool   g_pawnPosWasOk = true;     // для логирования только на переходе
 
 // Читает позиции из уже разрешённых тел (дешёво, без census).
 // Вызывается каждый тик и после каждого PartyAssignRoles.
@@ -3621,12 +3686,13 @@ static void PartyReadPositions()
         && !(x == 0.0f && y == 0.0f && z == 0.0f)) {
         g_pawnPosX = x; g_pawnPosY = y; g_pawnPosZ = z;
         g_pawnPosOk = true;
+        g_pawnPosWasOk = true;
     } else {
         g_pawnPosX = g_pawnPosY = g_pawnPosZ = 0;
-        // Диагностика (rate-limited): почему пешка не читается — роль не
-        // назначена или тело устарело. Лог даст точную причину.
+        // Диагностика: только при ПЕРЕХОДЕ в сбой (было ок → стало ок-нет),
+        // плюс редко (раз в 60с), чтобы не спамить лог каждые 3 секунды.
         DWORD now = MsNow();
-        if (now - g_pawnPosLastFailLog >= 3000u) {
+        if ((g_pawnPosWasOk || now - g_pawnPosLastFailLog >= 60000u)) {
             g_pawnPosLastFailLog = now;
             logFile << "PartyPositions: pawn read FAILED nParty=" << g_nParty
                     << " pawnIdx=" << pawn << std::endl;
@@ -3636,19 +3702,22 @@ static void PartyReadPositions()
                         << g_party[i].ptr << std::dec << std::endl;
             }
         }
+        g_pawnPosWasOk = false;
     }
 }
 
 // Ленивый census + дешёвое чтение позиций каждый тик.
-// Build 56.8: census повторяется, пока не найдены ОБЕ роли (Arisen + Main Pawn).
-// Раньше был ранний выход по g_nParty>0 — если первым фоновым сканом пойман
-// только uPlayer (пешка спавнится на долю секунды позже), census больше
-// никогда не перезапускался и пешка оставалась ненайденной навсегда.
+// Build 60:
+//  - census в fast-режиме (partyOnly) — ранний выход по обоим телам, ~в разы быстрее;
+//  - если тела устарели (vtable не совпал) — НЕМЕДЛЕННЫЙ пере-резолв без троттла
+//    (иначе позиции висели 0,0,0 до смены мира — баг холодного старта);
+//  - при неполном наборе (пешка ещё не найдена) — бэкофф повторов
+//    (2с → 8с → 20с), а не постоянные 5с (не молотит полный скан).
 static DWORD g_partyPosLastDiscover = 0;
+static int   g_partyPosAttempts = 0;
 
 static void PartyPositionsTick()
 {
-    // Обе роли уже назначены?
     int arisen = -1, pawn = -1;
     for (int i = 0; i < g_nParty; ++i) {
         if (!strcmp(g_party[i].role, "Arisen")) arisen = i;
@@ -3656,22 +3725,36 @@ static void PartyPositionsTick()
     }
     bool complete = (arisen >= 0 && pawn >= 0);
 
-    if (complete && PartyCandidatesStillValid()) {
-        PartyReadPositions();
-        return;
+    if (g_nParty > 0) {
+        if (!PartyCandidatesStillValid()) {
+            // Тело стало невалидным (пересоздано в бою/воскрешении) без смены
+            // мира. Немедленный пере-резолв, без троттла.
+            g_partyPosLastDiscover = 0;
+            if (InterlockedCompareExchange(&g_partyBusy, 1, 0) == 0) {
+                PartyFindBodies(true);
+                for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
+                PartyMarkPawnManagerRefs();
+                PartySelectWorkingPair();
+                PartyAssignRoles();
+                InterlockedExchange(&g_partyBusy, 0);
+            }
+            if (g_nParty > 0) PartyReadPositions();
+            return;
+        }
+        PartyReadPositions(); // тела валидны — читаем (даже если неполный набор)
+        if (complete) return;
     }
 
-    // Нужен (до)резолв: census в фоне, с троттлом.
+    // Нужен (до)резолв: бэкофф по числу попыток.
     DWORD now = MsNow();
-    if (g_partyPosLastDiscover && now - g_partyPosLastDiscover < 5000u) {
-        // Пока ждём — читаем то, что уже есть (дешёво), чтобы позиция
-        // Аризена обновлялась, а не висела нулём.
-        if (g_nParty > 0) PartyReadPositions();
-        return;
-    }
+    DWORD wait = (g_partyPosAttempts == 0) ? 0u
+               : (g_partyPosAttempts == 1) ? 2000u
+               : (g_partyPosAttempts == 2) ? 8000u : 20000u;
+    if (g_partyPosLastDiscover && now - g_partyPosLastDiscover < wait) return;
     g_partyPosLastDiscover = now;
+    ++g_partyPosAttempts;
     if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
-    PartyFindBodies();
+    PartyFindBodies(true);
     for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
     PartyMarkPawnManagerRefs();
     PartySelectWorkingPair();
@@ -5410,6 +5493,168 @@ const char* DevTools::GuardianPenaltyAudit()
     return g_guardianAuditStatus;
 }
 
+// ============ Build 59 — разведка target-selection слоя (read-only) ============
+static char g_targetSelStatus[512] = "Target audit: not run";
+
+const char* DevTools::TargetSelectionAudit()
+{
+    if (g_nTargetSel == 0) {
+        lstrcpynA(g_targetSelStatus,
+            "Target audit: no candidates (run Find both / census first)",
+            sizeof(g_targetSelStatus));
+        return g_targetSelStatus;
+    }
+
+    // Текущая цель пешки: uCmc+0x2EB8 (SOURCE_OF_TRUTH §4). Корреляция:
+    // какая cEnemyInfo/cLockOnTarget ссылается на неё — тот и есть «карточка»
+    // текущей цели, её байты дадут поле threat-скора.
+    uintptr_t pawnBody = 0;
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].role, "Main Pawn")) { pawnBody = g_party[i].ptr; break; }
+    uintptr_t curTarget = 0;
+    if (pawnBody) RdPtr((void*)(pawnBody + 0x2EB8), &curTarget);
+
+    logFile << "TargetAudit: candidates=" << g_nTargetSel
+            << " pawnBody=0x" << std::hex << pawnBody
+            << " curTarget=0x" << curTarget << std::dec << std::endl;
+
+    // Build 59.1: главное — дамп САМОГО объекта цели пешки (uCmc+0x2EB8).
+    // Его DTI-имя + байты дадут тип, от которого пляшем (обратные ссылки).
+    if (curTarget) {
+        char tgtName[64] = {};
+        NameOfLiveObject((uintptr_t)curTarget, tgtName, sizeof(tgtName));
+        BYTE tgtRaw[256] = {};
+        int tgtLen = Rd((void*)curTarget, tgtRaw, 256) ? 256 : 0;
+        logFile << "TargetAudit: CURTARGET type='" << (tgtName[0] ? tgtName : "?")
+                << "' 0x" << std::hex << curTarget << std::dec
+                << " rawLen=" << tgtLen << std::endl;
+        char hex[256 * 3 + 8];
+        int hp = 0;
+        for (int b = 0; b < 64 && hp < (int)sizeof(hex) - 8; ++b)
+            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", tgtRaw[b]);
+        logFile << "    head64: " << hex << std::endl;
+    } else {
+        logFile << "TargetAudit: CURTARGET = null (pawn has no current target)" << std::endl;
+    }
+
+    // Обратные ссылки: кто из AI-кандидатов держит указатель на curTarget
+    // (или на тела врагов) в своих первых 512 байтах.
+    int refHits = 0;
+    for (int i = 0; i < g_nPawnAi && refHits < 64; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        BYTE raw[512] = {};
+        int n = A.typeSize ? (A.typeSize < 512 ? A.typeSize : 512) : 512;
+        if (!Rd((void*)A.ptr, raw, n)) continue;
+        for (int off = 0; off + 4 <= n; off += 4) {
+            uint32_t v = *(uint32_t*)(raw + off);
+            for (int e = 0; e < g_nAct && e < 32; ++e) {
+                if (v == (uint32_t)g_act[e].ptr) {
+                    logFile << "  ref: " << A.name << "+0x" << std::hex << off
+                            << std::dec << " -> " << (g_act[e].kind ? g_act[e].kind : "?")
+                            << (g_act[e].ptr == curTarget ? " (CURTARGET)" : "") << std::endl;
+                    ++refHits;
+                }
+            }
+        }
+    }
+
+    // Build 59.2: ИСКАТЬ ссылки в самих targetSel-объектах (cLockOnTarget и т.д.)
+    // — это по записи на врага, внутри почти наверняка указатель на тело.
+    int tsRefHits = 0;
+    for (int i = 0; i < g_nTargetSel && tsRefHits < 128; ++i) {
+        TargetSelCandidate& T = g_targetSel[i];
+        for (int off = 0; off + 4 <= T.rawLen; off += 4) {
+            uint32_t v = *(uint32_t*)(T.raw + off);
+            for (int e = 0; e < g_nAct && e < 32; ++e) {
+                if (v == (uint32_t)g_act[e].ptr) {
+                    logFile << "  tsRef: " << T.name << " 0x" << std::hex << T.ptr
+                            << "+0x" << off << std::dec << " -> "
+                            << (g_act[e].kind ? g_act[e].kind : "?")
+                            << (g_act[e].ptr == curTarget ? " (CURTARGET)" : "") << std::endl;
+                    ++tsRefHits;
+                }
+            }
+        }
+    }
+
+    if (!refHits && !tsRefHits)
+        logFile << "TargetAudit: no back-refs to enemies anywhere" << std::endl;
+
+    // Build 59.2: дамп сырых байтов содержательных объектов (их мало).
+    for (int i = 0; i < g_nTargetSel; ++i) {
+        TargetSelCandidate& T = g_targetSel[i];
+        bool meaningful =
+               !strcmp(T.name, "sRecognition")
+            || !strcmp(T.name, "sLockOnManager")
+            || !strcmp(T.name, "sLockOnManager::cLockOnTarget")
+            || !strcmp(T.name, "rLockOnTarget");
+        if (!meaningful) continue;
+        char hex[256 * 3 + 8];
+        int hp = 0;
+        for (int b = 0; b < T.rawLen && hp < (int)sizeof(hex) - 8; ++b)
+            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", T.raw[b]);
+        logFile << "  [" << i << "] " << T.name << " 0x" << std::hex << T.ptr
+                << std::dec << " size=" << T.typeSize << " rawLen=" << T.rawLen << std::endl;
+        logFile << "    " << hex << std::endl;
+    }
+
+    // Build 59.3: дамп cLockOnTarget (80B) — по записи на врага. Ищем внутри
+    // указатель на тело врага (uHumanEnemy/uEm*) и owner (пешка).
+    for (int i = 0; i < g_nTargetSel; ++i) {
+        TargetSelCandidate& T = g_targetSel[i];
+        if (strcmp(T.name, "cLockOnTarget")) continue;
+        char hex[80 * 3 + 8];
+        int hp = 0;
+        for (int b = 0; b < T.rawLen && hp < (int)sizeof(hex) - 8; ++b)
+            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", T.raw[b]);
+        logFile << "  lockon[" << i << "] cLockOnTarget 0x" << std::hex << T.ptr
+                << std::dec << " : " << hex << std::endl;
+    }
+
+    // Build 59.3: обратная связь — в теле цели (uHumanEnemy, 512 байт) ищем
+    // указатели на lockon/recognition объекты (тело → карточка).
+    if (curTarget) {
+        BYTE bodyRaw[512] = {};
+        int bn = Rd((void*)curTarget, bodyRaw, 512) ? 512 : 0;
+        int bodyRefs = 0;
+        for (int off = 0; off + 4 <= bn; off += 4) {
+            uint32_t v = *(uint32_t*)(bodyRaw + off);
+            for (int i = 0; i < g_nTargetSel; ++i) {
+                if (v == (uint32_t)g_targetSel[i].ptr) {
+                    logFile << "  bodyRef: uHumanEnemy+0x" << std::hex << off
+                            << std::dec << " -> " << g_targetSel[i].name
+                            << " 0x" << std::hex << g_targetSel[i].ptr << std::dec << std::endl;
+                    ++bodyRefs;
+                }
+            }
+        }
+        if (!bodyRefs)
+            logFile << "TargetAudit: body has no ptr to lockon objects (first 512B)" << std::endl;
+    }
+
+    int enemyInfo = 0, lockOn = 0;
+    for (int i = 0; i < g_nTargetSel; ++i) {
+        TargetSelCandidate& T = g_targetSel[i];
+        if (!strcmp(T.name, "sRecognition::cEnemyInfo")) ++enemyInfo;
+        else if (strstr(T.name, "LockOn")) ++lockOn;
+        logFile << "  [" << i << "] " << T.name << " 0x" << std::hex << T.ptr
+                << std::dec << " size=" << T.typeSize << " rawLen=" << T.rawLen << std::endl;
+    }
+
+    char tgtSummary[64] = "null";
+    if (curTarget) {
+        char tn[64] = {};
+        if (NameOfLiveObject((uintptr_t)curTarget, tn, sizeof(tn)) && tn[0])
+            lstrcpynA(tgtSummary, tn, sizeof(tgtSummary));
+        else
+            lstrcpynA(tgtSummary, "unnamed", sizeof(tgtSummary));
+    }
+    sprintf_s(g_targetSelStatus, sizeof(g_targetSelStatus),
+        "Target audit: %d obj (enemyInfo=%d lockOn=%d) curTarget type='%s' -> log",
+        g_nTargetSel, enemyInfo, lockOn, tgtSummary);
+    return g_targetSelStatus;
+}
+
 // ============ Build 57.1 — динамический Guardian-фикс ============
 // Снимает доказанный штраф -3 с code 54 (WpnDaggerAtk) rule 0, транзакционно.
 // Кортеж подтверждён дампом Build 57 (GuardianAudit):
@@ -5556,7 +5801,9 @@ void DevTools::WorldScan_Tick()
             g_priorityProfileLastDiscover = 0;
             g_arisenPosOk = false;
             g_pawnPosOk = false;
+            g_pawnPosWasOk = true;
             g_partyPosLastDiscover = 0;
+            g_partyPosAttempts = 0;
             // Сброс тел: старые body-указатели после выгрузки недействительны.
             // Без этого PartyPositionsTick мог залипнуть на старом uPlayer.
             g_nParty = 0;
