@@ -24,15 +24,17 @@ static bool  g_enabled = true;
 
 // Background tactical thread (150ms / ~6.7 Hz)
 void UpdatePawnAI(){
+    // DevTools owns rollback-safe diagnostics. Let it observe world unload
+    // before the gameplay guards return, even when Pawn AI itself is disabled.
+    __try { DevTools::WorldScan_Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
     if(!g_enabled || !pBase || !*pBase) return;
     if(!IsInActiveGameplay()) return;
 
     // Каждый модуль вызываем в собственном SEH — никакого каскадного падения
     __try { CombatIntel_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) { /* следующий тик догонит */ }
-
-    __try { DevTools::WorldScan_Tick(); }
-    __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     __try { EntityCfg::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}

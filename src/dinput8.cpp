@@ -109,7 +109,9 @@ void Unitialize()
     // ВАЖНО: эта функция вызывается из DllMain(DLL_PROCESS_DETACH).
     // В DllMain запрещено: WaitForSingleObject, FreeLibrary, работа с кучей.
     // Поэтому Shutdown-функции модулей ТОЛЬКО выставляют флаги и сигналят событиям.
-    // Потоки сами завершатся после флага.
+    // Потоки сами завершатся после флага. DevTools performs only a guarded
+    // four-byte priority rollback before hooks are disabled.
+    Hooks::DevTools_Shutdown();
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
     Hooks::CameraPlusShutdown();  // останавливает поток, НО без Wait (через событие)

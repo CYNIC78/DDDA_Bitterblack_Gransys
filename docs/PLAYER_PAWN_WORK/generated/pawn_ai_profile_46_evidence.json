@@ -1,0 +1,50 @@
+{
+  "build": "46-pawn-ai-general-profiles",
+  "result": "two-rule transaction applied",
+  "baseline": {
+    "file": "ddda_pawn_ai_bridge_001h.json",
+    "profile": "vanilla",
+    "ruleCount": 0,
+    "applied": true,
+    "converged": true,
+    "slot34": [],
+    "slot35": [47, 46, 45],
+    "coherentDescriptors": 48,
+    "knownPriorityPointers": 85,
+    "unknownPriorityPointers": 0,
+    "validationErrors": 0
+  },
+  "transaction": {
+    "file": "ddda_pawn_ai_bridge_002h.json",
+    "profile": "research_pair45_46",
+    "ruleCount": 2,
+    "resolvedRules": 2,
+    "appliedRules": 2,
+    "applied": true,
+    "converged": true,
+    "entries": [
+      {
+        "identity": [0, 45, 0, 0, 1, 0],
+        "expectedAddS32": -1,
+        "desiredAddS32": -2,
+        "currentAddS32": -2,
+        "liveSlot": 34
+      },
+      {
+        "identity": [0, 46, 0, 0, 1, 0],
+        "expectedAddS32": -1,
+        "desiredAddS32": -2,
+        "currentAddS32": -2,
+        "liveSlot": 34
+      }
+    ],
+    "slot34": [46, 45],
+    "slot35": [47],
+    "coherentDescriptors": 48,
+    "knownPriorityPointers": 85,
+    "unknownPriorityPointers": 0,
+    "vanillaDifferences": 2,
+    "validationErrors": 0
+  },
+  "diagnosticNote": "Three cAIPriorityThink/cAIGoalPlanning roots coexisted and census reached 1024. The bucket writer captured the first root coherently; analyzer now follows that same census order. Main-root association remains a separate bridge task."
+}

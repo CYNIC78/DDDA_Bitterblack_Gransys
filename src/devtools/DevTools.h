@@ -9,6 +9,7 @@ namespace TypeAtlas { struct Info; }
 
 namespace Hooks {
     void DevTools();
+    void DevTools_Shutdown();
 }
 
 namespace DevTools {

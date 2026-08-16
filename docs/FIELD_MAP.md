@@ -29,7 +29,11 @@ VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(
     ├── +0xDD0     UINT16 level
     ├── +0x994     XP
     ├── +0x6E0     Vocation
-    ├── +0x96C     Stats (HP/STM/STR/DEF/MAG/MDEF) — float'ы
+    ├── +0x96C     current HP float
+    ├── +0x970     max HP float
+    ├── +0x974     второй HP/recoverable параметр float (имя уточняется)
+    ├── +0x978     current stamina float
+    ├── +0x97C...  боевые характеристики (Strength/Defense/...)
     ├── +0x96C+0x1224  инклинации пешки, 9×float, шаг 0xC
     ├── +0xA7808   Equipped Skills
     ├── +0xA7E00   Learned Skills
@@ -42,7 +46,9 @@ VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(
 └── +0xB33A8   флаг пост-игры
 ```
 
-Статус: ✅ (dinput8 / PawnAI / Nightmare). Не путать с живым `uPlayer` на сцене.
+Build 39 подтвердил одинаковый layout у записи ГГ и `+0x7F0` записи главной пешки. Внутренние HP — дробные float (интерфейс округляет): урон изменил `+0x96C` синхронно с `cPlActDmgNormalB`; Dash изменял `+0x978` от 600 до 499.5 и обратно. У пешки `+0x978` менялся при оружейных умениях и восстанавливался до 595.
+
+Статус: ✅ (dinput8 / PawnAI / Nightmare / Party live trace 39). Не путать с живым `uPlayer` на сцене.
 
 ---
 
@@ -70,11 +76,28 @@ VA в TSV / атласе: база `0x400000`. Рантайм: `GetModuleHandle(
 | Оффсет | Поле | Проверка |
 |---:|---|---|
 | `+0x2DC0` | ptr на `cActionManager::cActBank` | DTI |
-| `+0x2DC8` | ptr на текущий `cPlAct*` | ГГ: Wait/Run/Dash; пешка: Run |
+| `+0x2DC8` | ptr на текущий `cPlAct*` | Wait/Walk/Run/Jump/Land/Dash/Damage/Weapon/Lift |
+| `+0x2DD4` | uint32 packed action-code | Wait=0, Walk=1, Run=2, Dash=5, Jump=8; Build 39 |
 | `+0x2DE8` | дубликат current Act ptr | три снимка |
 | `+0x2E64` | ptr на `cAICtrl` | DTI |
 
-Act-буфер стабилен, меняется только vtable: `cPlActWait` → `cPlActRun` → `cPlActDash`. Подробности и сырые кандидаты флага спринта: `PLAYER_PAWN_IN_MEMORY.md`.
+Act-буфер стабилен, меняется только vtable. `+0x2DD4` подтверждён на обоих телах как дешёвый код текущего action/варианта; оружейные действия имеют упакованные большие значения. `+0x4AE8`, `+0x32D8`, `+0x1C94`, `+0x4B14` отвергнуты как sprint flags. Подробности: `PLAYER_PAWN_WORK/PLAYER_PAWN_IN_MEMORY.md` и `PLAYER_PAWN_WORK/PARTY_LIVE_TRACE_RESULT_39.md`.
+
+### Верхний AI главной пешки — Build 40
+
+| База | Оффсет | Поле | Статус |
+|---|---:|---|---|
+| `cAIGoalPlanning` | `+0x17C` | current priority code (`cmc.prt`) | ✅ Wait=0, Follow=1, Combat=54 |
+| `cAIGoalPlanning` | `+0x190 + code*0x110` | выбранный `cPlanCtrl` | ✅ DTI slots 0/1/54 |
+| `cAIPriorityThink` | `+0x08` | ptr на immutable `rAIPriorityThink` resource | ✅ Build 41 |
+| `cAIPriorityThink` | pointer fields | transient `0x90` score/rank nodes | 🧪 Build 42 |
+| `rAIPriorityThink::cPrioParam` | `+0x08` | code | ✅ 85 runtime = 85 file entries |
+| `cCmcInfo` | `+0x14B8 + id*0x0C` | `{context/state, id, inclination value}` | ✅ 9 ID |
+| `cCmc*` action interface | `+0x258` | 6 range floats + Element/Atk/Use attrs | ✅ exact AIPlActParam matches |
+| `cCmcInfo` | `+0x29C` | current HP mirror | ✅ damage transition |
+| `cCmcInfo` | `+0x2A4` | second/recoverable HP mirror | 🧪 имя уточняется |
+
+Полный отчёт: `PLAYER_PAWN_WORK/PAWN_AI_LIVE_BRIDGE_RESULT_40.md`.
 
 ---
 

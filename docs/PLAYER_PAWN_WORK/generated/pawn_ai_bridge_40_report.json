@@ -1,0 +1,820 @@
+{
+  "snapshots": [
+    {
+      "file": "/home/user/uploads/ddda_pawn_ai_bridge_001.json",
+      "seq": 1,
+      "selectedPriorityCode": 1,
+      "selectedPriorityObject": "0x10BA0920",
+      "priorityDefinition": {
+        "slot": "PL_Party - 01",
+        "index": 2,
+        "sensor": 0,
+        "code": 1,
+        "category": 0,
+        "objectId": 0,
+        "extra": 1,
+        "personalities": [],
+        "orders": [
+          {
+            "value": 0,
+            "type": 11
+          }
+        ]
+      },
+      "activePlanCtrl": {
+        "ptr": "0x10F487A0",
+        "found": true,
+        "hash": "0x25A8A4BE"
+      },
+      "inclinations": [
+        {
+          "id": 0,
+          "state": 0,
+          "value": 759.999756,
+          "offset": "0x14B8"
+        },
+        {
+          "id": 1,
+          "state": 1,
+          "value": 500.0,
+          "offset": "0x14C4"
+        },
+        {
+          "id": 2,
+          "state": 0,
+          "value": 649.999756,
+          "offset": "0x14D0"
+        },
+        {
+          "id": 3,
+          "state": 0,
+          "value": 600.000244,
+          "offset": "0x14DC"
+        },
+        {
+          "id": 4,
+          "state": 0,
+          "value": 799.999756,
+          "offset": "0x14E8"
+        },
+        {
+          "id": 5,
+          "state": 2,
+          "value": 450.0,
+          "offset": "0x14F4"
+        },
+        {
+          "id": 6,
+          "state": 0,
+          "value": 450.0,
+          "offset": "0x1500"
+        },
+        {
+          "id": 7,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x150C"
+        },
+        {
+          "id": 8,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x1518"
+        }
+      ]
+    },
+    {
+      "file": "/home/user/uploads/ddda_pawn_ai_bridge_002.json",
+      "seq": 2,
+      "selectedPriorityCode": 1,
+      "selectedPriorityObject": "0x10BA0920",
+      "priorityDefinition": {
+        "slot": "PL_Party - 01",
+        "index": 2,
+        "sensor": 0,
+        "code": 1,
+        "category": 0,
+        "objectId": 0,
+        "extra": 1,
+        "personalities": [],
+        "orders": [
+          {
+            "value": 0,
+            "type": 11
+          }
+        ]
+      },
+      "activePlanCtrl": {
+        "ptr": "0x10F487A0",
+        "found": true,
+        "hash": "0xEEB5D6F2"
+      },
+      "inclinations": [
+        {
+          "id": 0,
+          "state": 0,
+          "value": 759.999756,
+          "offset": "0x14B8"
+        },
+        {
+          "id": 1,
+          "state": 1,
+          "value": 500.0,
+          "offset": "0x14C4"
+        },
+        {
+          "id": 2,
+          "state": 0,
+          "value": 649.999756,
+          "offset": "0x14D0"
+        },
+        {
+          "id": 3,
+          "state": 0,
+          "value": 600.000244,
+          "offset": "0x14DC"
+        },
+        {
+          "id": 4,
+          "state": 0,
+          "value": 799.999756,
+          "offset": "0x14E8"
+        },
+        {
+          "id": 5,
+          "state": 2,
+          "value": 450.0,
+          "offset": "0x14F4"
+        },
+        {
+          "id": 6,
+          "state": 0,
+          "value": 450.0,
+          "offset": "0x1500"
+        },
+        {
+          "id": 7,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x150C"
+        },
+        {
+          "id": 8,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x1518"
+        }
+      ]
+    },
+    {
+      "file": "/home/user/uploads/ddda_pawn_ai_bridge_003.json",
+      "seq": 3,
+      "selectedPriorityCode": 54,
+      "selectedPriorityObject": "0x10BA4CC0",
+      "priorityDefinition": {
+        "slot": "Etc - 04",
+        "index": 0,
+        "sensor": 1,
+        "code": 54,
+        "category": 0,
+        "objectId": 0,
+        "extra": 1,
+        "personalities": [
+          {
+            "addS32": -3,
+            "addF32": 0.0,
+            "breakAfterApply": 0,
+            "checks": [
+              {
+                "personality": 5,
+                "state": 2
+              }
+            ]
+          },
+          {
+            "addS32": -2,
+            "addF32": 0.0,
+            "breakAfterApply": 0,
+            "checks": [
+              {
+                "personality": 5,
+                "state": 1
+              }
+            ]
+          },
+          {
+            "addS32": 2,
+            "addF32": 0.0,
+            "breakAfterApply": 0,
+            "checks": [
+              {
+                "personality": 0,
+                "state": 1
+              }
+            ]
+          },
+          {
+            "addS32": 5,
+            "addF32": 0.0,
+            "breakAfterApply": 0,
+            "checks": [
+              {
+                "personality": 0,
+                "state": 2
+              }
+            ]
+          },
+          {
+            "addS32": -1,
+            "addF32": 0.0,
+            "breakAfterApply": 0,
+            "checks": [
+              {
+                "personality": 1,
+                "state": 0
+              }
+            ]
+          }
+        ],
+        "orders": [
+          {
+            "value": 7,
+            "type": 9
+          }
+        ]
+      },
+      "activePlanCtrl": {
+        "ptr": "0x10F4BFF0",
+        "found": true,
+        "hash": "0x071A0909"
+      },
+      "inclinations": [
+        {
+          "id": 0,
+          "state": 0,
+          "value": 787.107178,
+          "offset": "0x14B8"
+        },
+        {
+          "id": 1,
+          "state": 2,
+          "value": 500.0,
+          "offset": "0x14C4"
+        },
+        {
+          "id": 2,
+          "state": 0,
+          "value": 605.807861,
+          "offset": "0x14D0"
+        },
+        {
+          "id": 3,
+          "state": 0,
+          "value": 649.175781,
+          "offset": "0x14DC"
+        },
+        {
+          "id": 4,
+          "state": 0,
+          "value": 742.170776,
+          "offset": "0x14E8"
+        },
+        {
+          "id": 5,
+          "state": 1,
+          "value": 450.0,
+          "offset": "0x14F4"
+        },
+        {
+          "id": 6,
+          "state": 0,
+          "value": 450.0,
+          "offset": "0x1500"
+        },
+        {
+          "id": 7,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x150C"
+        },
+        {
+          "id": 8,
+          "state": 0,
+          "value": 400.0,
+          "offset": "0x1518"
+        }
+      ]
+    }
+  ],
+  "commonObjects": 1024,
+  "changedObjects": 26,
+  "changedNames": {
+    "cAIGoalPlanning::cPlanCtrl": 6,
+    "cAIGoalPlanning::cGoalInfoParam": 6,
+    "cCmcBowAttack": 1,
+    "cCmc100Slash": 1,
+    "cAIGoalPlanning": 1,
+    "cAIGoalPlanning::cPlanResult": 6,
+    "cCmcDaggerComboL": 1,
+    "cCmcInfo": 1,
+    "cCmcDaggerAirL": 1,
+    "cCmcBowRensa": 1,
+    "cCmcDaggerCombo": 1
+  },
+  "liveActionParameterMatches": [
+    {
+      "name": "cCmcBowAttack",
+      "ptr": "0x10B92C90",
+      "hashBefore": "0x253C4C4D",
+      "hashAfter": "0x20708B5E",
+      "liveTuple": [
+        500.0,
+        1500.0,
+        -500.0,
+        1000.0,
+        0.0,
+        2000.0,
+        0,
+        0,
+        524292
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamBow",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamBow",
+          0,
+          "Lv2"
+        ]
+      ]
+    },
+    {
+      "name": "cCmc100Slash",
+      "ptr": "0x10B8D890",
+      "hashBefore": "0xF22448B5",
+      "hashAfter": "0xB79C0597",
+      "liveTuple": [
+        0.0,
+        150.0,
+        -100.0,
+        250.0,
+        0.0,
+        0.0,
+        0,
+        0,
+        524288
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamDagger",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          1,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          1,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          2,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          2,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          5,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          5,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          6,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          6,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          7,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          7,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          8,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          8,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          9,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          9,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "LvEX"
+        ],
+        [
+          "AIPlActParamGSword",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamGSword",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          1,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          1,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          2,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          2,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          3,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          3,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          46,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          46,
+          "Lv2"
+        ]
+      ]
+    },
+    {
+      "name": "cCmcDaggerComboL",
+      "ptr": "0x10B8CAD0",
+      "hashBefore": "0x57C51E23",
+      "hashAfter": "0xD7E73853",
+      "liveTuple": [
+        0.0,
+        150.0,
+        -100.0,
+        250.0,
+        0.0,
+        0.0,
+        0,
+        2,
+        524288
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamDagger",
+          3,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          3,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamGSword",
+          1,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamGSword",
+          1,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          4,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          4,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          34,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          34,
+          "Lv2"
+        ]
+      ]
+    },
+    {
+      "name": "cCmcDaggerAirL",
+      "ptr": "0x10B8CE50",
+      "hashBefore": "0x7293CBB7",
+      "hashAfter": "0x45C98813",
+      "liveTuple": [
+        50.0,
+        150.0,
+        -100.0,
+        200.0,
+        0.0,
+        0.0,
+        0,
+        2,
+        524288
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamDagger",
+          4,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          4,
+          "Lv2"
+        ]
+      ]
+    },
+    {
+      "name": "cCmcBowRensa",
+      "ptr": "0x10B93010",
+      "hashBefore": "0x7FD573A4",
+      "hashAfter": "0xAE31800E",
+      "liveTuple": [
+        500.0,
+        1500.0,
+        -500.0,
+        1000.0,
+        0.0,
+        2000.0,
+        0,
+        0,
+        524290
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamBow",
+          20,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamBow",
+          20,
+          "Lv2"
+        ]
+      ]
+    },
+    {
+      "name": "cCmcDaggerCombo",
+      "ptr": "0x10B8C3D0",
+      "hashBefore": "0x27E52952",
+      "hashAfter": "0xCB5B3328",
+      "liveTuple": [
+        0.0,
+        150.0,
+        -100.0,
+        250.0,
+        0.0,
+        0.0,
+        0,
+        0,
+        524288
+      ],
+      "catalogMatches": [
+        [
+          "AIPlActParamDagger",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          1,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          1,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          2,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          2,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          5,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          5,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          6,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          6,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          7,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          7,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          8,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          8,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          9,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          9,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamDagger",
+          32,
+          "LvEX"
+        ],
+        [
+          "AIPlActParamGSword",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamGSword",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          0,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          0,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          1,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          1,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          2,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          2,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          3,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          3,
+          "Lv2"
+        ],
+        [
+          "AIPlActParamSword",
+          46,
+          "Lv1"
+        ],
+        [
+          "AIPlActParamSword",
+          46,
+          "Lv2"
+        ]
+      ]
+    }
+  ]
+}

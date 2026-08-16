@@ -1,54 +1,58 @@
-Build 39 — Player/Main Pawn live trace (read-only, safe hotkeys)
+Build 47 — Main Pawn AI platform milestone
 
 Собрать:
   Visual Studio → Release | Win32 → Build Solution
 
 Проверить в F12:
-  build 39-party-live-trace-hotkeys
+  build 47-pawn-ai-platform-milestone
 
-Настройки:
-  [devtools] enabled = on
-  [pawnAI]   enabled = on
+Статус:
+  - Это зафиксированный итог Builds 40–46.
+  - Дополнительный обязательный тест не требуется.
+  - Build 46 уже подтвердил generalized multi-rule profile transaction.
 
-Перед тестом:
-  1. Оставить только главную пешку.
-  2. Загрузиться вне Рифта/города, рядом со слабым противником.
-  3. Тест ничего не пишет в память персонажей.
+Рабочая платформа главной пешки:
+  - 83 AI resources разобраны в канонический каталог.
+  - 85 priority rows и 48 runtime buckets mapped.
+  - Personality cCodeParam и order cOrderValue mapped.
+  - Persistent sidecar поддерживает 0..48 exact rule entries.
+  - Rule identity:
+      sensor / code / category / objectId / extra / ruleIndex
+  - Profile apply выполняется транзакционно.
+  - Ошибка любого entry запрещает/откатывает всю транзакцию.
+  - Transient addresses не сохраняются.
+  - Active profile автоматически применяется после загрузки мира.
+  - Vanilla выполняет runtime rollback.
+  - Bucket convergence отображается в F12 и пишется в JSON.
 
-Запуск:
-  1. F12 → DevTools → Player + Main Pawn recon.
-  2. Нажать "Find both + start live trace" один раз.
-  3. Дождаться двух строк: Arisen uPlayer и Main Pawn uCmc.
-  4. Закрыть F12. CSV уже записывается автоматически.
+Sidecar:
+  DDDA_AI_Overhaul\ddda_pawn_ai_profiles.ini
 
-Короткий тест ГГ:
-  1. Стоять 3 секунды.
-  2. Бежать БЕЗ спринта 3 секунды.
-  3. Спринтовать 4–5 секунд, чтобы заметно потратить stamina.
-  4. Остановиться на 5 секунд (stamina восстанавливается).
-  5. Позволить слабому врагу ОДИН раз ударить ГГ.
-  6. Отойти и спокойно постоять 3 секунды.
-  7. Нажать клавишу - один раз — это остановит и закроет CSV.
+Клавиши:
+  -       переключить vanilla / research_pair45_46
+  = или + сделать pawn AI snapshot
+  F9      инструментом не используется
 
-Важно:
-  - Используются физические клавиши - и = рядом с Backspace.
-  - Клавиша - включает/выключает live trace.
-  - Клавиша = делает резервный snapshot; в этом тесте нажимать её НЕ НУЖНО.
-  - F9/F10 инструмент больше не использует.
-  - Пешку заставлять спринтовать НЕ НУЖНО.
-  - Если враг ударить не смог, всё равно завершить клавишей - и прислать результат.
+Тестовый двухправиловый профиль:
+  code 45 rule 0: AddS32 -1 -> -2
+  code 46 rule 0: AddS32 -1 -> -2
 
-Прислать из DDDA_AI_Overhaul:
-  ddda_party_live_001.csv
-  ddda_party_recon_001.json
-  ddda_ai_overhaul.log
+Подтверждённый результат:
+  vanilla:
+    slot 34: []
+    slot 35: [47, 46, 45]
 
-Контрольные значения исходного сейва:
-  ГГ: HP 331/498, stamina 600
-  Главная пешка: HP 327/505, stamina 595
+  research_pair45_46:
+    slot 34: [46, 45]
+    slot 35: [47]
 
-Что проверяет Build 39:
-  - повторяемость Wait/Run/Dash и кандидатов raw enum/flag;
-  - 128-байтные окна pBase-записей игрока и пешки;
-  - живые DTI-объекты с именами Stamina/Health/Status;
-  - изменение HP и stamina во времени без exact-value scan тела.
+Generated AI action-parameter catalogs:
+  docs\PLAYER_PAWN_WORK\generated\AIPlActParam*.csv
+
+Они содержат AI target/use ranges и eligibility attributes для девяти weapon
+families на Lv1/Lv2/LvEX. Это не доказанные damage hitboxes; параметры относятся
+к выбору и допустимости действий AI. Их будущая мутация должна проходить через
+отдельный runtime A/B и rollback, как priority platform.
+
+Документация PLAYER_PAWN_WORK очищена от завершённых protocol-файлов и тяжёлых
+промежуточных snapshot reports. Канонический catalog и compact evidence оставлены.

@@ -95,6 +95,7 @@
 #include "CombatBus.h"
 #include "ModPaths.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 extern BYTE *codeBase, *codeEnd, *dataBase, *dataEnd;
 
@@ -109,6 +110,13 @@ static bool Rd(const void* p, void* out, size_t n)
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 static bool RdPtr(const void* p, uintptr_t* out) { return Rd(p, out, sizeof(uintptr_t)); }
+
+static bool WrSafe(void* p, const void* value, size_t n)
+{
+    if (!p || !value || !n) return false;
+    __try { memcpy(p, value, n); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 
 static uintptr_t ImageEnd() { return g_base + g_imageSize; }
 static bool InImage(uintptr_t a)
@@ -2417,7 +2425,7 @@ static bool NameOfLiveObject(uintptr_t obj, char* out, int cap)
     return NameFromDti(dti, out, cap);
 }
 
-// ─── Player + Main Pawn recon (temporary, read-only) ────────────────────────
+// ─── Player + Main Pawn recon and transactional priority profiles ─────────
 //
 // This is deliberately separate from the enemy HUNT path:
 //   * uPlayer is 0x5A10 bytes, not the 0x73C0 enemy body;
@@ -2439,6 +2447,8 @@ static const int      kPartyVtCacheSize    = 8192;   // power of two
 static const int      kPartyMaxNearTypes   = 32;
 static const int      kPartyMaxRuntimeProbes = 24;
 static const int      kPartyRuntimeProbeBytes = 32;
+static const int      kPawnAiMaxCandidates = 1024;
+static const int      kPawnAiDumpBytes = 1024;
 
 // Test-save values supplied with build 35. We search both int32 and float
 // representations. They are clues only: an offset is not documented until a
@@ -2461,12 +2471,12 @@ enum PartyVtKind { PVK_OTHER = 0, PVK_PARTY_BODY, PVK_PAWN_MANAGER };
 struct PartyVtClass {
     uintptr_t vt;
     uint8_t   kind;
-    char      name[40];
+    char      name[64];
 };
 struct PartyNearType {
     uintptr_t vt;
     uintptr_t sample;
-    char      name[40];
+    char      name[64];
 };
 
 // Small DTI objects potentially holding changing health/stamina state.  The
@@ -2479,6 +2489,16 @@ struct PartyRuntimeProbe {
     char      name[40];
     BYTE      head[kPartyRuntimeProbeBytes];
     bool      headOk;
+};
+
+// Build 40: candidates for the pawn's upper AI pipeline. The census sees
+// inline heap subobjects too because it tests every aligned address carrying a
+// genuine vtable. Association with the chosen uCmc/cCmcInfo is done later.
+struct PawnAiCandidate {
+    uintptr_t ptr;
+    uintptr_t vt;
+    uint32_t  typeSize;
+    char      name[64];
 };
 
 struct PartyChildDump {
@@ -2534,11 +2554,58 @@ static PartyNearType  g_partyNear[kPartyMaxNearTypes];
 static int            g_nPartyNear = 0;
 static PartyRuntimeProbe g_partyRuntime[kPartyMaxRuntimeProbes];
 static int            g_nPartyRuntime = 0;
+static PawnAiCandidate g_pawnAi[kPawnAiMaxCandidates];
+static int            g_nPawnAi = 0;
+static int            g_partyAiSeq = 0;
+static char           g_partyAiLastFile[MAX_PATH] = "";
+static char           g_partyAiStatus[192] = "AI bridge not captured";
 static int            g_partySeq = 0;
 static DWORD          g_partyFindMs = 0;
 static volatile LONG  g_partyBusy = 0;
 static char           g_partyStatus[192] = "not scanned";
 static char           g_partyLastFile[MAX_PATH] = "";
+
+// Build 46: generalized persistent priority profile. Every entry identifies
+// one cCodeParam by the complete cPrioParam tuple plus personality rule index.
+// No transient address is persisted. Switching profiles is transactional:
+// validate all -> restore old -> apply all -> verify, otherwise rollback.
+static const int kPriorityProfileMaxRules = 48;
+struct PartyPriorityProfileRule {
+    uint32_t sensor;
+    uint32_t code;
+    uint32_t category;
+    uint32_t objectId;
+    uint32_t extra;
+    uint32_t ruleIndex;
+    int32_t  expectedAddS32;
+    int32_t  desiredAddS32;
+    uint32_t expectedAddF32Bits;
+    uint32_t expectedBreak;
+    uint32_t expectedCheckCount;
+    int32_t  expectedSlot; // -1 = memory verification only
+
+    uintptr_t prioPtr;
+    uintptr_t rulePtr;
+    uintptr_t ruleVt;
+    bool      resolved;
+    bool      applied;
+    int32_t   currentAddS32;
+    int32_t   liveSlot;
+};
+static PartyPriorityProfileRule g_priorityProfileRules[kPriorityProfileMaxRules];
+static int            g_nPriorityProfileRules = 0;
+static char           g_priorityProfileActive[40] = "vanilla";
+static uint32_t       g_priorityProfileConfigHash = 0;
+static bool           g_priorityProfileLoaded = false;
+static bool           g_priorityProfileFileOk = false;
+static bool           g_priorityProfileApplied = false;
+static bool           g_priorityProfileConverged = false;
+static int            g_priorityProfileWrites = 0;
+static int            g_priorityProfileRestores = 0;
+static DWORD          g_priorityProfileLastPoll = 0;
+static DWORD          g_priorityProfileWorldSince = 0;
+static DWORD          g_priorityProfileLastDiscover = 0;
+static char           g_priorityProfileStatus[192] = "Priority profile: vanilla";
 
 // Build 39 live trace. It is intentionally write-free with respect to game
 // memory: only a CSV file is written. Find starts it; '-' stops/starts it.
@@ -2677,6 +2744,504 @@ static void PartyAddRuntimeProbe(uintptr_t obj, uintptr_t vt, const char* name)
     if (slot == g_nPartyRuntime) ++g_nPartyRuntime;
 }
 
+static bool PawnAiRelevantName(const char* name)
+{
+    if (!name || !name[0]) return false;
+
+    // Build 40 proved the complete resource census: 85 priority rows and
+    // hundreds of rAIGoalPlanning leaf objects. Those leaves are static and
+    // already mapped from files; keeping all of them filled the 1024 cap
+    // before several roots were reached. Keep only data needed for the live
+    // bridge, computed priority buckets, and their nested rule arrays.
+    if (PartyStartsWith(name, "cCmc")) return true;
+    if (!strcmp(name, "cAIGoalPlanning")
+        || !strcmp(name, "cAIGoalPlanning::cPlanCtrl")
+        || !strcmp(name, "cAIGoalPlanning::cPlanResult")
+        || !strcmp(name, "cAIGoalPlanning::cGoalInfoParam"))
+        return true;
+    if (!strcmp(name, "rAIPriorityThink")
+        || !strcmp(name, "cAIPriorityThink")
+        || !strcmp(name, "rAIPriorityThink::cPrioParam")
+        || !strcmp(name, "rAIPriorityThink::cOrderValue")
+        || !strcmp(name, "rAIPriorityThink::cCodeParam")
+        || !strcmp(name, "rAIPlayerActionParameter")
+        || !strcmp(name, "cAIPlayerActionParameter")
+        || !strcmp(name, "cAICheckSituationCmc")
+        || !strcmp(name, "cAIActionInterfaceCmc"))
+        return true;
+    return false;
+}
+
+static void PartyAddPawnAiCandidate(uintptr_t obj, uintptr_t vt, const char* name)
+{
+    if (!obj || !vt || !PawnAiRelevantName(name)) return;
+    for (int i = 0; i < g_nPawnAi; ++i)
+        if (g_pawnAi[i].ptr == obj) return;
+    if (g_nPawnAi >= kPawnAiMaxCandidates) return;
+
+    const TypeAtlas::Info* info = TypeAtlas::FindByName(name);
+    PawnAiCandidate& A = g_pawnAi[g_nPawnAi++];
+    memset(&A, 0, sizeof(A));
+    A.ptr = obj;
+    A.vt = vt;
+    A.typeSize = info ? info->size : 0;
+    lstrcpynA(A.name, name, sizeof(A.name));
+}
+
+static bool PartyPriorityProfileAutoDiscover();
+
+static const char* PartyPriorityProfilePath()
+{
+    return ModPaths::File("ddda_pawn_ai_profiles.ini", 7);
+}
+
+static uint32_t PartyPriorityProfileHash(const void* data, size_t bytes, uint32_t h = 2166136261u)
+{
+    const BYTE* p = (const BYTE*)data;
+    for (size_t i = 0; i < bytes; ++i) { h ^= p[i]; h *= 16777619u; }
+    return h;
+}
+
+static int PartyPriorityProfileGetInt(
+    const char* section, const char* key, int fallback)
+{
+    char def[24] = {};
+    char value[24] = {};
+    sprintf_s(def, sizeof(def), "%d", fallback);
+    GetPrivateProfileStringA(section, key, def, value, sizeof(value),
+        PartyPriorityProfilePath());
+    return (int)strtol(value, nullptr, 0);
+}
+
+static bool PartyPriorityProfileNameOk(const char* name)
+{
+    if (!name || !name[0]) return false;
+    for (int i = 0; name[i]; ++i) {
+        const char c = name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+            || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+            return false;
+    }
+    return true;
+}
+
+static void PartyPriorityProfileEnsureFile()
+{
+    const char* path = PartyPriorityProfilePath();
+    const bool exists = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    if (!exists)
+        WritePrivateProfileStringA("profile", "active", "vanilla", path);
+
+    // Schema migration keeps the Build 45 active choice but expands the file
+    // into the generalized Build 46 rule-list format.
+    const int schema = PartyPriorityProfileGetInt("profile", "schemaVersion", 0);
+    if (schema < 2) {
+        WritePrivateProfileStringA("profile", "schemaVersion", "2", path);
+        WritePrivateProfileStringA("vanilla", "ruleCount", "0", path);
+        WritePrivateProfileStringA("research_code45", "ruleCount", "1", path);
+        const char* s = "research_code45.rule0";
+        WritePrivateProfileStringA(s, "sensor", "0", path);
+        WritePrivateProfileStringA(s, "code", "45", path);
+        WritePrivateProfileStringA(s, "category", "0", path);
+        WritePrivateProfileStringA(s, "objectId", "0", path);
+        WritePrivateProfileStringA(s, "extra", "1", path);
+        WritePrivateProfileStringA(s, "ruleIndex", "0", path);
+        WritePrivateProfileStringA(s, "expectedAddS32", "-1", path);
+        WritePrivateProfileStringA(s, "desiredAddS32", "-2", path);
+        WritePrivateProfileStringA(s, "expectedAddF32", "0.0", path);
+        WritePrivateProfileStringA(s, "expectedBreak", "1", path);
+        WritePrivateProfileStringA(s, "expectedCheckCount", "1", path);
+        WritePrivateProfileStringA(s, "expectedSlot", "34", path);
+
+        WritePrivateProfileStringA("research_pair45_46", "ruleCount", "2", path);
+        const char* p0 = "research_pair45_46.rule0";
+        const char* p1 = "research_pair45_46.rule1";
+        const char* pairSections[2] = { p0, p1 };
+        const char* pairCodes[2] = { "45", "46" };
+        for (int i = 0; i < 2; ++i) {
+            WritePrivateProfileStringA(pairSections[i], "sensor", "0", path);
+            WritePrivateProfileStringA(pairSections[i], "code", pairCodes[i], path);
+            WritePrivateProfileStringA(pairSections[i], "category", "0", path);
+            WritePrivateProfileStringA(pairSections[i], "objectId", "0", path);
+            WritePrivateProfileStringA(pairSections[i], "extra", "1", path);
+            WritePrivateProfileStringA(pairSections[i], "ruleIndex", "0", path);
+            WritePrivateProfileStringA(pairSections[i], "expectedAddS32", "-1", path);
+            WritePrivateProfileStringA(pairSections[i], "desiredAddS32", "-2", path);
+            WritePrivateProfileStringA(pairSections[i], "expectedAddF32", "0.0", path);
+            WritePrivateProfileStringA(pairSections[i], "expectedBreak", "1", path);
+            WritePrivateProfileStringA(pairSections[i], "expectedCheckCount", "1", path);
+            WritePrivateProfileStringA(pairSections[i], "expectedSlot", "34", path);
+        }
+    }
+    g_priorityProfileFileOk = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+}
+
+static bool PartyPriorityProfileReadConfig(
+    char* activeOut, PartyPriorityProfileRule* rulesOut, int* countOut,
+    uint32_t* hashOut)
+{
+    if (!activeOut || !rulesOut || !countOut || !hashOut) return false;
+    PartyPriorityProfileEnsureFile();
+    memset(rulesOut, 0, sizeof(PartyPriorityProfileRule) * kPriorityProfileMaxRules);
+
+    GetPrivateProfileStringA("profile", "active", "vanilla",
+        activeOut, 40, PartyPriorityProfilePath());
+    if (!PartyPriorityProfileNameOk(activeOut)) return false;
+
+    int count = PartyPriorityProfileGetInt(activeOut, "ruleCount", 0);
+    if (count < 0 || count > kPriorityProfileMaxRules) return false;
+
+    uint32_t h = PartyPriorityProfileHash(activeOut, strlen(activeOut) + 1);
+    for (int i = 0; i < count; ++i) {
+        char section[72] = {};
+        sprintf_s(section, sizeof(section), "%s.rule%d", activeOut, i);
+        PartyPriorityProfileRule& R = rulesOut[i];
+        R.sensor = (uint32_t)PartyPriorityProfileGetInt(section, "sensor", -1);
+        R.code = (uint32_t)PartyPriorityProfileGetInt(section, "code", -1);
+        R.category = (uint32_t)PartyPriorityProfileGetInt(section, "category", -1);
+        R.objectId = (uint32_t)PartyPriorityProfileGetInt(section, "objectId", -1);
+        R.extra = (uint32_t)PartyPriorityProfileGetInt(section, "extra", -1);
+        R.ruleIndex = (uint32_t)PartyPriorityProfileGetInt(section, "ruleIndex", -1);
+        R.expectedAddS32 = PartyPriorityProfileGetInt(section, "expectedAddS32", 9999);
+        R.desiredAddS32 = PartyPriorityProfileGetInt(section, "desiredAddS32", 9999);
+        R.expectedBreak = (uint32_t)PartyPriorityProfileGetInt(
+            section, "expectedBreak", -1);
+        R.expectedCheckCount = (uint32_t)PartyPriorityProfileGetInt(
+            section, "expectedCheckCount", -1);
+        R.expectedSlot = PartyPriorityProfileGetInt(section, "expectedSlot", -1);
+        char f32Text[32] = {};
+        GetPrivateProfileStringA(section, "expectedAddF32", "0.0",
+            f32Text, sizeof(f32Text), PartyPriorityProfilePath());
+        const float expectedF32 = (float)atof(f32Text);
+        memcpy(&R.expectedAddF32Bits, &expectedF32, 4);
+        R.liveSlot = -1;
+
+        if (R.sensor > 1u || R.code > 255u || R.category > 32u
+            || R.objectId > 0xFFFFu || R.ruleIndex >= 16u
+            || R.expectedAddS32 < -32 || R.expectedAddS32 > 32
+            || R.desiredAddS32 < -32 || R.desiredAddS32 > 32
+            || R.expectedBreak > 1u || R.expectedCheckCount > 16u
+            || R.expectedSlot < -1 || R.expectedSlot >= 48)
+            return false;
+
+        for (int j = 0; j < i; ++j) {
+            PartyPriorityProfileRule& P = rulesOut[j];
+            if (P.sensor == R.sensor && P.code == R.code
+                && P.category == R.category && P.objectId == R.objectId
+                && P.extra == R.extra && P.ruleIndex == R.ruleIndex)
+                return false;
+        }
+        const size_t configBytes = (const BYTE*)&R.prioPtr - (const BYTE*)&R;
+        h = PartyPriorityProfileHash(&R, configBytes, h);
+    }
+    *countOut = count;
+    *hashOut = h;
+    return true;
+}
+
+static int PartyPriorityLiveSlot(uintptr_t prioParam)
+{
+    if (!prioParam) return -1;
+    PawnAiCandidate* root = nullptr;
+    for (int i = 0; i < g_nPawnAi; ++i)
+        if (!strcmp(g_pawnAi[i].name, "cAIPriorityThink")) {
+            root = &g_pawnAi[i];
+            break;
+        }
+    if (!root) return -1;
+
+    for (int slot = 0; slot < 48; ++slot) {
+        const uintptr_t field = root->ptr + 0x38u + (uint32_t)slot * 0x14u;
+        uint32_t before[5] = {};
+        uint32_t after[5] = {};
+        uintptr_t entries[16] = {};
+        if (!Rd((void*)field, before, sizeof(before))) continue;
+        if (before[1] > 16u || before[2] > 16u || before[1] > before[2]) continue;
+        if (before[1] && (!LooksHeap(before[4])
+            || !Rd((void*)(uintptr_t)before[4], entries,
+                before[1] * sizeof(uintptr_t))))
+            continue;
+        if (!Rd((void*)field, after, sizeof(after))
+            || memcmp(before, after, sizeof(before)) != 0)
+            continue;
+        for (uint32_t n = 0; n < before[1]; ++n)
+            if (entries[n] == prioParam) return slot;
+    }
+    return -1;
+}
+
+static void PartyPriorityProfileResetRuntime()
+{
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        R.prioPtr = R.rulePtr = R.ruleVt = 0;
+        R.resolved = R.applied = false;
+        R.currentAddS32 = 0;
+        R.liveSlot = -1;
+    }
+    g_priorityProfileApplied = g_nPriorityProfileRules == 0;
+    g_priorityProfileConverged = g_nPriorityProfileRules == 0;
+}
+
+static bool PartyPriorityProfileResolveRule(PartyPriorityProfileRule& R)
+{
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        if (strcmp(A.name, "rAIPriorityThink::cPrioParam")) continue;
+        uintptr_t currentPrioVt = 0;
+        uint32_t raw[16] = {};
+        if (!RdPtr((void*)A.ptr, &currentPrioVt) || currentPrioVt != A.vt
+            || !Rd((void*)A.ptr, raw, sizeof(raw)))
+            continue;
+        if (raw[1] != R.sensor || raw[2] != R.code || raw[3] != R.category
+            || raw[4] != R.objectId || raw[5] != R.extra)
+            continue;
+        if (raw[7] > 16u || raw[8] > 16u || raw[7] > raw[8]
+            || R.ruleIndex >= raw[7] || !LooksHeap(raw[10]))
+            return false;
+
+        uintptr_t rule = 0;
+        if (!RdPtr((void*)(uintptr_t)(raw[10] + R.ruleIndex * 4u), &rule)
+            || !LooksHeap(rule))
+            return false;
+        uint32_t cp[9] = {};
+        if (!Rd((void*)rule, cp, sizeof(cp))
+            || !LooksLikeVtable(cp[0]) || !LooksLikeVtable(cp[4]))
+            return false;
+        const int32_t current = (int32_t)cp[1];
+        if ((current != R.expectedAddS32 && current != R.desiredAddS32)
+            || cp[2] != R.expectedAddF32Bits || cp[3] != R.expectedBreak
+            || cp[5] != R.expectedCheckCount || cp[6] > 16u
+            || cp[5] > cp[6] || cp[7] != 1u
+            || (cp[5] && !LooksHeap(cp[8])))
+            return false;
+
+        R.prioPtr = A.ptr;
+        R.rulePtr = rule;
+        R.ruleVt = cp[0];
+        R.currentAddS32 = current;
+        R.liveSlot = PartyPriorityLiveSlot(A.ptr);
+        R.resolved = true;
+        return true;
+    }
+    return false;
+}
+
+static bool PartyPriorityProfileResolveAll()
+{
+    for (int i = 0; i < g_nPriorityProfileRules; ++i)
+        if (!PartyPriorityProfileResolveRule(g_priorityProfileRules[i]))
+            return false;
+    return true;
+}
+
+static bool PartyPriorityProfileRestoreAll(const char* reason)
+{
+    // Prevalidate every still-live target before changing any of them.
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        if (!R.applied || !R.resolved) continue;
+        uintptr_t vt = 0;
+        int32_t current = 0;
+        if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
+            || !Rd((void*)(R.rulePtr + 0x04), &current, 4)) {
+            R.resolved = R.applied = false; // object is gone; nothing remains to restore
+            continue;
+        }
+        if (current != R.expectedAddS32 && current != R.desiredAddS32) {
+            sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
+                "Priority profile: ROLLBACK REFUSED rule %d value=%d", i, current);
+            return false;
+        }
+        R.currentAddS32 = current;
+    }
+
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        if (!R.applied || !R.resolved) continue;
+        if (R.currentAddS32 == R.desiredAddS32
+            && R.desiredAddS32 != R.expectedAddS32) {
+            if (!WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4))
+                return false;
+            int32_t verify = 0;
+            if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4)
+                || verify != R.expectedAddS32)
+                return false;
+            ++g_priorityProfileRestores;
+        }
+        R.currentAddS32 = R.expectedAddS32;
+        R.applied = false;
+    }
+    g_priorityProfileApplied = false;
+    g_priorityProfileConverged = false;
+    logFile << "PartyRecon: priority profile restored reason="
+            << (reason ? reason : "unknown") << std::endl;
+    return true;
+}
+
+static void PartyPriorityProfileUndoWrites(const bool* wrote, int count)
+{
+    for (int i = 0; i < count; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        if (wrote && wrote[i] && R.rulePtr)
+            WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4);
+        R.currentAddS32 = R.expectedAddS32;
+        R.applied = false;
+    }
+    g_priorityProfileApplied = false;
+    g_priorityProfileConverged = false;
+}
+
+static bool PartyPriorityProfileApplyAll()
+{
+    if (g_nPriorityProfileRules == 0) {
+        g_priorityProfileApplied = g_priorityProfileConverged = true;
+        return true;
+    }
+    if (!PartyPriorityProfileResolveAll()) return false;
+
+    bool wrote[kPriorityProfileMaxRules] = {};
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        if (R.currentAddS32 == R.desiredAddS32) {
+            R.applied = true;
+            continue;
+        }
+        if (R.currentAddS32 != R.expectedAddS32
+            || !WrSafe((void*)(R.rulePtr + 0x04), &R.desiredAddS32, 4)) {
+            PartyPriorityProfileUndoWrites(wrote, g_nPriorityProfileRules);
+            return false;
+        }
+        int32_t verify = 0;
+        if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4)
+            || verify != R.desiredAddS32) {
+            WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4);
+            PartyPriorityProfileUndoWrites(wrote, g_nPriorityProfileRules);
+            return false;
+        }
+        wrote[i] = true;
+        ++g_priorityProfileWrites;
+        R.currentAddS32 = verify;
+        R.applied = true;
+    }
+    g_priorityProfileApplied = true;
+    return true;
+}
+
+static void PartyPriorityProfileUpdateState()
+{
+    if (g_nPriorityProfileRules == 0) {
+        g_priorityProfileApplied = g_priorityProfileConverged = true;
+        sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
+            "Priority profile: %s, 0 rules (vanilla)", g_priorityProfileActive);
+        return;
+    }
+
+    int applied = 0;
+    int converged = 0;
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        if (!R.resolved) continue;
+        uintptr_t vt = 0;
+        int32_t current = 0;
+        if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
+            || !Rd((void*)(R.rulePtr + 0x04), &current, 4)) {
+            R.resolved = R.applied = false;
+            continue;
+        }
+        R.currentAddS32 = current;
+        R.liveSlot = PartyPriorityLiveSlot(R.prioPtr);
+        if (current == R.desiredAddS32 && R.applied) ++applied;
+        if (R.expectedSlot < 0 || R.liveSlot == R.expectedSlot) ++converged;
+    }
+    g_priorityProfileApplied = applied == g_nPriorityProfileRules;
+    g_priorityProfileConverged = g_priorityProfileApplied
+        && converged == g_nPriorityProfileRules;
+    sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
+        "Priority profile: %s, rules %d/%d, %s",
+        g_priorityProfileActive, applied, g_nPriorityProfileRules,
+        g_priorityProfileConverged ? "CONVERGED" : "PENDING");
+}
+
+static bool PartyPriorityProfileLoadIfChanged()
+{
+    PartyPriorityProfileRule next[kPriorityProfileMaxRules] = {};
+    char active[40] = {};
+    int count = 0;
+    uint32_t hash = 0;
+    if (!PartyPriorityProfileReadConfig(active, next, &count, &hash)) {
+        lstrcpynA(g_priorityProfileStatus,
+            "Priority profile: INVALID SIDECAR, keeping current profile",
+            sizeof(g_priorityProfileStatus));
+        return false;
+    }
+    if (g_priorityProfileLoaded && hash == g_priorityProfileConfigHash) return true;
+    if (g_priorityProfileLoaded
+        && !PartyPriorityProfileRestoreAll("sidecar switch"))
+        return false;
+
+    memset(g_priorityProfileRules, 0, sizeof(g_priorityProfileRules));
+    memcpy(g_priorityProfileRules, next, sizeof(next));
+    g_nPriorityProfileRules = count;
+    lstrcpynA(g_priorityProfileActive, active, sizeof(g_priorityProfileActive));
+    g_priorityProfileConfigHash = hash;
+    g_priorityProfileLoaded = true;
+    PartyPriorityProfileResetRuntime();
+    return true;
+}
+
+static void PartyPriorityProfileSetActive(const char* active)
+{
+    if (!PartyPriorityProfileNameOk(active)) active = "vanilla";
+    PartyPriorityProfileEnsureFile();
+    WritePrivateProfileStringA("profile", "active", active,
+        PartyPriorityProfilePath());
+    g_priorityProfileLastPoll = 0;
+}
+
+static void PartyPriorityProfileTick()
+{
+    DWORD now = MsNow();
+    if (!g_priorityProfileWorldSince) g_priorityProfileWorldSince = now;
+    if (!g_priorityProfileLastPoll || now - g_priorityProfileLastPoll >= 1000u) {
+        g_priorityProfileLastPoll = now;
+        PartyPriorityProfileLoadIfChanged();
+    }
+
+    if (!g_priorityProfileApplied && g_nPriorityProfileRules > 0) {
+        if (!PartyPriorityProfileApplyAll()) {
+            const bool allowDiscover = now - g_priorityProfileWorldSince >= 5000u
+                && (!g_priorityProfileLastDiscover
+                    || now - g_priorityProfileLastDiscover >= 30000u);
+            if (allowDiscover) {
+                g_priorityProfileLastDiscover = now;
+                if (PartyPriorityProfileAutoDiscover())
+                    PartyPriorityProfileApplyAll();
+            }
+        }
+    }
+    PartyPriorityProfileUpdateState();
+}
+
+static void PartyPriorityProfileToggle()
+{
+    PartyPriorityProfileLoadIfChanged();
+    PartyPriorityProfileSetActive(!strcmp(g_priorityProfileActive, "vanilla")
+        ? "research_pair45_46" : "vanilla");
+    PartyPriorityProfileLoadIfChanged();
+    if (g_nPriorityProfileRules > 0) PartyPriorityProfileApplyAll();
+    PartyPriorityProfileUpdateState();
+}
+
+static void PartyPriorityProfileHotkeyTick()
+{
+    PartyPriorityProfileTick();
+    static bool wasDown = false;
+    const bool down = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
+    if (down && !wasDown) PartyPriorityProfileToggle();
+    wasDown = down;
+}
+
 static PartyVtClass* PartyClassifyVt(uintptr_t vt, uintptr_t sample)
 {
     if (!vt || !InImage(vt)) return nullptr;
@@ -2691,7 +3256,7 @@ static PartyVtClass* PartyClassifyVt(uintptr_t vt, uintptr_t sample)
         C.name[0] = 0;
         ++g_partyVtChecked;
 
-        char name[40] = {};
+        char name[64] = {};
         if (NameOfLiveObject(sample, name, sizeof(name)) && name[0]) {
             ++g_partyVtNamed;
             lstrcpynA(C.name, name, sizeof(C.name));
@@ -2751,7 +3316,9 @@ static void PartyFindBodies()
     g_partyVtNamed = 0;
     g_nPartyNear = 0;
     g_nPartyRuntime = 0;
+    g_nPawnAi = 0;
     memset(g_partyRuntime, 0, sizeof(g_partyRuntime));
+    memset(g_pawnAi, 0, sizeof(g_pawnAi));
     memset(g_partyVtCache, 0, sizeof(g_partyVtCache));
     if (!g_base) return;
 
@@ -2785,7 +3352,10 @@ static void PartyFindBodies()
                     // genuine vtable once by asking the live object for its DTI name.
                     PartyVtClass* C = PartyClassifyVt(vt, obj);
                     if (!C) continue;
-                    if (C->name[0]) PartyAddRuntimeProbe(obj, vt, C->name);
+                    if (C->name[0]) {
+                        PartyAddRuntimeProbe(obj, vt, C->name);
+                        PartyAddPawnAiCandidate(obj, vt, C->name);
+                    }
                     if (C->kind == PVK_PARTY_BODY)
                         PartyAddBodyCandidate(obj, vt, C->name);
                     else if (C->kind == PVK_PAWN_MANAGER)
@@ -2981,6 +3551,24 @@ static bool PartyCandidatesStillValid()
     return true;
 }
 
+static bool PartyPriorityProfileAutoDiscover()
+{
+    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return false;
+    PartyFindBodies();
+    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
+    PartyMarkPawnManagerRefs();
+    PartySelectWorkingPair();
+    PartyAssignRoles();
+    InterlockedExchange(&g_partyBusy, 0);
+
+    const bool found = PartyPriorityProfileResolveAll();
+    logFile << "PartyRecon: priority profile auto-discovery found="
+            << (found ? 1 : 0) << " candidates=" << g_nPawnAi
+            << " rules=" << g_nPriorityProfileRules
+            << " findMs=" << g_partyFindMs << std::endl;
+    return found;
+}
+
 static void PartyWriteJson()
 {
     char fileName[64];
@@ -3075,6 +3663,338 @@ static PartyBodyDump* PartyRoleBody(const char* role)
     for (int i = 0; i < g_nParty; ++i)
         if (!strcmp(g_party[i].role, role)) return &g_party[i];
     return nullptr;
+}
+
+static int PartyFindPtrOffset(const BYTE* data, uint32_t bytes, uintptr_t want)
+{
+    if (!data || !want || bytes < 4) return -1;
+    for (uint32_t off = 0; off + 4 <= bytes; off += 4)
+        if (*(const uint32_t*)(data + off) == (uint32_t)want) return (int)off;
+    return -1;
+}
+
+static uint32_t PartyHashBytes(const BYTE* data, uint32_t bytes)
+{
+    uint32_t h = 2166136261u;
+    for (uint32_t i = 0; i < bytes; ++i) {
+        h ^= data[i];
+        h *= 16777619u;
+    }
+    return h;
+}
+
+static uintptr_t PartyMainCmcInfo(PartyBodyDump* pawn)
+{
+    if (!pawn) return 0;
+    uintptr_t info = 0;
+    if (!RdPtr((void*)(pawn->ptr + 0x3DEC), &info) || !info) return 0;
+    char name[48] = {};
+    if (!NameOfLiveObject(info, name, sizeof(name)) || strcmp(name, "cCmcInfo")) return 0;
+    return info;
+}
+
+static void PartyWriteAiBridgeJson()
+{
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    if (!pawn) {
+        lstrcpynA(g_partyAiStatus, "AI bridge: main pawn not resolved", sizeof(g_partyAiStatus));
+        return;
+    }
+    uintptr_t cmcInfo = PartyMainCmcInfo(pawn);
+    const TypeAtlas::Info* cmcType = TypeAtlas::FindByName("cCmcInfo");
+    uint32_t cmcSize = cmcType ? cmcType->size : 5728;
+    BYTE* cmcBytes = (BYTE*)malloc(cmcSize);
+    if (!cmcInfo || !cmcBytes || !Rd((void*)cmcInfo, cmcBytes, cmcSize)) {
+        if (cmcBytes) free(cmcBytes);
+        lstrcpynA(g_partyAiStatus, "AI bridge: cCmcInfo unavailable", sizeof(g_partyAiStatus));
+        return;
+    }
+
+    ++g_partyAiSeq;
+    char fileName[72];
+    sprintf_s(fileName, sizeof(fileName), "ddda_pawn_ai_bridge_%03d.json", g_partyAiSeq);
+    const char* path = ModPaths::File(fileName, 6);
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "w") != 0 || !f) {
+        free(cmcBytes);
+        sprintf_s(g_partyAiStatus, sizeof(g_partyAiStatus), "AI bridge: cannot write %s", fileName);
+        return;
+    }
+
+    PartyPriorityProfileUpdateState();
+    int profileAppliedRules = 0;
+    int profileResolvedRules = 0;
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        if (g_priorityProfileRules[i].resolved) ++profileResolvedRules;
+        if (g_priorityProfileRules[i].applied) ++profileAppliedRules;
+    }
+
+    fprintf(f,
+        "{\n  \"build\":\"%s\",\n  \"seq\":%d,\n"
+        "  \"pawnBody\":\"0x%08X\",\n  \"cmcInfo\":\"0x%08X\",\n"
+        "  \"cmcInfoSize\":%u,\n  \"censusCandidates\":%d,\n"
+        "  \"priorityProfile\":{\"active\":\"%s\","
+        "\"ruleCount\":%d,\"resolvedRules\":%d,\"appliedRules\":%d,"
+        "\"fileOk\":%s,\"applied\":%s,\"converged\":%s,"
+        "\"writes\":%d,\"restores\":%d},\n"
+        "  \"cmcInfoHex\":\"",
+        MOD_BUILD_TAG, g_partyAiSeq, (unsigned)pawn->ptr, (unsigned)cmcInfo,
+        cmcSize, g_nPawnAi, g_priorityProfileActive,
+        g_nPriorityProfileRules, profileResolvedRules, profileAppliedRules,
+        g_priorityProfileFileOk ? "true" : "false",
+        g_priorityProfileApplied ? "true" : "false",
+        g_priorityProfileConverged ? "true" : "false",
+        g_priorityProfileWrites, g_priorityProfileRestores);
+    for (uint32_t b = 0; b < cmcSize; ++b) fprintf(f, "%02X", cmcBytes[b]);
+    fputs("\",\n  \"objects\":[\n", f);
+
+    int written = 0;
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        uintptr_t currentVt = 0;
+        if (!RdPtr((void*)A.ptr, &currentVt) || currentVt != A.vt) continue;
+
+        uint32_t size = A.typeSize;
+        if (!size || size > 0x10000u) size = kPawnAiDumpBytes;
+        BYTE* bytes = (BYTE*)malloc(size);
+        if (!bytes || !Rd((void*)A.ptr, bytes, size)) {
+            if (bytes) free(bytes);
+            continue;
+        }
+
+        int bodyRefOff = pawn->bodyOk ? PartyFindPtrOffset(pawn->body, pawn->bodySize, A.ptr) : -1;
+        int infoRefOff = PartyFindPtrOffset(cmcBytes, cmcSize, A.ptr);
+        int containsBodyOff = PartyFindPtrOffset(bytes, size, pawn->ptr);
+        int containsInfoOff = PartyFindPtrOffset(bytes, size, cmcInfo);
+        int inlineInfoOff = (A.ptr >= cmcInfo && A.ptr < cmcInfo + cmcSize)
+            ? (int)(A.ptr - cmcInfo) : -1;
+        uint32_t hash = PartyHashBytes(bytes, size);
+        uint32_t dump = size < (uint32_t)kPawnAiDumpBytes ? size : (uint32_t)kPawnAiDumpBytes;
+
+        fprintf(f,
+            "    %s{\"name\":\"%s\",\"ptr\":\"0x%08X\",\"vt\":\"0x%08X\","
+            "\"size\":%u,\"hash\":\"0x%08X\",\"bodyRefOff\":%d,"
+            "\"infoRefOff\":%d,\"containsBodyOff\":%d,\"containsInfoOff\":%d,"
+            "\"inlineInfoOff\":%d,\"headHex\":\"",
+            written ? "," : "", A.name, (unsigned)A.ptr, (unsigned)A.vt,
+            size, hash, bodyRefOff, infoRefOff, containsBodyOff, containsInfoOff,
+            inlineInfoOff);
+        for (uint32_t b = 0; b < dump; ++b) fprintf(f, "%02X", bytes[b]);
+        fputs("\"}\n", f);
+        ++written;
+        free(bytes);
+    }
+    fputs("  ],\n  \"priorityBuckets\":[", f);
+
+    // Build 42 proved that cAIPriorityThink owns 48 cArray descriptors, not
+    // separate 0x90-byte score objects. Each descriptor is 0x14 bytes at
+    // +0x38; mpArray is +0x10 and contains exactly count cPrioParam pointers.
+    // Capture descriptor -> payload coherently by verifying the descriptor did
+    // not change during the read. Heap buffers can rotate while the game runs.
+    PawnAiCandidate* priority = nullptr;
+    for (int i = 0; i < g_nPawnAi; ++i)
+        if (!strcmp(g_pawnAi[i].name, "cAIPriorityThink")) {
+            priority = &g_pawnAi[i];
+            break;
+        }
+
+    int bucketWritten = 0;
+    if (priority) {
+        for (int slot = 0; slot < 48; ++slot) {
+            const uint32_t descriptorOff = 0x38u + (uint32_t)slot * 0x14u;
+            uint32_t before[5] = {};
+            uint32_t after[5] = {};
+            uintptr_t entries[16] = {};
+            bool coherent = false;
+            bool payloadOk = false;
+
+            for (int attempt = 0; attempt < 3 && !coherent; ++attempt) {
+                memset(before, 0, sizeof(before));
+                memset(after, 0, sizeof(after));
+                memset(entries, 0, sizeof(entries));
+                if (!Rd((void*)(priority->ptr + descriptorOff), before, sizeof(before)))
+                    break;
+                const uint32_t count = before[1];
+                const uint32_t capacity = before[2];
+                const uintptr_t arrayPtr = before[4];
+                if (count > 16u || capacity > 16u || count > capacity)
+                    break;
+                payloadOk = count == 0u
+                    || (LooksHeap(arrayPtr)
+                        && Rd((void*)arrayPtr, entries, count * sizeof(uintptr_t)));
+                if (!payloadOk) break;
+                if (!Rd((void*)(priority->ptr + descriptorOff), after, sizeof(after)))
+                    break;
+                coherent = memcmp(before, after, sizeof(before)) == 0;
+            }
+
+            fprintf(f,
+                "%s{\"slotIndex\":%d,\"descriptorOff\":\"0x%04X\","
+                "\"pointerOff\":\"0x%04X\",\"coherent\":%s,"
+                "\"vtable\":\"0x%08X\",\"count\":%u,\"capacity\":%u,"
+                "\"flags\":%u,\"ptr\":\"0x%08X\",\"payloadOk\":%s,"
+                "\"pointers\":[",
+                bucketWritten ? "," : "", slot, descriptorOff,
+                descriptorOff + 0x10u, coherent ? "true" : "false",
+                before[0], before[1], before[2], before[3], before[4],
+                payloadOk ? "true" : "false");
+            for (uint32_t n = 0; n < before[1] && n < 16u; ++n)
+                fprintf(f, "%s\"0x%08X\"", n ? "," : "", (unsigned)entries[n]);
+            fputs("]}", f);
+            ++bucketWritten;
+        }
+    }
+
+    fputs("],\n  \"priorityRules\":[", f);
+
+    // cPrioParam contains two cArray descriptors:
+    //   +0x18 count +0x1C, capacity +0x20, mpArray +0x28 (cCodeParam*)
+    //   +0x2C count +0x30, capacity +0x34, mpArray +0x3C (cOrderValue*)
+    // Dump pointer arrays and full children. cCodeParam pointer fields are
+    // followed once so nested personality checks can be mapped offline.
+    int ruleWritten = 0;
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        if (strcmp(A.name, "rAIPriorityThink::cPrioParam")) continue;
+
+        BYTE prioRaw[64] = {};
+        uintptr_t currentVt = 0;
+        if (!RdPtr((void*)A.ptr, &currentVt) || currentVt != A.vt
+            || !Rd((void*)A.ptr, prioRaw, sizeof(prioRaw)))
+            continue;
+
+        const uint32_t sensor = *(uint32_t*)(prioRaw + 0x04);
+        const uint32_t code = *(uint32_t*)(prioRaw + 0x08);
+        uint32_t personalityCount = *(uint32_t*)(prioRaw + 0x1C);
+        const uint32_t personalityCapacity = *(uint32_t*)(prioRaw + 0x20);
+        const uintptr_t personalityArray = *(uint32_t*)(prioRaw + 0x28);
+        uint32_t orderCount = *(uint32_t*)(prioRaw + 0x30);
+        const uint32_t orderCapacity = *(uint32_t*)(prioRaw + 0x34);
+        const uintptr_t orderArray = *(uint32_t*)(prioRaw + 0x3C);
+        if (personalityCount > 16u) personalityCount = 0;
+        if (orderCount > 16u) orderCount = 0;
+
+        uintptr_t personalityPtrs[16] = {};
+        uintptr_t orderPtrs[16] = {};
+        const bool personalityArrayOk = personalityCount == 0u
+            || (LooksHeap(personalityArray)
+                && Rd((void*)personalityArray, personalityPtrs,
+                    personalityCount * sizeof(uintptr_t)));
+        const bool orderArrayOk = orderCount == 0u
+            || (LooksHeap(orderArray)
+                && Rd((void*)orderArray, orderPtrs, orderCount * sizeof(uintptr_t)));
+
+        fprintf(f,
+            "%s{\"prioPtr\":\"0x%08X\",\"sensor\":%u,\"code\":%u,"
+            "\"personalityCount\":%u,\"personalityCapacity\":%u,"
+            "\"personalityArray\":\"0x%08X\",\"personalityArrayOk\":%s,"
+            "\"personalityItems\":[",
+            ruleWritten ? "," : "", (unsigned)A.ptr, sensor, code,
+            personalityCount, personalityCapacity, (unsigned)personalityArray,
+            personalityArrayOk ? "true" : "false");
+
+        if (personalityArrayOk) {
+            for (uint32_t n = 0; n < personalityCount; ++n) {
+                BYTE child[104] = {};
+                const uintptr_t childPtr = personalityPtrs[n];
+                const bool childOk = LooksHeap(childPtr)
+                    && Rd((void*)childPtr, child, sizeof(child));
+                fprintf(f, "%s{\"ptr\":\"0x%08X\",\"ok\":%s,\"hex\":\"",
+                    n ? "," : "", (unsigned)childPtr, childOk ? "true" : "false");
+                if (childOk)
+                    for (int b = 0; b < (int)sizeof(child); ++b) fprintf(f, "%02X", child[b]);
+                fputs("\",\"heapTargets\":[", f);
+
+                int targetWritten = 0;
+                if (childOk) {
+                    for (int off = 0; off + 4 <= (int)sizeof(child); off += 4) {
+                        const uintptr_t target = *(uint32_t*)(child + off);
+                        if (!LooksHeap(target)) continue;
+                        BYTE targetRaw[0x80] = {};
+                        if (!Rd((void*)target, targetRaw, sizeof(targetRaw))) continue;
+                        fprintf(f,
+                            "%s{\"fieldOff\":\"0x%02X\",\"ptr\":\"0x%08X\","
+                            "\"hex\":\"",
+                            targetWritten ? "," : "", off, (unsigned)target);
+                        for (int b = 0; b < (int)sizeof(targetRaw); ++b)
+                            fprintf(f, "%02X", targetRaw[b]);
+                        fputs("\"}", f);
+                        ++targetWritten;
+                    }
+                }
+                fputs("]}", f);
+            }
+        }
+
+        fprintf(f,
+            "],\"orderCount\":%u,\"orderCapacity\":%u,"
+            "\"orderArray\":\"0x%08X\",\"orderArrayOk\":%s,"
+            "\"orderItems\":[",
+            orderCount, orderCapacity, (unsigned)orderArray,
+            orderArrayOk ? "true" : "false");
+        if (orderArrayOk) {
+            for (uint32_t n = 0; n < orderCount; ++n) {
+                BYTE child[12] = {};
+                const uintptr_t childPtr = orderPtrs[n];
+                const bool childOk = LooksHeap(childPtr)
+                    && Rd((void*)childPtr, child, sizeof(child));
+                fprintf(f, "%s{\"ptr\":\"0x%08X\",\"ok\":%s,\"hex\":\"",
+                    n ? "," : "", (unsigned)childPtr, childOk ? "true" : "false");
+                if (childOk)
+                    for (int b = 0; b < (int)sizeof(child); ++b) fprintf(f, "%02X", child[b]);
+                fputs("\"}", f);
+            }
+        }
+        fputs("]}", f);
+        ++ruleWritten;
+    }
+
+    fputs("],\n  \"profileRules\":[", f);
+    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
+        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
+        fprintf(f,
+            "%s{\"index\":%d,\"sensor\":%u,\"code\":%u,"
+            "\"category\":%u,\"objectId\":%u,\"extra\":%u,"
+            "\"ruleIndex\":%u,\"expectedAddS32\":%d,"
+            "\"desiredAddS32\":%d,\"expectedBreak\":%u,"
+            "\"expectedCheckCount\":%u,\"expectedSlot\":%d,"
+            "\"prioPtr\":\"0x%08X\",\"rulePtr\":\"0x%08X\","
+            "\"resolved\":%s,\"applied\":%s,\"currentAddS32\":%d,"
+            "\"liveSlot\":%d}",
+            i ? "," : "", i, R.sensor, R.code, R.category, R.objectId,
+            R.extra, R.ruleIndex, R.expectedAddS32, R.desiredAddS32,
+            R.expectedBreak, R.expectedCheckCount, R.expectedSlot,
+            (unsigned)R.prioPtr, (unsigned)R.rulePtr,
+            R.resolved ? "true" : "false", R.applied ? "true" : "false",
+            R.currentAddS32, R.liveSlot);
+    }
+    fputs("],\n  \"cmcInfoNamedPointers\":[", f);
+    int namedWritten = 0;
+    for (uint32_t off = 0; off + 4 <= cmcSize; off += 4) {
+        uintptr_t child = *(uint32_t*)(cmcBytes + off);
+        if (!LooksHeap(child)) continue;
+        uintptr_t childVt = 0;
+        if (!RdPtr((void*)child, &childVt) || !LooksLikeVtable(childVt)) continue;
+        char childName[64] = {};
+        if (!NameOfLiveObject(child, childName, sizeof(childName)) || !childName[0]) continue;
+        fprintf(f,
+            "%s{\"off\":\"0x%04X\",\"ptr\":\"0x%08X\","
+            "\"vt\":\"0x%08X\",\"name\":\"%s\"}",
+            namedWritten ? "," : "", off, (unsigned)child,
+            (unsigned)childVt, childName);
+        ++namedWritten;
+    }
+    fputs("]\n}\n", f);
+    fclose(f);
+    free(cmcBytes);
+
+    lstrcpynA(g_partyAiLastFile, path, sizeof(g_partyAiLastFile));
+    sprintf_s(g_partyAiStatus, sizeof(g_partyAiStatus),
+        "AI bridge %03d: %d live objects", g_partyAiSeq, written);
+    logFile << "PartyRecon: pawn AI bridge " << g_partyAiSeq
+            << " candidates=" << g_nPawnAi << " written=" << written
+            << " cmcInfo=0x" << std::hex << cmcInfo << std::dec
+            << " file=" << g_partyAiLastFile << std::endl;
 }
 
 static void PartyTraceStop()
@@ -3230,6 +4150,8 @@ static void PartyCapture(bool forceFind)
         return;
     }
 
+    PartyWriteAiBridgeJson();
+
     logFile << "PartyRecon: snapshot " << g_partySeq << " bodies=" << g_nParty
             << " rawCandidates=" << g_partyRawCandidates
             << " vtChecked=" << g_partyVtChecked << " vtNamed=" << g_partyVtNamed
@@ -3242,13 +4164,16 @@ static void PartyCapture(bool forceFind)
                 << " pawnIntel=" << (g_party[i].hasPawnIntel ? 1 : 0)
                 << " pawnMgr=" << (g_party[i].pawnManagerRef ? 1 : 0) << std::endl;
     }
-    if (forceFind && g_nParty >= 2) PartyTraceStart();
+    // Build 40 snapshots the upper AI graph on demand. The old dense CSV
+    // remains available via '-' but is no longer started automatically.
     InterlockedExchange(&g_partyBusy, 0);
 }
 
 static void PartyHotkeyTick()
 {
-    PartyTraceHotkeyTick();
+    // '-' switches persistent sidecar profiles transactionally.
+    // The legacy dense trace remains file-only but has no hotkey in this build.
+    PartyPriorityProfileHotkeyTick();
     PartyTraceTick();
 
     static bool wasDown = false;
@@ -3664,9 +4589,15 @@ void DevTools::WorldScan_Tick()
     // past the spawn sphere. World=0 means the 29KB body is gone.
     // Do not invent a distance despawn.
     if (!g_enabled) return;
-    if (!InWorld()) return;
+    if (!InWorld()) {
+        PartyPriorityProfileRestoreAll("world unload");
+        PartyPriorityProfileResetRuntime();
+        g_priorityProfileWorldSince = 0;
+        g_priorityProfileLastDiscover = 0;
+        return;
+    }
 
-    // Temporary player/pawn probe: '=' takes a read-only snapshot. This is
+    // Temporary player/pawn probe: '=' takes an AI snapshot. This is
     // intentionally checked before the WorldScan throttle so a deliberate
     // key press is not lost while the Arisen or pawn is sprinting.
     PartyHotkeyTick();
@@ -4567,12 +5498,16 @@ static void RenderDevToolsUI()
     // JSON for offline analysis; the tester sees only body + current action.
     if (ImGui::CollapsingHeader("Player + Main Pawn recon", "partyrecon", true, true)) {
         ImGui::TextWrapped(
-            "Read-only. Find starts a lightweight live CSV automatically. Close F12, do the "
-            "short movement/HP/stamina test, then press '-' to stop. '=' snapshots remain optional.");
-        if (ImGui::Button("Find both + start live trace", ImVec2(300, 28)))
+            "General priority sidecar: profiles contain 0..48 exact rule entries. "
+            "'-' switches vanilla/research_pair45_46; custom profiles are selected in "
+            "DDDA_AI_Overhaul\\ddda_pawn_ai_profiles.ini. '=' captures a snapshot.");
+        if (ImGui::Button("Find both + capture baseline", ImVec2(280, 28)))
             PartyCapture(true);
         ImGui::SameLine();
-        ImGui::TextDisabled("- trace on/off | = snapshot");
+        if (ImGui::Button("Switch profile", ImVec2(110, 28)))
+            PartyPriorityProfileToggle();
+        ImGui::SameLine();
+        ImGui::TextDisabled("- profile  = snapshot");
 
         ImVec4 pcol = g_nParty >= 2
             ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f)
@@ -4588,11 +5523,14 @@ static void RenderDevToolsUI()
             else
                 ImGui::TextDisabled("action not found yet");
         }
-        if (g_partyLastFile[0])
-            ImGui::TextDisabled("snapshot: ddda_party_recon_%03d.json", g_partySeq);
-        if (g_partyTraceFile[0])
-            ImGui::TextDisabled("live CSV: ddda_party_live_%03d.csv | runtime probes: %d",
-                g_partyTraceSeq, g_nPartyRuntime);
+        ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "%s", g_partyAiStatus);
+        ImVec4 profileColor = strcmp(g_priorityProfileActive, "vanilla")
+            ? ImVec4(1.0f, 0.65f, 0.20f, 1.0f)
+            : ImVec4(0.45f, 1.0f, 0.45f, 1.0f);
+        ImGui::TextColored(profileColor, "%s", g_priorityProfileStatus);
+        if (g_partyAiLastFile[0])
+            ImGui::TextDisabled("AI snapshot: ddda_pawn_ai_bridge_%03d.json", g_partyAiSeq);
+        ImGui::TextDisabled("DTI AI candidates in census: %d", g_nPawnAi);
     }
 
     ImGui::Spacing();
@@ -5075,6 +6013,8 @@ void Hooks::DevTools()
     }
 
     BuildWatch();
+    PartyPriorityProfileEnsureFile();
+    PartyPriorityProfileLoadIfChanged();
 
     logFile << "DevTools: TypeAtlas " << TypeAtlas::kCount
             << "  watch=" << g_nWatch
@@ -5084,4 +6024,10 @@ void Hooks::DevTools()
             << std::endl;
 
     InGameUIAdd(RenderDevToolsUI);
+}
+
+void Hooks::DevTools_Shutdown()
+{
+    // Guarded rule rollback only; no waits or thread joins.
+    PartyPriorityProfileRestoreAll("DLL detach");
 }

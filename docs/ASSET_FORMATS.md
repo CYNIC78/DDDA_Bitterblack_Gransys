@@ -697,17 +697,19 @@ maxHP гоблина (.rst):  1000
 
 Пешка — не `emXXXX`. Она человек, и её параметры лежат не в `em*.arc`:
 
-| что | где искать | формат | наш инструмент |
+| что | точный путь после распаковки | формат | runtime-пара |
 |---|---|---|---|
-| `AIPlActParam` (веса действий пешки) | `game_main.arc` | XFS | `xfs_dump.py` ✅ |
-| инклинации, пороги | `game_main.arc` / сейв | XFS | `xfs_dump.py` ✅ |
-| статы вокаций | `game_main.arc` | XFS | `xfs_dump.py` ✅ |
-| мотионы пешки | `pl*.arc` | LMT | `lmt_dump.py` ✅ |
+| политика приоритетов пешки | `game_main/AI/PrioThink/cmc.prt` | XFS | `rAIPriorityThink` → `cAIPriorityThink` |
+| параметры действий/оружия | `game_main/AI/AIPlayerActionParameter/*.AIPlActParam` | XFS | `rAIPlayerActionParameter` → `cAIPlayerActionParameter` |
+| инклинации и параметры игрока | `game_main/param/pl/` / сейв | XFS | character record `pBase` |
+| общие мотионы | `game_main/motion/pl/` | LMT | текущий `cPlAct*` |
+| weapon-specific мотионы | `nativePC/rom/wp/.../*.arc` | LMT | текущий `cPlActWpn*` |
 
 `AIPlActParam` уже стоит в `ROADMAP` фазе 3.4 как «CATALOG → LIVE». Раньше там
-было честное «распаковать, править XML, запаковать». **Теперь этот пункт можно
-переписать:** мы не правим XML — мы читаем схему `xfs_dump.py` и пишем веса
-в живой объект.
+было честное «распаковать, править XML, запаковать». **Теперь этот пункт
+переписан:** файл даёт схему и ванильные значения, а веса меняются в живом
+`cAIPlayerActionParameter`, без подмены архива. `cmc.prt` — ещё более важный
+верхний слой: таблица приоритетного мышления пешки.
 
 ### 17.2 Но с пешкой есть важное отличие от гоблина
 
@@ -716,24 +718,41 @@ maxHP гоблина (.rst):  1000
 (`pBase +0xA7000 +0x7F0 +0x96C +0x1224`, 9 float'ов, шаг `0xC`), и
 `mStudyFlag[322]` тоже читаем.
 
-Поэтому по пешке **файлы дадут не адреса, а смысл**:
+Поэтому по пешке **файлы дадут не адреса, а смысл и ванильные значения**:
 
-- как называются 9 инклинаций **внутренними именами Capcom** (сейчас мы знаем
-  только английские из UI);
-- какие ещё поля лежат рядом с инклинациями в той же структуре — то есть
-  **что ещё можно крутить**, кроме девяти известных чисел;
-- пороги и веса `AIPlActParam` — те самые «политики, не пресеты» из фазы 1.5.
+- имена и коэффициенты приоритетов из `cmc.prt`;
+- условия, дистанции и веса `AIPlActParam`;
+- связь верхнего решения `cCmc*` с исполняемым `cPlAct*`;
+- внутренние имена параметров, которые затем ищутся в живых объектах.
 
-**Мой совет по приоритету:** пешка — да, но **после** того, как закроем смерть
-гоблина. Причина: смерть блокирует полку MEMORY и «энкаунтер кончился»,
-а это фундамент. Пешка сейчас и так работает.
+Build 39 уже подтвердил нижний слой: `uCmc + 0x2DC8 -> cPlAct*` и packed
+код на `+0x2DD4`. TypeAtlas содержит 282 класса `cPlAct*` и 180 классов
+`cCmc*`, поэтому вручную проигрывать все действия ради названий не нужно.
+Следующая задача — соединить `cmc.prt`/`AIPlActParam` с живым `cCmcInfo` и
+runtime-парами `cAIPriorityThink`/`cAIPlayerActionParameter`.
 
 ### 17.3 Цена вопроса
 
-`game_main.arc` — большой архив, не 40 МБ как `em0100`. Распаковка его целиком
-ради `AIPlActParam` — это отдельный заход с `arctool_helper.py`, и в репозиторий
-его класть **не надо** (там пол-игры). Достаточно вытащить нужные файлы
-и положить в `resources/extracted_assets/` точечно, как сделано с гоблином.
+Распаковывается чистая копия `nativePC/rom/game_main.arc` с `-xfs -txt`.
+В репозиторий и в переписку не нужен весь результат: достаточно manifest,
+`AI/PrioThink/`, `AI/AIPlayerActionParameter/` и `param/pl/`. Полная инструкция
+и список следующего motion-этапа: `docs/PLAYER_PAWN_WORK/PAWN_RESOURCE_EXTRACTION.md`.
+
+### 17.4 Получено и разобрано 15.08.2026
+
+В `resources/extracted_assets/pawnAI/` импортированы 83 файла: 68 GOAP,
+9 `AIPlActParam`, `cmc.prt`, pawn EAP и сенсоры. Рекурсивный XFS-декодер
+подтвердил точные мосты:
+
+```text
+cmc.prt class[0] sizeof 1064 == rAIPriorityThink sizeof 1064
+AIPlActParam root sizeof 120  == rAIPlayerActionParameter sizeof 120
+```
+
+Из `cmc.prt` извлечены 85 priority entries; 21 имеют personality-модификаторы,
+41 реагирует на команды. Из 68 GOAP-файлов извлечены 167 action interfaces,
+из weapon tables — 352 строки дистанций/атрибутов. Полный отчёт:
+`docs/PLAYER_PAWN_WORK/PAWN_AI_ASSET_RESULT.md`.
 
 ---
 

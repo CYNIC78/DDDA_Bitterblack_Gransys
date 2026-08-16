@@ -52,16 +52,20 @@ end
 
 ---
 
-## Pawn struct layout (структура тела пешки)
+## Персонажная запись `pBase` (ГГ и главная пешка)
 
-**Источник:** тот же CE script пользователя, +0x968+0x96C+0x868+0x8D0+0x994+0x998+0xDD0+0x6E0 подтверждены.
+**Базы:** ГГ = `*pBase + 0xA7000`; главная пешка = запись ГГ `+0x7F0`. Это не live body `uPlayer/uCmc`.
 
-| Оффсет от pawn body | Размер | Поле | Источник |
+| Оффсет от character record | Размер | Поле | Источник |
 |---|---|---|---|
 | +0x6E0 | int32 | Vocation (1=Fighter, 2=Strider, 3=Mage, ...) | CE script |
 | +0x868 | 24 B | Equipped Skills (3× int32) | CE script |
 | +0x8D0 | 24 B | Augments (6× int32) | CE script |
-| +0x96C | 24 B | Stats (HP/Stamina/Str/Def/Mag/MagDef, 6× float) | CE script |
+| +0x96C | float | **current HP** | Build 39: изменилось при уроне |
+| +0x970 | float | **max HP** | Build 39: 498 / 505 стабильно |
+| +0x974 | float | второй HP/recoverable параметр | Build 39: меняется при уроне; имя уточняется |
+| +0x978 | float | **current stamina** | Build 39: Dash/умения/восстановление |
+| +0x97C... | float | Strength/Defense/Magic/... | CE script; точные границы требуют отдельной сверки |
 | +0x96C+0x28 | int32 | XP | CE script |
 | +0x96C+0x2C | int32 | XP to next level | CE script |
 | +0xDD0 | uint16 | Level | CE script |
@@ -137,34 +141,54 @@ end
 
 ### Живой action/FSM layout игрока и главной пешки
 
-**Источник:** build 37, три снимка одного запуска (`Run`, `Dash`, `Wait`). Полная расшифровка: `docs/PLAYER_PAWN_IN_MEMORY.md`.
+**Источник:** build 37, три снимка одного запуска (`Run`, `Dash`, `Wait`). Полная расшифровка: `docs/PLAYER_PAWN_WORK/PLAYER_PAWN_IN_MEMORY.md`.
 
 | Оффсет от live body | Тип | Поле | Проверка |
 |---:|---|---|---|
 | `+0x2DC0` | ptr | `cActionManager::cActBank` | DTI на `uPlayer` и `uCmc` |
-| `+0x2DC8` | ptr | текущий `cPlAct*` | ГГ: Wait/Run/Dash; пешка: Run |
+| `+0x2DC8` | ptr | текущий `cPlAct*` | Wait/Walk/Run/Jump/Land/Dash/Damage/Weapon/Lift |
+| `+0x2DD4` | uint32 | packed current action-code | Build 39: Wait=0, Walk=1, Run=2, Dash=5, Jump=8 |
 | `+0x2DE8` | ptr | дубликат указателя current Act | совпал во всех трёх снимках |
 | `+0x2E64` | ptr | `cAICtrl` | DTI; у пешки обратная ссылка на body |
 
-Текущий Act — стабильный буфер (placement new): адрес не меняется, меняется vtable. У ГГ наблюдались `cPlActWait` (`0x015C128C`), `cPlActRun` (`0x015C131C`), `cPlActDash` (`0x015C1364`).
+Текущий Act — стабильный буфер (placement new): адрес не меняется, меняется vtable. У ГГ наблюдались `cPlActWait` (`0x015C128C`), `cPlActRun` (`0x015C131C`), `cPlActDash` (`0x015C1364`) и состояния прыжка/приземления/урона. Build 39 подтвердил `+0x2DD4` на обоих телах; поля `+0x4AE8/+0x32D8/+0x1C94/+0x4B14` не являются sprint flags.
+
+### Файловый каталог AI пешки
+
+**Источник:** `resources/extracted_assets/pawnAI/`, разбор 2026-08-15.
+
+| Файл/набор | Подтверждённый runtime-мост | Результат |
+|---|---|---|
+| `AI/PrioThink/cmc.prt` | `rAIPriorityThink` (1064) → `cAIPriorityThink` (1020) | 85 priority entries |
+| `AI/Goap/Cmc/*.gop` | GOAP InterfaceID → будущий live `cCmc*` bridge | 68 goals, 167 interfaces |
+| `AIPlayerActionParameter/*` | `rAIPlayerActionParameter` (120) → `cAIPlayerActionParameter` (112) | 9 tables, 352 action rows |
+| `Sensor/Cmc/cmc_normal.sn2` | sensor index в priority entries | 9 sensor profiles |
+
+Dagger action-code из Build 39 связывается с индексом таблицы: `0x01050003` → Dagger row 3 (`AtckLandL`), `0x0105002A` → Dagger row 42 (`Hyakuretsu`). Полный отчёт: `docs/PLAYER_PAWN_WORK/PAWN_AI_ASSET_RESULT.md`.
+
+### Live priority bridge — Build 40
+
+| Объект/оффсет | Поле | Проверка |
+|---|---|---|
+| `cAIGoalPlanning + 0x17C` | current priority code | Wait=`0`, Follow=`1`, Combat Dagger=`54` |
+| `planner + 0x190 + code*0x110` | соответствующий `cPlanCtrl` | DTI и изменение выбранных slots 0/1/54 |
+| `cAIPriorityThink + 0x08` | ptr на `rAIPriorityThink` | Build 41, одна стабильная root-пара |
+| `cAIPriorityThink` pointer fields | transient score/rank nodes | Build 41: target addresses идут сериями с шагом `0x90`; layout открыт в Build 42 |
+| `rAIPriorityThink::cPrioParam + 0x04` | Sensor | совпало с `cmc.prt` |
+| `cPrioParam + 0x08` | Code | 85/85 runtime entries совпали с каталогом |
+| `cPrioParam + 0x0C/+0x10/+0x14` | Category / OBJECT_ID / Extra | совпало с XFS layout |
+| `cCmcInfo + 0x14B8 + id*0x0C` | live personality `{state,id,value}` | 9 ID и динамические значения TacticalSwitch |
+| `cCmc* + 0x258` | compiled action parameter (6 ranges + 3 attrs) | Dagger rows 3/4, Bow rows 0/20 exact |
+| `cCmcInfo + 0x29C` | current HP mirror | изменилось при уроне |
+| `cCmcInfo + 0x2A4` | recoverable/second HP mirror | изменилось при уроне; имя уточняется |
+
+Полный разбор: `docs/PLAYER_PAWN_WORK/PAWN_AI_LIVE_BRIDGE_RESULT_40.md` и `docs/PLAYER_PAWN_WORK/PAWN_AI_SCORE_BRIDGE_RESULT_41.md`.
 
 **Ловушка:** `gid 0x61` в каталоге = Dragon, но **у гоблинов в лагере стоят `uEm8000` с тем же `+0x2D=0x61`**. Это **зайцы в чужой шкуре**, не Григори. Не маппить `0x61` → Hare в `BestiaryData.h` — сломаем настоящего дракона. Используется как **kind classification** в `DevTools::KindIsEnemy` — отделять от `uEm8600`/`uEm8000` через DTI-имя (`NameOfLiveObjectSafe`).
 
-### Запись пешки в `pBase` (не live `uCmc`)
+### Запись главной пешки в `pBase` (не live `uCmc`)
 
-Ниже оффсеты от персонажной записи `*pBase + 0xA7000 + 0x7F0`. Это не смещения живого сценического тела главной пешки.
-
-| Оффсет от pawn record | Тип | Поле | Источник |
-|---|---|---|---|
-| `+0x6E0` | int32 | Vocation | CE script |
-| `+0x868` | 24 B | Equipped Skills | CE script |
-| `+0x8D0` | 24 B | Augments | CE script |
-| `+0x96C` | 24 B | Stats (HP/Stam/Str/Def/Mag/MagDef) | CE script |
-| `+0x96C+0x28` | int32 | XP | CE script |
-| `+0x96C+0x2C` | int32 | XP to next level | CE script |
-| `+0xDD0` | uint16 | Level | CE script |
-| `+0x1616` | 322 B | mStudyFlag | архивный код PawnAI |
-| `+0x1B90` | 10×12 B | Inclinations array | CE script 2026-08-15 |
+Главная пешка использует тот же character-record layout из таблицы выше, начиная с `*pBase + 0xA7000 + 0x7F0`. Это не смещения живого сценического тела `uCmc`.
 
 ### Жизненный цикл
 
