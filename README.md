@@ -4,7 +4,7 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** Build 47 — Main Pawn AI Platform.
+**Текущий milestone:** Build 63 — Guardian Doctrine (ролевая матрица + градиентная зона телохранителя).
 
 ## Что уже работает
 
@@ -33,15 +33,21 @@ Priority profiles не запускают действие насильно. О�
 
 ## Важные ограничения
 
-Build 47 — development milestone, не законченный пользовательский AI overhaul.
+Build 63 — development milestone, не законченный пользовательский AI overhaul.
+
+Что уже работает (Guardian Doctrine):
+- трекинг игрока/пешки/врагов + диспозиция боя;
+- ролевая матрица (вокация пешки × вокация игрока): Protector/Assault/Adaptive/…;
+- градиентная зона телохранителя (preempt/melee) со снятием Guardian-штрафа
+  на кинжалы (code 54) транзакционно;
+- трёхсигнальный детектор боя (урон + боевые действия врагов + цель пешки).
 
 Ещё не завершены:
 
-- semantic names всех priority codes;
-- current target main pawn;
-- per-instance main-pawn root isolation при нескольких pawn roots;
-- generalized action-eligibility writes;
-- GOAP patch framework;
+- поводок (follow-дистанция) — роль-зависимый, НЕ найден (см. GUARDIAN_LEASH_MATRIX.md);
+- semantic names всех priority codes (code 4/66 в техдолге);
+- Файтер/Варриор (код меча/двуручника) — ждёт смены вокации;
+- Nexus doctrine (anchor = выбранная пешка);
 - monster priority/planner bridge.
 
 ## Сборка

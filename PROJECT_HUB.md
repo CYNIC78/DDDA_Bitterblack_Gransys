@@ -2,11 +2,14 @@
 
 ## Текущий milestone
 
-**Build 47:** `pawn-ai-platform-milestone`
+**Build 63:** `guardian-role-matrix`
 
 **Ветка разработки:** `work/player-main-pawn-recon`
 
-Главный результат: verified runtime priority platform главной пешки с persistent generalized profiles, automatic discovery, multi-rule transaction, convergence и rollback.
+Главный результат: Guardian Doctrine — ролевая матрица (вокация пешки × вокация
+игрока), градиентная зона телохранителя со снятием Guardian-штрафа на кинжалы
+(code 54) транзакционно, трёхсигнальный детектор боя. Поверх verified priority
+platform (persistent generalized profiles, transaction, convergence, rollback).
 
 ## Структура проекта
 

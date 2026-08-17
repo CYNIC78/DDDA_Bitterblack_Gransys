@@ -2,9 +2,9 @@
 
 **Stable milestone:** Build 47 — `pawn-ai-platform-milestone`
 
-**Current research:** Build 53 validated — 747-row main-pawn intent/action/target trace; live planner-only codes 74/76 discovered
+**Active vertical:** Build 63 — Guardian Doctrine (ролевая матрица, градиентная зона, детектор боя)
 
-**Дата состояния:** 2026-08-16
+**Дата состояния:** 2026-08-18
 
 ## 1. Что уже является платформой
 
