@@ -140,16 +140,11 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
         // иначе: держим engaged — угроза ещё «в прощаемом» радиусе.
     }
 
-    // --- 3) ответ по вокации пешки (Threat Anchor ≠ Movement Anchor) ---
-    const char* mode;
-    switch (VocationClassOf(s.pawnVocation)) {
-        case VCL_MELEE:  mode = "Intercept";   break; // перехват вплотную
-        case VCL_RANGED: mode = "RangedHold";  break; // держать позицию, огонь по зоне
-        case VCL_CASTER: mode = "Support";     break; // дальняя поддержка, без сближения
-        case VCL_HYBRID: mode = "Adaptive";    break; // мили, если угроза у якоря; иначе дальняя
-        default:         mode = "Unknown";     break;
-    }
-    out.responseMode = mode;
+    // --- 3) роль доктрины: вокация пешки × вокация Аризена (Build 63) ---
+    // Мили-пешка: кастер-игрок → Protector (телохранитель), мили/лучник →
+    // Assault (штурмовая поддержка). Гибрид — Adaptive (универсал).
+    GuardianRole role = GuardianRoleOf(s.pawnVocation, s.anchorVocation);
+    out.responseMode = GuardianRoleName(role);
 
     out.threatsInZone = inZone;
     // Дистанции на экран — в МЕТРАХ (raw world-units / scale).
@@ -168,6 +163,11 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
     //     с offensive intent code 54 (WpnDaggerAtk), когда враг реально в зоне.
     //     Это НЕ форсирует атаку — штатный GOAP/eligibility сами решат,
     //     возможна ли атака; мы лишь убираем искусственную пассивность.
+    // Build 63: совет по роли.
+    //   - гибрид/мили: снять Guardian-штраф с кинжалов (code 54). Для Файтер/
+    //     Варриор код оружия (меч/двуручник) пока не раскрыт — поймает
+    //     Guardian-аудит; тогда добавим сюда sword/gsword code.
+    //   - дальнобойная/кастер: не тянем к якорю (Threat ≠ Movement Anchor).
     VocationClass vc = VocationClassOf(s.pawnVocation);
     if (vc == VCL_MELEE || vc == VCL_HYBRID) {
         GuardianAdvice& a = out.advice[out.adviceCount++];
@@ -175,7 +175,11 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
         a.code = 54;
         a.intentKey = "WpnDaggerAtk";
         a.deltaS32 = 0; // штраф -3 → 0
-        a.reason = "threat in Arisen zone: lift Guardian -3 on WpnDaggerAtk";
+        a.reason = (role == GROLE_PROTECTOR)
+            ? "Protector: threat near caster Arisen — lift Guardian -3 on dagger"
+            : (role == GROLE_ASSAULT)
+                ? "Assault: threat in Arisen zone — lift Guardian -3 on dagger"
+                : "threat in Arisen zone: lift Guardian -3 on WpnDaggerAtk";
     } else {
         // Дальнобойная/кастер: не тянем к якорю. Поднимаем выбор цели в зоне.
         GuardianAdvice& a = out.advice[out.adviceCount++];

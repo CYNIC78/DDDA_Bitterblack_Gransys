@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "60-positions-fast-fix"
+#define MOD_BUILD_TAG "63-guardian-role-matrix"

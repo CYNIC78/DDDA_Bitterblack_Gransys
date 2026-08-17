@@ -515,7 +515,9 @@ static void PublishToBus()
     r.distinctTypes  = total;
     r.unknownTypes   = unknown;
     r.avgKnowledge01 = avgK;
-    r.inCombat       = (total > 0);
+    // Build 62: inCombat — объединённый трёхсигнальный детектор (урон +
+    // боевые действия врагов + цель пешки), а не только «был урон».
+    r.inCombat       = IsInCombat();
 
     if (total == 0) {
         r.utilitarianConfidence = 0.5f;
@@ -641,7 +643,22 @@ float GetCombatUtilitarianConfidence()
     return 0.25f + avgK * 0.65f;
 }
 
-bool IsInCombat()
+// Build 62 — трёхсигнальный детектор боя с гистерезисом.
+// Раньше: бой = «был урон за COMBAT_TIMEOUT_SEC» (урон + таймер отсутствия).
+// Проблема: бой «начинался» только после первого удара и «кончался» тупо по
+// таймеру, не видя врагов, что дерутся/преследуют без попаданий, и пешку,
+// что уже выбрала цель.
+// Теперь три сигнала:
+//   1) урон (кольцо, как раньше);
+//   2) живые враги в боевом действии (WorldReport.enemyCombatCount);
+//   3) пешка выбрала боевую цель (WorldReport.pawnEngaged).
+// Вход — мгновенный (любой сигнал), выход — только после GRACE тишины.
+#define COMBAT_EXIT_GRACE_MS 2500
+
+static DWORD g_lastCombatSignalMs = 0;
+static bool  g_combatActive = false;
+
+static bool DamageRingActive()
 {
     DWORD now = MsNow();
     EnterCriticalSection(&g_lock);
@@ -653,6 +670,24 @@ bool IsInCombat()
     }
     LeaveCriticalSection(&g_lock);
     return false;
+}
+
+bool IsInCombat()
+{
+    bool sig = DamageRingActive();
+    if (!sig) {
+        WorldReport w = CombatBus::Instance().LastWorld();
+        if (w.enemyCombatCount > 0 || w.pawnEngaged) sig = true;
+    }
+
+    DWORD now = MsNow();
+    if (sig) {
+        g_lastCombatSignalMs = now;
+        g_combatActive = true;
+    } else if (g_combatActive && now - g_lastCombatSignalMs >= COMBAT_EXIT_GRACE_MS) {
+        g_combatActive = false;
+    }
+    return g_combatActive;
 }
 
 int GetCombatEnemyCategory()

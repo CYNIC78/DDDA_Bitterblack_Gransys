@@ -63,6 +63,9 @@ struct WorldPresence {
     const char* kind;
     float       x, y, z;
     bool        fromScan;
+    // Build 62: враг сейчас в боевом действии (Atk/Dmg/Guard/Eva/... — по
+    // DTI-имени live Act). Пусто для не-врагов и трупов.
+    bool        inCombatAction;
 };
 
 struct WorldReport {
@@ -76,6 +79,12 @@ struct WorldReport {
     // Безобидная живность (uEm8000, зайцы): существа, но не угроза.
     // Считаются отдельно, чтобы не завышать опасность на пустом месте.
     int      critterCount;
+    // Build 62: сколько ЖИВЫХ врагов сейчас в боевом действии. Сигнал
+    // «враги реально дерутся», независимый от нанесённого урона.
+    int      enemyCombatCount;
+    // Build 62: пешка выбрала боевую цель (uCmc+0x2EB8 != 0). Ранний сигнал
+    // начала боя — пешка «увидела» угрозу до первого удара.
+    bool     pawnEngaged;
     int      dominantCategory; // -1 none. Only uEm0100/uEm0101 publish a category (0=small).
     uint32_t timestampMs;
     WorldPresence units[32];

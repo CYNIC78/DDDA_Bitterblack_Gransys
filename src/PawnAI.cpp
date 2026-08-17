@@ -301,7 +301,11 @@ void RenderPawnAIUI(){
         ImGui::TextWrapped("%s", targetAuditCache);
 
         ImGui::Separator();
-        ImGui::Text("Response mode: %s | combat %s",
+        // Build 61: прицельная охота за code 4 / code 66 (всегда в фоне).
+        ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1), "%s", DevTools::GuardianIntentHunt());
+
+        ImGui::Separator();
+        ImGui::Text("Role: %s | combat %s",
             rep.responseMode, sit.inCombat ? "YES" : "no");
 
         if(!rep.anchorResolved){
@@ -353,6 +357,9 @@ void RenderPawnAIUI(){
         world.count, world.enemyCount, world.critterCount, world.deadCount, age);
     ImGui::TextDisabled("   goblins: %d   cat %d   (critters = hares etc, not a threat)",
         world.goblinCount, world.dominantCategory);
+    // Build 62: сигналы трёхсигнального детектора (урон виден в Hits выше).
+    ImGui::TextDisabled("   enemyInCombatAction=%d  pawnTarget=%s",
+        world.enemyCombatCount, world.pawnEngaged ? "SET" : "none");
     ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Acquisitor, SmartUtil, Anchors, Tactical",
         INCL_STRIDE, MSTUDYFLAG_OFFSET);
     ImGui::PopID();

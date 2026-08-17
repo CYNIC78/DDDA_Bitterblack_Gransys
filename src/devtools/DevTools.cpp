@@ -93,6 +93,7 @@
 #include "devtools/DevTools.h"
 #include "devtools/TypeCallers.Generated.h"
 #include "devtools/generated/PawnPrioritySemantics.inl"
+#include "devtools/generated/GoapInterfaceMap.inl"
 #include "CombatBus.h"
 #include "ModPaths.h"
 #include <stdio.h>
@@ -752,6 +753,9 @@ struct ActorDump {
     char        kindBuf[40];
 };
 static ActorDump g_act[32];
+// Build 62: боевая цель пешки (uCmc+0x2EB8), читается в PartyReadPositions.
+// Глобал объявлен до PublishWorldFromActors, чтобы та могла его читать.
+static uintptr_t g_pawnCombatTarget = 0;
 static int       g_nAct = 0;
 static uintptr_t g_pollAddr = 0x10000000u;
 static uintptr_t g_lastBand = 0x10000000u;
@@ -2254,6 +2258,8 @@ static int KindCategory(const char* kind)
     return -1;
 }
 
+static bool EnemyActNameIsCombat(const char* actName); // Build 62 (опр. ниже)
+
 static void PublishWorldFromActors()
 {
     if (g_nAct && g_act[0].ptr)
@@ -2278,7 +2284,13 @@ static void PublishWorldFromActors()
         p.y = g_act[i].y;
         p.z = g_act[i].z;
         p.fromScan = true;
-        if (KindIsEnemy(g_act[i].kind))         w.enemyCount++;
+        // Build 62: боевое действие врага (по live Act, не по урону).
+        p.inCombatAction = KindIsEnemy(g_act[i].kind)
+            && EnemyActNameIsCombat(g_act[i].liveAct);
+        if (KindIsEnemy(g_act[i].kind)) {
+            w.enemyCount++;
+            if (p.inCombatAction) w.enemyCombatCount++;
+        }
         else if (KindIsHarmless(g_act[i].kind)) w.critterCount++;
         if (g_act[i].kind && (!strcmp(g_act[i].kind, "uEm0100")
             || !strcmp(g_act[i].kind, "uEm0101")))
@@ -2288,6 +2300,8 @@ static void PublishWorldFromActors()
         w.count++;
     }
     w.dominantCategory = best;
+    // Build 62: пешка выбрала боевую цель (читается в PartyReadPositions).
+    w.pawnEngaged = (g_pawnCombatTarget != 0);
     CombatBus::Instance().PublishWorld(w);
 }
 
@@ -2357,6 +2371,39 @@ static bool ActNameIsDeath(const char* actName)
     const char* p = strstr(actName, "Act");
     const char* s = p ? p + 3 : actName;
     return strstr(s, "Die") != nullptr || strstr(s, "Dead") != nullptr;
+}
+
+// Build 62 — враг в боевом действии? По DTI-имени live Act (не по урону).
+// Консервативно: только однозначно боевые состояния. Локомоция (Walk/Run)
+// НЕ считается боем — это может быть патруль, а ложный «бой» хуже пропуска
+// (пропуск ловится другими сигналами: урон и цель пешки).
+static bool EnemyActNameIsCombat(const char* actName)
+{
+    if (!actName || !actName[0]) return false;
+    if (ActNameIsDeath(actName)) return false; // смерть — не бой
+    static const char* kCombat[] = {
+        "Atk",      // Atck*/атаки (покрывает и "Atck")
+        "Dmg",      // получает урон
+        "Guard",    // блокирует
+        "Eva",      // уклоняется
+        "Dash",     // боевой рывок
+        "Charge",   // заряд/разгон атаки
+        "Howl",     // агро-вой
+        "Provoke",  // провокация
+        "Roar",     // рёв
+        "Escape",   // бегство из боя (контекст боя)
+        "Bite",     // укус
+        "Grab",     // захват
+        "Stomp",    // топот
+        "Tail",     // хвост (атака)
+        "Breath",   // дыхание (дракон)
+        "Fire",     // огонь
+        "Shot",     // выстрел
+        "Swing",    // замах
+    };
+    for (size_t i = 0; i < sizeof(kCombat) / sizeof(kCombat[0]); ++i)
+        if (strstr(actName, kCombat[i])) return true;
+    return false;
 }
 
 static const ActMap::Act* ActAt(uintptr_t body, uint32_t off, uintptr_t* outPtr, uint32_t* outRva)
@@ -3687,6 +3734,10 @@ static void PartyReadPositions()
         g_pawnPosX = x; g_pawnPosY = y; g_pawnPosZ = z;
         g_pawnPosOk = true;
         g_pawnPosWasOk = true;
+        // Build 62: боевая цель пешки (uCmc+0x2EB8, SOURCE_OF_TRUTH §4).
+        uintptr_t tgt = 0;
+        if (RdPtr((void*)(g_party[pawn].ptr + 0x2EB8), &tgt))
+            g_pawnCombatTarget = tgt;
     } else {
         g_pawnPosX = g_pawnPosY = g_pawnPosZ = 0;
         // Диагностика: только при ПЕРЕХОДЕ в сбой (было ок → стало ок-нет),
@@ -4950,6 +5001,81 @@ static void PartyCapture(bool forceFind)
     InterlockedExchange(&g_partyBusy, 0);
 }
 
+// ============ Build 61 — прицельная охота за code 4 и code 66 ============
+// Эти два кода статически «unmatched» (PlanCtrl пуст без активации). Ловим
+// их в рантайме: при selected code == 4 или 66 снимаем exact action, target,
+// packed и PlanCtrl links → InterfaceID → имя GOAP-ресурса.
+static char   g_intentHuntStatus[320] = "Intent hunt: not caught yet";
+static uint32_t g_huntLastCode = 0xFFFFFFFFu;
+static uintptr_t g_huntLastActionVt = 0;
+static uintptr_t g_huntLastTarget = 0;
+
+const char* DevTools::GuardianIntentHunt()
+{
+    return g_intentHuntStatus;
+}
+
+static void GuardianIntentHuntTick()
+{
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    if (!pawn || !pawn->ptr) return;
+    uintptr_t bodyVt = 0;
+    if (!RdPtr((void*)pawn->ptr, &bodyVt) || bodyVt != pawn->vt) return;
+
+    uintptr_t action = 0, actionVt = 0, target = 0, aiCtrl = 0, planner = 0;
+    uint32_t packed = 0xFFFFFFFFu, code = 0xFFFFFFFFu;
+    RdPtr((void*)(pawn->ptr + 0x2DC8), &action);
+    if (action) RdPtr((void*)action, &actionVt);
+    Rd((void*)(pawn->ptr + 0x2DD4), &packed, 4);
+    RdPtr((void*)(pawn->ptr + 0x2EB8), &target);
+    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
+    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
+    if (planner) Rd((void*)(planner + 0x17C), &code, 4);
+
+    if (code != 4u && code != 66u) return;
+
+    // Логируем только на смене action/target (не спамим каждый тик).
+    if (code == g_huntLastCode && actionVt == g_huntLastActionVt
+        && target == g_huntLastTarget)
+        return;
+    g_huntLastCode = code;
+    g_huntLastActionVt = actionVt;
+    g_huntLastTarget = target;
+
+    char actionName[64] = {};
+    char targetName[64] = {};
+    if (action) NameOfLiveObject(action, actionName, sizeof(actionName));
+    if (target) NameOfLiveObject(target, targetName, sizeof(targetName));
+
+    // PlanCtrl links -> InterfaceID -> имя ресурса.
+    uintptr_t links[64] = {};
+    int nLinks = PartyCollectIntentLinks(planner, code, links, 64);
+    char linkDesc[256] = "";
+    for (int i = 0; i < nLinks && i < 8; ++i) {
+        uint32_t ifaceId = 0;
+        Rd((void*)(links[i] + 0x04), &ifaceId, 4);
+        const char* resName = GoapInterfaceName(ifaceId);
+        char tmp[64];
+        sprintf_s(tmp, sizeof(tmp), "%s%d=%s", i ? "," : "", ifaceId,
+            resName ? resName : "?");
+        if (strlen(linkDesc) + strlen(tmp) < sizeof(linkDesc))
+            strcat_s(linkDesc, sizeof(linkDesc), tmp);
+    }
+
+    logFile << "IntentHunt: code=" << code
+            << " (" << PawnPriorityIntentName(code) << ")"
+            << " action=" << (actionName[0] ? actionName : "none")
+            << " packed=0x" << std::hex << packed << std::dec
+            << " target=" << (targetName[0] ? targetName : "none")
+            << " links=" << (nLinks ? linkDesc : "none") << std::endl;
+
+    sprintf_s(g_intentHuntStatus, sizeof(g_intentHuntStatus),
+        "code %u: action=%s target=%s iface=%s",
+        code, actionName[0] ? actionName : "none",
+        targetName[0] ? targetName : "none",
+        nLinks ? linkDesc : "none");
+}
+
 static void PartyHotkeyTick()
 {
     // '-' switches persistent sidecar profiles transactionally.
@@ -4957,6 +5083,7 @@ static void PartyHotkeyTick()
     PartyPriorityProfileHotkeyTick();
     PartyTraceTick();
     PartyIntentTraceTick();
+    GuardianIntentHuntTick(); // Build 61
 
     static bool wasDown = false;
     // Physical '=' key beside Backspace (VK_OEM_PLUS without Shift).
@@ -5396,10 +5523,13 @@ static char g_guardianAuditStatus[640] = "Guardian audit: not run";
 
 const char* DevTools::GuardianPenaltyAudit()
 {
-    static const uint32_t kCodes[] = { 4, 13, 15, 54, 57, 60, 66 };
-    static const int kCodeCount = sizeof(kCodes) / sizeof(kCodes[0]);
+    // Build 63: Guardian-SCOPED аудит. Сканируем ВСЕ priority-строки и находим
+    // все правила, чей check ссылается на Guardian (id склонности == 5). Это
+    // автоматом вскрывает не только кинжалы (54), но и меч/двуручник, когда
+    // пешка станет Fighter/Warrior — без угадывания кодов.
+    static const uint32_t kGuardianInclinationId = 5u;
 
-    int totalRows = 0, matched = 0;
+    int totalRows = 0, guardianRows = 0;
     char tail[512] = {};
     size_t tailLen = 0;
 
@@ -5420,76 +5550,91 @@ const char* DevTools::GuardianPenaltyAudit()
         const uint32_t objectId = *(uint32_t*)(prioRaw + 0x10);
         const uint32_t extra    = *(uint32_t*)(prioRaw + 0x14);
 
-        bool want = false;
-        for (int k = 0; k < kCodeCount; ++k)
-            if (code == kCodes[k]) { want = true; break; }
-        if (!want) continue;
-
         uint32_t pCount = *(uint32_t*)(prioRaw + 0x1C);
         if (pCount > 16u) pCount = 0;
         uintptr_t pArray = *(uint32_t*)(prioRaw + 0x28);
         uintptr_t pPtrs[16] = {};
         const bool pOk = pCount == 0u
             || (LooksHeap(pArray) && Rd((void*)pArray, pPtrs, pCount * 4));
+        if (!pOk || pCount == 0u) continue;
 
-        logFile << "GuardianAudit code=" << code
-                << " tuple{s=" << sensor << ",cat=" << category
-                << ",obj=" << objectId << ",extra=" << extra
-                << "} personality=" << pCount << (pOk ? "" : " ARRAY_BAD")
-                << std::endl;
-        ++matched;
+        // Есть ли у этой строки хоть одно правило, чей check = Guardian?
+        bool rowHasGuardian = false;
+        for (uint32_t n = 0; n < pCount; ++n) {
+            BYTE cp[0x24] = {};
+            if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
+            const int32_t addS32 = *(int32_t*)(cp + 0x04);
+            const uint32_t chkCnt = *(uint32_t*)(cp + 0x14);
+            const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
+            if (!chkCnt || chkCnt > 8u || !LooksHeap(chkArr)) continue;
+            uintptr_t ckPtrs[8] = {};
+            if (!Rd((void*)chkArr, ckPtrs, chkCnt * 4)) continue;
+            for (uint32_t c = 0; c < chkCnt; ++c) {
+                BYTE ck[0x10] = {};
+                if (!Rd((void*)ckPtrs[c], ck, sizeof(ck))) continue;
+                // check +0x04 = id склонности, +0x08 = ранг (SOURCE_OF_TRUTH §3.5.2).
+                const uint32_t inclId = *(uint32_t*)(ck + 0x04);
+                const uint32_t rank   = *(uint32_t*)(ck + 0x08);
+                if (inclId == kGuardianInclinationId) {
+                    rowHasGuardian = true;
+                    if (tailLen + 96 < sizeof(tail)) {
+                        tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
+                            " c%d.r%d=%d", code, n, addS32);
+                    }
+                }
+            }
+        }
 
-        if (pOk) {
+        if (rowHasGuardian) {
+            ++guardianRows;
+            logFile << "GuardianAudit code=" << code
+                    << " tuple{s=" << sensor << ",cat=" << category
+                    << ",obj=" << objectId << ",extra=" << extra
+                    << "} personality=" << pCount << std::endl;
+            // Подробно: каждая rule + её Guardian-ранг.
             for (uint32_t n = 0; n < pCount; ++n) {
                 BYTE cp[0x24] = {};
                 if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
-                const int32_t addS32  = *(int32_t*)(cp + 0x04);
-                float addF32 = 0; memcpy(&addF32, cp + 0x08, 4);
-                const uint32_t brk  = *(uint32_t*)(cp + 0x0C);
-                const uint32_t chkCnt  = *(uint32_t*)(cp + 0x14);
-                const uint32_t chkCap  = *(uint32_t*)(cp + 0x18);
+                const int32_t addS32 = *(int32_t*)(cp + 0x04);
+                const uint32_t brk   = *(uint32_t*)(cp + 0x0C);
+                const uint32_t chkCnt = *(uint32_t*)(cp + 0x14);
                 const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
-                logFile << "  rule[" << n << "] AddS32=" << addS32
-                        << " AddF32=" << addF32 << " break=" << brk
-                        << " checks=" << chkCnt << "/" << chkCap << std::endl;
-
-                // Build 57.2: дамп СОДЕРЖИМОГО каждого check (сырые байты).
-                // Check — объект с условием выбора правила. Разбираем offline.
+                char gdesc[64] = "";
                 if (chkCnt && chkCnt <= 8u && LooksHeap(chkArr)) {
                     uintptr_t ckPtrs[8] = {};
                     if (Rd((void*)chkArr, ckPtrs, chkCnt * 4)) {
                         for (uint32_t c = 0; c < chkCnt; ++c) {
-                            BYTE ck[0x30] = {};
-                            if (!Rd((void*)ckPtrs[c], ck, sizeof(ck))) continue;
-                            char hex[0x30 * 3 + 4] = {};
-                            for (int b = 0; b < 0x30; ++b)
-                                sprintf_s(hex + b * 3, sizeof(hex) - b * 3,
-                                    "%02X ", ck[b]);
-                            logFile << "    check[" << c << "] " << hex << std::endl;
+                            BYTE ck[0x10] = {};
+                            if (Rd((void*)ckPtrs[c], ck, sizeof(ck))) {
+                                uint32_t inclId = *(uint32_t*)(ck + 0x04);
+                                uint32_t rank   = *(uint32_t*)(ck + 0x08);
+                                char tmp[24];
+                                sprintf_s(tmp, sizeof(tmp), "%sincl%d/rank%u",
+                                    gdesc[0] ? "," : "", inclId, rank);
+                                if (strlen(gdesc) + strlen(tmp) < sizeof(gdesc))
+                                    strcat_s(gdesc, sizeof(gdesc), tmp);
+                            }
                         }
                     }
                 }
-
-                if (code == 54 && tailLen + 96 < sizeof(tail)) {
-                    tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
-                        " c54.r%d=%d", n, addS32);
-                }
+                logFile << "  rule[" << n << "] AddS32=" << addS32
+                        << " break=" << brk
+                        << " checks=[" << gdesc << "]" << std::endl;
             }
         }
     }
 
-    if (matched == 0) {
+    if (guardianRows == 0) {
         lstrcpynA(g_guardianAuditStatus,
-            "Guardian audit: NO rows matched (census not ready?)", sizeof(g_guardianAuditStatus));
-    } else if (tailLen) {
-        sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
-            "Guardian audit: %d rows, code54 rules:%s", matched, tail);
+            "Guardian audit: NO Guardian rules found (census not ready?)",
+            sizeof(g_guardianAuditStatus));
     } else {
         sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
-            "Guardian audit: %d rows matched (code 54 not seen)", matched);
+            "Guardian audit: %d rows with Guardian rules:%s",
+            guardianRows, tailLen ? tail : " (see log)");
     }
     logFile << "GuardianAudit: totalRows=" << totalRows
-            << " matched=" << matched << std::endl;
+            << " guardianRows=" << guardianRows << std::endl;
     return g_guardianAuditStatus;
 }
 
@@ -5804,6 +5949,7 @@ void DevTools::WorldScan_Tick()
             g_pawnPosWasOk = true;
             g_partyPosLastDiscover = 0;
             g_partyPosAttempts = 0;
+            g_pawnCombatTarget = 0; // Build 62: цель пешки невалидна после выгрузки
             // Сброс тел: старые body-указатели после выгрузки недействительны.
             // Без этого PartyPositionsTick мог залипнуть на старом uPlayer.
             g_nParty = 0;

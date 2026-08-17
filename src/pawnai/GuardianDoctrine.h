@@ -90,10 +90,55 @@ struct GuardianAdvice {
     const char*  reason;      // человекочитаемая причина (для UI/теллеметрии)
 };
 
+// Build 63 — роль Guardian-доктрины. Зависит от ВОКАЦИИ ПЕШКИ и ВОКАЦИИ
+// АРИЗЕНА (anchor). Это «Guardian с учётом vocation игрока» из архитектуры:
+//
+//   мили-пешка (Fighter/Warrior/MysticKnight):
+//     + кастер-игрок (синий)   → PROTECTOR  (телохранитель: держись у кастера,
+//                                             перехватывай, не давай сблизиться)
+//     + мили/лучник-игрок      → ASSAULT    (штурмовая поддержка: бей вместе
+//                                             с игроком на переднем крае)
+//   гибрид-пешка (Strider/Assassin) → ADAPTIVE (универсал, БЕЗ разделения —
+//                                             решение пользователя)
+//   дальнобойная пешка (Ranger/MagickArcher) → RANGED_HOLD
+//   кастер-пешка (Mage/Sorcerer)             → SUPPORT
+enum GuardianRole {
+    GROLE_NONE = 0,
+    GROLE_PROTECTOR,
+    GROLE_ASSAULT,
+    GROLE_ADAPTIVE,
+    GROLE_RANGED_HOLD,
+    GROLE_SUPPORT,
+};
+
+inline const char* GuardianRoleName(GuardianRole r){
+    switch(r){
+        case GROLE_PROTECTOR:   return "Protector";   // мили + кастер-игрок
+        case GROLE_ASSAULT:     return "Assault";     // мили + мили/лучник-игрок
+        case GROLE_ADAPTIVE:    return "Adaptive";    // гибрид
+        case GROLE_RANGED_HOLD: return "RangedHold";
+        case GROLE_SUPPORT:     return "Support";
+        default:                return "None";
+    }
+}
+
+inline GuardianRole GuardianRoleOf(int pawnVocation, int anchorVocation){
+    VocationClass pc = VocationClassOf(pawnVocation);
+    VocationClass ac = VocationClassOf(anchorVocation);
+    if (pc == VCL_MELEE) {
+        // Кастер-игрок — хрупкий, защищаем вплотную; мили/лучник — идём вместе.
+        return (ac == VCL_CASTER) ? GROLE_PROTECTOR : GROLE_ASSAULT;
+    }
+    if (pc == VCL_HYBRID) return GROLE_ADAPTIVE;
+    if (pc == VCL_RANGED) return GROLE_RANGED_HOLD;
+    if (pc == VCL_CASTER) return GROLE_SUPPORT;
+    return GROLE_NONE;
+}
+
 struct GuardianReport {
     bool        doctrineActive;   // нашлась ли активная доктрина
     const char* owner;            // "Guardian" / "Nexus" / "none"
-    const char* responseMode;     // "Intercept"/"RangedHold"/"Support"/"Adaptive"/...
+    const char* responseMode;     // роль: "Protector"/"Assault"/"Adaptive"/"RangedHold"/"Support"
     bool        anchorResolved;   // известна ли позиция якоря
     bool        pawnResolved;     // известна ли позиция пешки
     int         threatsInZone;
