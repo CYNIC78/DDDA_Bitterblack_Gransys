@@ -27,7 +27,7 @@ Priority profiles не запускают действие насильно. О�
 
 - Pawn inclination modules: presets, Sanitary Cordon, Smart Utilitarian, Tactical Switch;
 - CombatIntel/CombatBus и bestiary mapping;
-- Camera Plus: tactical camera, free fly, pause;
+- Camera Plus: tactical free camera with optional player tracking, pause, party cam slider: Arisen <-> main pawn;
 - TypeAtlas/WorldScan/DevTools research platform;
 - experimental EnemyTuner.
 
