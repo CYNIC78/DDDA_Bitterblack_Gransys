@@ -1,7 +1,8 @@
 #include "stdafx.h"
+#include "runtime/Runtime.h"
+#include "runtime/MemProbe.h"
 #include "EnemyTuner.h"
 #include "EntityConfig.h"
-#include "devtools/DevTools.h"
 
 /**
  * Первый шаг применения конфига: РАЗВЕДКА, а не запись.
@@ -84,9 +85,9 @@ static bool NearlyEq(float a, float b)
 static uintptr_t TargetBody(const char* what, const char** kindOut)
 {
     const char* kind = "uEm0100";
-    uintptr_t body = DevTools::FirstBodyOfKind("uEm0100");
+    uintptr_t body = Runtime::FirstBodyOfKind("uEm0100");
     if (!body) {
-        body = DevTools::EnemyBodyAt(0, &kind);
+        body = Runtime::EnemyBodyAt(0, &kind);
         if (body)
             logFile << "EnemyTuner: " << what << ": гоблина нет, беру "
                     << (kind ? kind : "?") << std::endl;
@@ -137,7 +138,7 @@ void ScanVisionParams()
         if (!LooksHeap(p)) continue;
 
         char name[64] = { 0 };
-        const char* nm = DevTools::NameOfLiveObjectSafe((const void*)(uintptr_t)p, name, sizeof(name));
+        const char* nm = Runtime::Mem::NameOfLiveObjectSafe((const void*)(uintptr_t)p, name, sizeof(name));
 
         for (uint32_t o2 = 0; o2 + 4 <= 512; o2 += 4) {
             float f = 0.0f;
@@ -762,7 +763,7 @@ void DumpHead()
         if (!SafeRead((const void*)(body + off), &v, 4)) continue;
         if (!LooksHeap(v)) continue;
         char nm[64] = { 0 };
-        const char* n = DevTools::NameOfLiveObjectSafe((const void*)(uintptr_t)v,
+        const char* n = Runtime::Mem::NameOfLiveObjectSafe((const void*)(uintptr_t)v,
                                                        nm, sizeof(nm));
         char cl[160];
         sprintf_s(cl, "    +0x%02X -> 0x%08X  %s", off, v, n ? n : "(имя не определено)");
@@ -1052,7 +1053,7 @@ void ListEnemies()
     logFile << "EnemyTuner: --- список живых врагов ---" << std::endl;
     for (int i = 0; ; ++i) {
         const char* kind = nullptr;
-        uintptr_t body = DevTools::EnemyBodyAt(i, &kind);
+        uintptr_t body = Runtime::EnemyBodyAt(i, &kind);
         if (!body) break;
         float w = 0, h = 0, d = 0;
         bool ok = ReadScale(body, w, h, d);
@@ -1090,13 +1091,13 @@ void Tick()
 {
     if (!EntityCfg::Enabled()) { s_tracked = 0; return; }
 
-    s_tracked = DevTools::EnemyCount();
+    s_tracked = Runtime::EnemyCount();
 
     if (!EntityCfg::AllowWrites()) return;
 
     for (int i = 0; ; ++i) {
         const char* kind = nullptr;
-        uintptr_t body = DevTools::EnemyBodyAt(i, &kind);
+        uintptr_t body = Runtime::EnemyBodyAt(i, &kind);
         if (!body) break;
         TickOneBody(body, kind);
     }

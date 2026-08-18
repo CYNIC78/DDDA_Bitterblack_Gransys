@@ -1,27 +1,30 @@
 # Changelog — DDDA AI Overhaul
 
-Мастер-индекс по дням. Детальная история — в `CHANGELOG_DAY*.md` (по ссылкам).
+Мастер-индекс по дням. Детальная история — в `docs/changelog/CHANGELOG_DAY*.md` (по ссылкам).
 День 7 не документирован (пропуск в нумерации).
 
 ## Сводная таблица
 
 | День | Дата | Build | Ключевой результат |
 |---|---|---|---|
-| [День 6](CHANGELOG_DAY6.md) | 14.08 | — | Формат XFS вскрыт; maxHP/сенсоры гоблина подтверждены |
-| [День 8](CHANGELOG_DAY8.md) | 16.08 | 55.x–56 | Кордон расщеплён → AcquisitorManager; Guardian/Nexus вышли из-под кордона; vocation enum подтверждён; GuardianDoctrine (draft) |
-| [День 9](CHANGELOG_DAY9.md) | 17.08 | 57.x | **Первый живой A/B подтверждён**: пешка обнажает/бьёт кинжалами; семантика checks вскрыта (incl id + ранг); лук = personality 0 |
-| [День 10](CHANGELOG_DAY10.md) | 17.08 | 58 | Градиентная «зона телохранителя» (preempt/melee) |
-| [День 11](CHANGELOG_DAY11.md) | 17.08 | 59.x | Разведка target-selection: цель = тело врага; слой локона вскрыт (m000cmc.ltg = 10 м) |
-| [День 12](CHANGELOG_DAY12.md) | 17.08 | 60 | Быстрый census (ранний выход), фикс 0,0,0, чистка лога |
-| [День 13](CHANGELOG_DAY13.md) | 18.08 | 61 | Прицельная охота за code 4/66 (техдолг — не пойманы) |
-| [День 14](CHANGELOG_DAY14.md) | 18.08 | 62 | Детектор боя переработан: трёхсигнальный (урон + боевые действия врагов + цель пешки) с гистерезисом |
-| [День 15](CHANGELOG_DAY15.md) | 18.08 | 63 | Ролевая матрица Guardian (вокация пешки × вокация игрока) + Guardian-scoped аудит |
-| [День 16](CHANGELOG_DAY16.md) | 18.08 | — | Дрифт инклинаций верифицирован: аддитивный, наш лерп нейтрализует (замкнутый A/B) |
-| [День 17](CHANGELOG_DAY17.md) | 18.08 | 68.x | **Party Cam** — режиссёрская камера (bias Аризен↔пешка), закрыта и работает |
+| [День 6](docs/changelog/CHANGELOG_DAY6.md) | 14.08 | — | Формат XFS вскрыт; maxHP/сенсоры гоблина подтверждены |
+| [День 8](docs/changelog/CHANGELOG_DAY8.md) | 16.08 | 55.x–56 | Кордон расщеплён → AcquisitorManager; Guardian/Nexus вышли из-под кордона; vocation enum подтверждён; GuardianDoctrine (draft) |
+| [День 9](docs/changelog/CHANGELOG_DAY9.md) | 17.08 | 57.x | **Первый живой A/B подтверждён**: пешка обнажает/бьёт кинжалами; семантика checks вскрыта (incl id + ранг); лук = personality 0 |
+| [День 10](docs/changelog/CHANGELOG_DAY10.md) | 17.08 | 58 | Градиентная «зона телохранителя» (preempt/melee) |
+| [День 11](docs/changelog/CHANGELOG_DAY11.md) | 17.08 | 59.x | Разведка target-selection: цель = тело врага; слой локона вскрыт (m000cmc.ltg = 10 м) |
+| [День 12](docs/changelog/CHANGELOG_DAY12.md) | 17.08 | 60 | Быстрый census (ранний выход), фикс 0,0,0, чистка лога |
+| [День 13](docs/changelog/CHANGELOG_DAY13.md) | 18.08 | 61 | Прицельная охота за code 4/66 (техдолг — не пойманы) |
+| [День 14](docs/changelog/CHANGELOG_DAY14.md) | 18.08 | 62 | Детектор боя переработан: трёхсигнальный (урон + боевые действия врагов + цель пешки) с гистерезисом |
+| [День 15](docs/changelog/CHANGELOG_DAY15.md) | 18.08 | 63 | Ролевая матрица Guardian (вокация пешки × вокация игрока) + Guardian-scoped аудит |
+| [День 16](docs/changelog/CHANGELOG_DAY16.md) | 18.08 | — | Дрифт инклинаций верифицирован: аддитивный, наш лерп нейтрализует (замкнутый A/B) |
+| [День 17](docs/changelog/CHANGELOG_DAY17.md) | 18.08 | 68.x | **Party Cam** — режиссёрская камера (bias Аризен↔пешка), закрыта и работает |
+| [День 18](docs/changelog/CHANGELOG_DAY18.md) | 18.08 | 69.0 | **Разделение слоёв**: продукт вынесен в `src/runtime/`, перестал зависеть от `[devtools] enabled`; удалено ~900 строк мёртвого кода |
 
 ## Текущий milestone
 
-**Build 63** — `guardian-role-matrix`. Активная вертикаль: Guardian doctrine.
+**Build 69.0** — `layer-split`. Продукт (`src/runtime/`) и исследование
+(`src/devtools/`) разделены физически; продукт работает при выключенном DevTools.
+Активная вертикаль: Guardian doctrine.
 
 ## Открытые задачи (техдолг)
 

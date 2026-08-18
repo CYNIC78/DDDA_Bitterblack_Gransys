@@ -87,6 +87,8 @@
 #include "stdafx.h"
 #include <math.h>
 #include "BuildTag.h"
+#include "../runtime/MemProbe.h"
+#include "../runtime/RuntimeInternal.h"
 #include "EnemyTuner.h"
 #include "TypeAtlas.Generated.h"
 #include "EnemyTypes.Generated.h"
@@ -100,8 +102,19 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// Build 69: фундамент (чтение памяти, секции образа, DTI-имена) переехал
+// в Runtime::Mem. Директива оставлена, чтобы 200+ существующих обращений
+// не переписывать поимённо — слой при этом уже разделён физически.
+using namespace Runtime::Mem;
+using namespace Runtime;   // Build 69: продуктовый слой переехал в src/runtime/
+
 extern BYTE *codeBase, *codeEnd, *dataBase, *dataEnd;
 
+// ---------------------------------------------------------------------------
+// Флаги исследовательского слоя. Build 69: продукт от них НЕ зависит —
+// рантайм живёт в src/runtime/ и работает при любом значении.
+// ---------------------------------------------------------------------------
+// Панель DevTools и её пробы. Дефолт OFF: игроку не нужны.
 static bool g_enabled = false;
 // Build 56.5: выключатель исследовательских дампов (JSON/CSV). По умолчанию OFF.
 // Когда ON, кнопка «Find both + capture baseline» пишет:
@@ -110,72 +123,23 @@ static bool g_enabled = false;
 // Для продуктовой работы (Guardian doctrine) не нужны — включать только на
 // время охоты за редкими semantic codes.
 static bool g_researchDump = false;
-static uintptr_t g_base = 0;
-static uint32_t g_imageSize = 0;
+// Файл живой трассировки интентов. Открыт => трассировка идёт.
+static FILE* g_intentTrace = nullptr;
 
-static bool Rd(const void* p, void* out, size_t n)
-{
-    if (!p || IsBadReadPtr(p, (UINT_PTR)n)) return false;
-    __try { memcpy(out, p, n); return true; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
-static bool RdPtr(const void* p, uintptr_t* out) { return Rd(p, out, sizeof(uintptr_t)); }
 
-static bool WrSafe(void* p, const void* value, size_t n)
-{
-    if (!p || !value || !n) return false;
-    __try { memcpy(p, value, n); return true; }
-    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
-}
+// Build 56.5: выключатель исследовательских дампов (JSON/CSV). По умолчанию OFF.
+// Когда ON, кнопка «Find both + capture baseline» пишет:
+//   ddda_party_recon_%03d.json, ddda_pawn_ai_bridge_%03d.json,
+//   ddda_pawn_intent_trace_%03d.csv (trace растёт всю сессию).
+// Для продуктовой работы (Guardian doctrine) не нужны — включать только на
+// время охоты за редкими semantic codes.
 
-static uintptr_t ImageEnd() { return g_base + g_imageSize; }
-static bool InImage(uintptr_t a)
-{
-    return g_base && a >= g_base && a < ImageEnd();
-}
-static bool LooksHeap(uintptr_t a)
-{
-    // 4-byte aligned user pointers only. Odd values are flags/packed ints.
-    // Low 256MB page-round numbers (0x08000000, 0x08040000) were false hits.
-    if (a < 0x01000000 || a >= 0x80000000 || (a & 3) || InImage(a)) return false;
-    if (a < 0x10000000 && (a & 0xFFFF) == 0) return false;
-    return true;
-}
-
-// Save-layer check. Same idea as CombatIntel::IsInActiveGameplay.
-// HUNT must not run on the title screen or mid-load.
-static bool InWorld()
-{
-    if (!pBase || !*pBase) return false;
-    BYTE* pl = *pBase + 0xA7000;
-    UINT16 level = 0;
-    float maxHp = 0.f;
-    if (!Rd(pl + 0xDD0, &level, 2) || !level) return false;
-    if (!Rd(pl + 0x96C + 4, &maxHp, 4)) return false;
-    if (maxHp <= 0.f || maxHp > 200000.f) return false;
-    return true;
-}
 
 static bool IsRepeatTag(uint32_t v)
 {
     if (!v || v == 0xFFFFFFFFu) return false;
     uint8_t b = (uint8_t)v;
     return v == (uint32_t)b * 0x01010101u;
-}
-
-static const char* TagName(uint32_t v)
-{
-    switch (v) {
-    case 0x50505050: return "tag/AABB";
-    case 0xD0D0D0D0: return "tag/D0";
-    case 0x0F0F0F0F: return "tag/0F";
-    case 0x78787878: return "tag/78";
-    case 0xF0F0F0F0: return "tag/F0";
-    case 0x5A5A5A5A: return "tag/5A";
-    case 0x4B4B4B4B: return "tag/4B";
-    case 0x3C3C3C3C: return "tag/3C";
-    default: return IsRepeatTag(v) ? "tag/xx" : nullptr;
-    }
 }
 
 // ─── factory-slot probe (first experiment — returns 0) ─────────
@@ -589,11 +553,6 @@ static DWORD     g_huntMs = 0;
 static int       g_huntRegions = 0;
 static unsigned  g_huntBytes = 0;
 
-struct SecRange { uintptr_t lo, hi; };
-static SecRange  g_exec[8];
-static int       g_nExec = 0;
-static SecRange  g_rdata[8];
-static int       g_nRdata = 0;
 
 struct DerivedVt {
     const char* name;
@@ -649,9 +608,9 @@ static const uintptr_t kGoldPlrInst  = 0x015EFD38u;
 static const uintptr_t kGoldPlrFact  = 0x015E4F34u;
 static const uintptr_t kGoldPawnInst = 0x0155ADA4u;
 static const uintptr_t kGoldPawnFact = 0x0155ADB4u;
-static const uintptr_t kGoblinInst   = 0x015852A8u; // meth4 writes this onto new uEm0100
-static const uintptr_t kNpcInst      = 0x015D2618u; // dump19: uNpc DTI vt - 0x344
-static const uintptr_t kEm8000Inst   = 0x015BB278u; // dump19 list, gid 0x61
+ // meth4 writes this onto new uEm0100
+ // dump19: uNpc DTI vt - 0x344
+ // dump19 list, gid 0x61
 static bool IsBannedInst(uintptr_t vt); // body after ScanDti — TryGidScout calls it first
 
 struct DtiLink {
@@ -718,53 +677,16 @@ struct GoldCtor {
 static GoldCtor  g_ctor[10];
 static int       g_nCtor = 0;
 
-struct ActorDump {
-    uintptr_t   ptr, vt, next, prev, subVt;
-    uint8_t     gid, st14;
-    float       x, y, z;
-    bool        fat29, subOk, win5bOk, win60Ok;
-    const char* kind;
-    BYTE        win5b[16];
-    BYTE        win60[64];
-    // Zip 32 — ActScan: current-action pointer inside the 29KB body.
-    uint32_t    actOff;      // offset where the Act* was found
-    uintptr_t   actPtr;      // the action object
-    uint32_t    actVtRva;    // its vtable RVA
-    const char* actName;     // "ThreatHowl" / "Die" / ...
-    const char* actCat;      // "taunt" / "death" / ...
-    int         actHits;     // how many ActMap-matching ptrs in the body
-    uint32_t    actOff2;     // second candidate (previous/queued action)
-    const char* actName2;
-    // Zip 33 — raw mode: vtable-bearing objects in the body, NO ActMap filter.
-    // ActMap holds factory vtables; live objects carry instance vtables.
-    // These are the real ones, harvested so we can build the bridge.
-    uint32_t    rawOff[40];
-    uint32_t    rawVt[40];
-    uint32_t    rawPtr[40];   // Zip 35: object address — embedded vs heap
-    char        rawName[40][40];   // Zip 34: real class name read from DTI
-    int         nRaw;
-    // Билд 29 — живое состояние через DTI, а НЕ через ActMap.
-    // ActMap.Generated.h хранит factory vtable: runtime-сравнение с живым
-    // объектом дало 0 совпадений. Поэтому имя
-    // состояния спрашиваем у самой игры: obj -> vtable -> GetDTI -> DTI+4.
-    char        liveAct[48];  // "cEm0100ActDie", "cEm0100ActWait", ...
-    bool        isDead;       // состояние смерти: ActDie / ActDeadBody
-    // Имя вида, прочитанное через DTI. kind указывает либо сюда, либо на
-    // строковую константу для заранее известных vtable.
-    char        kindBuf[40];
-};
-static ActorDump g_act[32];
+
 // Build 62: боевая цель пешки (uCmc+0x2EB8), читается в PartyReadPositions.
 // Глобал объявлен до PublishWorldFromActors, чтобы та могла его читать.
-static uintptr_t g_pawnCombatTarget = 0;
-static int       g_nAct = 0;
-static uintptr_t g_pollAddr = 0x10000000u;
-static uintptr_t g_lastBand = 0x10000000u;
+
+
 static int       g_emptyPoll = 0;
-static const uintptr_t kUnk84Inst = 0x015D1D30u; // dump22 list, gid 0x84
-static const uintptr_t kHareInst  = 0x015BD9D0u; // meth4_uEm8600 dump23
-static const uintptr_t kHotLo     = 0x10000000u;
-static const uintptr_t kHotHi     = 0x18000000u; // all dump18-23 actors live here
+ // dump22 list, gid 0x84
+ // meth4_uEm8600 dump23
+
+ // all dump18-23 actors live here
 
 static uintptr_t g_seen[160];
 static int       g_nSeen = 0;
@@ -1016,58 +938,6 @@ static void HuntHeapSingletons()
     __except (EXCEPTION_EXECUTE_HANDLER) {
         logFile << "DevTools: heap hunt exception" << std::endl;
     }
-}
-
-static void InitSections()
-{
-    g_nExec = 0;
-    g_nRdata = 0;
-    if (!g_base) return;
-    auto dos = (IMAGE_DOS_HEADER*)g_base;
-    auto nt  = (IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
-    auto sec = IMAGE_FIRST_SECTION(nt);
-    const int nsec = nt->FileHeader.NumberOfSections;
-    for (int i = 0; i < nsec; ++i) {
-        uintptr_t lo = g_base + sec[i].VirtualAddress;
-        uint32_t sz = sec[i].Misc.VirtualSize;
-        if (!sz || sec[i].VirtualAddress >= g_imageSize) continue;
-        if (sec[i].VirtualAddress + sz > g_imageSize)
-            sz = g_imageSize - sec[i].VirtualAddress;
-        if (!sz) continue;
-        uintptr_t hi = lo + sz;
-        const bool exec = (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) != 0;
-        if (exec && g_nExec < 8) {
-            g_exec[g_nExec].lo = lo; g_exec[g_nExec].hi = hi; g_nExec++;
-        } else if (!exec && g_nRdata < 8) {
-            g_rdata[g_nRdata].lo = lo; g_rdata[g_nRdata].hi = hi; g_nRdata++;
-        }
-    }
-}
-
-static bool InExec(uintptr_t a)
-{
-    for (int i = 0; i < g_nExec; ++i)
-        if (a >= g_exec[i].lo && a < g_exec[i].hi) return true;
-    return false;
-}
-
-static bool InRdata(uintptr_t a)
-{
-    for (int i = 0; i < g_nRdata; ++i)
-        if (a >= g_rdata[i].lo && a < g_rdata[i].hi) return true;
-    return false;
-}
-
-// Vtable lives in rdata; first slots are methods in .text.
-// InImage alone is too weak: 0x400000 (MZ) and patterned dwords leaked into census.
-static bool LooksLikeVtable(uintptr_t vt)
-{
-    if (!vt || (vt & 3) || InExec(vt)) return false;
-    if (g_base && vt < g_base + 0x1000) return false; // DOS header
-    if (!InRdata(vt)) return false;
-    uintptr_t m0 = 0, m1 = 0;
-    if (!RdPtr((void*)vt, &m0) || !RdPtr((void*)(vt + 4), &m1)) return false;
-    return InExec(m0) && InExec(m1);
 }
 
 static uintptr_t FollowJmp(uintptr_t p)
@@ -2216,95 +2086,6 @@ static void DumpGoldCtors()
     }
 }
 
-// Существо, которым мы вправе управлять (мутации размера и т.п.).
-//
-// Сюда входят и мирные животные: заяц — тоже uEm*, и масштабировать его
-// можно. Это НЕ значит, что он враг.
-static bool KindIsCreature(const char* kind)
-{
-    if (!kind) return false;
-    if (kind[0] == 'u' && kind[1] == 'E' && kind[2] == 'm') return true;
-    return strcmp(kind, "uHumanEnemy") == 0;
-}
-
-// Безобидная живность: не атакует, не участвует в оценке опасности.
-//
-// uEm8000 — те самые «лагерные зайцы» из дампов. Их шестеро вокруг
-// стоянки, и они прибавляли +6 к счётчику врагов на пустом месте.
-// Важно: uEm8000 НЕ Григори (см. FIELD_MAP: «не маппить 0x61 -> Hare,
-// сломаем Григори») — это отдельный вид с gid 0x61.
-static bool KindIsHarmless(const char* kind)
-{
-    if (!kind) return false;
-    return strcmp(kind, "uEm8000") == 0     // лагерная живность
-        || strcmp(kind, "uEm8600") == 0;    // Hare, заяц
-}
-
-// Враг: существо, представляющее угрозу.
-//
-// ВАЖНО: враги бывают не только uEm*. Бандиты и солдаты — это
-// uHumanEnemy (29696 B), ветка uNpc -> uHumanEnemy. Пока фильтр смотрел
-// только на "uEm", люди были невидимы и для счётчика, и для мутаций.
-static bool KindIsEnemy(const char* kind)
-{
-    if (!KindIsCreature(kind)) return false;
-    return !KindIsHarmless(kind);
-}
-
-static int KindCategory(const char* kind)
-{
-    // Tactical category from LIVE kind, not gid. 0x61 must never become boss.
-    if (!kind) return -1;
-    if (!strcmp(kind, "uEm0100") || !strcmp(kind, "uEm0101")) return 0;
-    return -1;
-}
-
-static bool EnemyActNameIsCombat(const char* actName); // Build 62 (опр. ниже)
-
-static void PublishWorldFromActors()
-{
-    if (g_nAct && g_act[0].ptr)
-        g_lastBand = g_act[0].ptr & ~0xFFFFFu;
-    WorldReport w{};
-    w.timestampMs = MsNow();
-    w.dominantCategory = -1;
-    int best = -1;
-    for (int i = 0; i < g_nAct && w.count < 32; ++i) {
-        if (!g_act[i].ptr) continue;
-        // Труп — не участник боя. Без этого счётчик в PawnAI показывает
-        // "1 враг" над свежим трупом, пока движок не выгрузит тело.
-        // Одной чистки EnemyCount() в DevTools мало: PawnAI берёт числа
-        // отсюда, через шину CombatBus, — это вторая дорога для тех же данных.
-        if (g_act[i].isDead) { w.deadCount++; continue; }
-        WorldPresence& p = w.units[w.count];
-        p.ptr = g_act[i].ptr;
-        p.vt = (uint32_t)g_act[i].vt;
-        p.gid = g_act[i].gid;
-        p.kind = g_act[i].kind ? g_act[i].kind : "?";
-        p.x = g_act[i].x;
-        p.y = g_act[i].y;
-        p.z = g_act[i].z;
-        p.fromScan = true;
-        // Build 62: боевое действие врага (по live Act, не по урону).
-        p.inCombatAction = KindIsEnemy(g_act[i].kind)
-            && EnemyActNameIsCombat(g_act[i].liveAct);
-        if (KindIsEnemy(g_act[i].kind)) {
-            w.enemyCount++;
-            if (p.inCombatAction) w.enemyCombatCount++;
-        }
-        else if (KindIsHarmless(g_act[i].kind)) w.critterCount++;
-        if (g_act[i].kind && (!strcmp(g_act[i].kind, "uEm0100")
-            || !strcmp(g_act[i].kind, "uEm0101")))
-            w.goblinCount++;
-        int cat = KindCategory(g_act[i].kind);
-        if (cat > best) best = cat;
-        w.count++;
-    }
-    w.dominantCategory = best;
-    // Build 62: пешка выбрала боевую цель (читается в PartyReadPositions).
-    w.pawnEngaged = (g_pawnCombatTarget != 0);
-    CombatBus::Instance().PublishWorld(w);
-}
 
 // Zip 32 — ActScan.
 // Find the slot in the 29KB body that holds the current cEm*Act object.
@@ -2317,169 +2098,9 @@ static void PublishWorldFromActors()
 //   * the full search runs only on HUNT (g_actFullScan). Once the offset is
 //     known, the tick path re-reads that ONE slot.
 // Zip 34: the action slot, proven by alive/dead diff on uEm0100 AND uEm8000.
-static const uint32_t kActSlot = 0x2DC8;
-static uint32_t g_actSlotOff  = 0;      // learned offset, sticky across ticks
-static bool     g_actFullScan = false;  // set by HUNT, cleared after use
 
-// Живое состояние существа: имя класса текущего Act, прочитанное у игры.
-//
-// ЗАЧЕМ ОТДЕЛЬНАЯ ФУНКЦИЯ, А НЕ ActMap: таблица ActMap.Generated.h содержит
-// factory vtable, у живого объекта instance vtable, единого сдвига нет
-// (гоблин 0x1B1CC, заяц 0x1B198). Сравнение всегда даёт промах, поэтому
-// в старых дампах у всех actName = "-". Имя берём через DTI — тем же
-// способом, каким опознаём uEm0100.
-//
-// Возвращает true, если имя прочитано.
-static bool ReadLiveAct(uintptr_t body, char* out, int cap)
-{
-    if (!out || cap < 2) return false;
-    out[0] = 0;
-    if (!body) return false;
+      // learned offset, sticky across ticks
 
-    // +0x2DC8 — текущее действие. Подтверждено дампами 14.08.
-    uintptr_t act = 0;
-    if (!RdPtr((void*)(body + kActSlot), &act)) return false;
-    if (!LooksHeap(act)) return false;
-
-    return DevTools::NameOfLiveObjectSafe((const void*)act, out, cap) != nullptr;
-}
-
-// Смерть определяется СОСТОЯНИЕМ, а не флагом.
-//
-// Флага смерти в теле мы не нашли: гипотеза "+0x14 == 0x12" опровергнута —
-// это же значение стоит на живых (дампы 19-22). См. docs/FIELD_MAP.md,
-// раздел "Не фильтровать World по +14 / +4C / +FC".
-//
-// Зато у Capcom смерть — это штатное состояние FSM:
-//     cEm0100ActDie        — умирает
-//     cEm0100ActDeadBody   — труп
-//     cEm0100ActDieBurn / cEm0100ActDieIce — частные случаи
-// Проверка по подстроке "Die"/"Dead" покрывает все виды сразу: имена
-// состояний единообразны у всех 35 видов (812 состояний в ActMap).
-// ВНИМАНИЕ на форму имени. Первая версия проверяла только префикс сразу
-// после "Act" — и пропускала 6 состояний из 812, где Die стоит в середине:
-//     cEm5000ActDownDie      cEm8600ActFlyDie
-//     cEm9100ActGroundDie    cEm0100ActDmgPoisonDie
-// Поэтому ищем "Die"/"Dead" где угодно в имени состояния.
-//
-// Ложных срабатываний нет: слов с этими буквосочетаниями, кроме смерти,
-// среди 812 состояний не встречается (проверено перебором таблицы).
-// "Dive"/"Damage"/"Down" не совпадают — у них другие буквы.
-static bool ActNameIsDeath(const char* actName)
-{
-    if (!actName || !actName[0]) return false;
-    // Отрезаем префикс класса: интересует только часть после "Act".
-    const char* p = strstr(actName, "Act");
-    const char* s = p ? p + 3 : actName;
-    return strstr(s, "Die") != nullptr || strstr(s, "Dead") != nullptr;
-}
-
-// Build 62 — враг в боевом действии? По DTI-имени live Act (не по урону).
-// Консервативно: только однозначно боевые состояния. Локомоция (Walk/Run)
-// НЕ считается боем — это может быть патруль, а ложный «бой» хуже пропуска
-// (пропуск ловится другими сигналами: урон и цель пешки).
-static bool EnemyActNameIsCombat(const char* actName)
-{
-    if (!actName || !actName[0]) return false;
-    if (ActNameIsDeath(actName)) return false; // смерть — не бой
-    static const char* kCombat[] = {
-        "Atk",      // Atck*/атаки (покрывает и "Atck")
-        "Dmg",      // получает урон
-        "Guard",    // блокирует
-        "Eva",      // уклоняется
-        "Dash",     // боевой рывок
-        "Charge",   // заряд/разгон атаки
-        "Howl",     // агро-вой
-        "Provoke",  // провокация
-        "Roar",     // рёв
-        "Escape",   // бегство из боя (контекст боя)
-        "Bite",     // укус
-        "Grab",     // захват
-        "Stomp",    // топот
-        "Tail",     // хвост (атака)
-        "Breath",   // дыхание (дракон)
-        "Fire",     // огонь
-        "Shot",     // выстрел
-        "Swing",    // замах
-    };
-    for (size_t i = 0; i < sizeof(kCombat) / sizeof(kCombat[0]); ++i)
-        if (strstr(actName, kCombat[i])) return true;
-    return false;
-}
-
-static const ActMap::Act* ActAt(uintptr_t body, uint32_t off, uintptr_t* outPtr, uint32_t* outRva)
-{
-    uintptr_t cand = 0;
-    if (!RdPtr((void*)(body + off), &cand)) return nullptr;
-    if (!LooksHeap(cand)) return nullptr;
-    uintptr_t vt = 0;
-    if (!RdPtr((void*)cand, &vt)) return nullptr;
-    if (!InImage(vt)) return nullptr;
-    uint32_t rva = (uint32_t)(vt - g_base);
-    const ActMap::Act* a = ActMap::FindByVt(rva);
-    if (!a) return nullptr;
-    if (outPtr) *outPtr = cand;
-    if (outRva) *outRva = rva;
-    return a;
-}
-
-// Zip 34 — resolve a live object's class name without the atlas.
-// MT Framework: every MtObject's vtable has GetDTI() early; the DTI card in
-// .data holds a char* name at +4 (Zip 14 note). So: object -> vtable -> scan
-// the first slots for a function that returns a .data pointer whose +4 is an
-// ASCII class name. Cheaper and exact vs. extrapolating the 0x48 lattice.
-static bool ReadCStr(uintptr_t va, char* out, int cap)
-{
-    if (!va || !InImage(va)) return false;
-    for (int i = 0; i < cap - 1; ++i) {
-        BYTE c = 0;
-        if (!Rd((void*)(va + i), &c, 1)) return false;
-        if (c == 0) { out[i] = 0; return i > 2; }
-        if (c < 0x20 || c > 0x7E) return false;
-        out[i] = (char)c;
-    }
-    out[cap - 1] = 0;
-    return true;
-}
-
-// A DTI card: [0] = MtDTI vtable (in .rdata), [4] = char* name (in image).
-static bool NameFromDti(uintptr_t dti, char* out, int cap)
-{
-    if (!dti || !InImage(dti)) return false;
-    uintptr_t np = 0;
-    if (!RdPtr((void*)(dti + 4), &np)) return false;
-    return ReadCStr(np, out, cap);
-}
-
-// Find the DTI for a live object by scanning its vtable for `mov eax, imm32;
-// ret` (B8 imm32 C3) — that is GetDTI in this build.
-static uintptr_t DtiOfObject(uintptr_t obj)
-{
-    uintptr_t vt = 0;
-    if (!RdPtr((void*)obj, &vt) || !InImage(vt)) return 0;
-    for (int slot = 0; slot < 12; ++slot) {
-        uintptr_t fn = 0;
-        if (!RdPtr((void*)(vt + slot * 4), &fn)) break;
-        if (!fn || !InExec(fn)) break;
-        BYTE code[8];
-        if (!Rd((void*)fn, code, sizeof(code))) continue;
-        int at = -1;
-        if (code[0] == 0xB8 && code[5] == 0xC3) at = 1;          // mov eax,imm; ret
-        else if (code[0] == 0xB8 && code[5] == 0xC2) at = 1;     // ret n
-        if (at < 0) continue;
-        uintptr_t imm = *(uint32_t*)(code + at);
-        char probe[40];
-        if (NameFromDti(imm, probe, sizeof(probe))) return imm;
-    }
-    return 0;
-}
-
-static bool NameOfLiveObject(uintptr_t obj, char* out, int cap)
-{
-    uintptr_t dti = DtiOfObject(obj);
-    if (!dti) { out[0] = 0; return false; }
-    return NameFromDti(dti, out, cap);
-}
 
 // ─── Player + Main Pawn recon and transactional priority profiles ─────────
 //
@@ -2492,191 +2113,49 @@ static bool NameOfLiveObject(uintptr_t obj, char* out, int cap)
 // named once by the game itself. No Steam/GOG-specific uPlayer vtable is
 // hardcoded. Later '=' captures reuse the two addresses, so taking a snapshot
 // while running does not repeat the heap hunt.
-static const uint32_t kPartyBodySize       = 0x5A10; // max: uPlayer = 23056
-static const uint32_t kCmcBodySize         = 0x58E0; // TypeAtlas: uCmc = 22752
-static const uint32_t kPawnManagerSize     = 5512;
-static const int      kPartyMaxBodies      = 24; // uCmc also exists on non-party actors; rank after scan
-static const int      kPartyMaxChildren    = 96;
-static const int      kPartyChildHeadSize  = 384;
-static const int      kPartyMaxValueHits   = 96;
-static const int      kPartyVtCacheSize    = 8192;   // power of two
-static const int      kPartyMaxNearTypes   = 32;
-static const int      kPartyMaxRuntimeProbes = 24;
-static const int      kPartyRuntimeProbeBytes = 32;
-static const int      kPawnAiMaxCandidates = 1024;
+ // max: uPlayer = 23056
+ // TypeAtlas: uCmc = 22752
+
+ // uCmc also exists on non-party actors; rank after scan
+
+
+   // power of two
+
+
 static const int      kPawnAiDumpBytes = 1024;
 
 // Test-save values supplied with build 35. We search both int32 and float
 // representations. They are clues only: an offset is not documented until a
 // controlled HP/stamina change confirms it.
-struct PartyKnownValue {
-    const char* label;
-    int32_t     value;
-};
-static const PartyKnownValue kPartyKnownValues[] = {
-    { "player_hp_current", 331 },
-    { "player_hp_max",     498 },
-    { "player_stamina",    600 },
-    { "pawn_hp_current",   327 },
-    { "pawn_hp_max",       505 },
-    { "pawn_stamina",      595 }
-};
-static const int kPartyKnownValueCount = sizeof(kPartyKnownValues) / sizeof(kPartyKnownValues[0]);
 
-enum PartyVtKind { PVK_OTHER = 0, PVK_PARTY_BODY, PVK_PAWN_MANAGER };
-struct PartyVtClass {
-    uintptr_t vt;
-    uint8_t   kind;
-    char      name[64];
-};
-struct PartyNearType {
-    uintptr_t vt;
-    uintptr_t sample;
-    char      name[64];
-};
 
 // Small DTI objects potentially holding changing health/stamina state.  The
 // heap census records every instance (not merely one sample per vtable), then
 // the live CSV follows their first 32 bytes.  rPlStamina is a rule resource;
 // cPlStamina or a Health-named object is the interesting runtime candidate.
-struct PartyRuntimeProbe {
-    uintptr_t ptr;
-    uintptr_t vt;
-    char      name[40];
-    BYTE      head[kPartyRuntimeProbeBytes];
-    bool      headOk;
-};
+
 
 // Build 40: candidates for the pawn's upper AI pipeline. The census sees
 // inline heap subobjects too because it tests every aligned address carrying a
 // genuine vtable. Association with the chosen uCmc/cCmcInfo is done later.
-struct PawnAiCandidate {
-    uintptr_t ptr;
-    uintptr_t vt;
-    uint32_t  typeSize;
-    char      name[64];
-};
+
 
 // Build 59 — разведка target-selection слоя. Объекты выбора цели:
 // sRecognition/sRecognition::cEnemyInfo, sLockOnManager/*, sUnitSearchManager,
 // cTarget* (все есть в TypeAtlas). Census их отсекал (PawnAiRelevantName не
 // пропускал) — здесь отдельная коллекция с сырым дампом для offline-анализа.
-struct TargetSelCandidate {
-    uintptr_t ptr;
-    uintptr_t vt;
-    uint32_t  typeSize;
-    char      name[64];
-    BYTE      raw[256];   // первые 256 байт (cEnemyInfo=80, cLockOnTarget=112 — целиком)
-    int       rawLen;
-};
 
-struct PartyChildDump {
-    uint32_t  off;
-    uintptr_t ptr;
-    uintptr_t vt;
-    char      name[48];
-    BYTE      head[kPartyChildHeadSize];
-    bool      headOk;
-    bool      ownerRef;
-};
 
-struct PartyValueHit {
-    uint32_t containerOff; // 0 for uPlayer body; body slot for a child object
-    uint32_t valueOff;     // offset inside body/child snapshot
-    char     container[48];
-    char     label[24];
-    char     encoding[4];  // i32 / f32
-};
-
-struct PartyBodyDump {
-    uintptr_t ptr;
-    uintptr_t vt;
-    uint32_t  bodySize;
-    char      dti[40];
-    char      role[24];
-    bool      playerRecordRef;
-    bool      mainPawnRecordRef;
-    bool      pawnManagerRef;
-    bool      hasPawnIntel;
-    BYTE      body[kPartyBodySize];
-    bool      bodyOk;
-    PartyChildDump child[kPartyMaxChildren];
-    int       nChild;
-    PartyValueHit valueHit[kPartyMaxValueHits];
-    int       nValueHit;
-    uint32_t  actOff;
-    uintptr_t actPtr;
-    char      actName[48];
-    bool      actOwnerRef;
-};
-
-static PartyBodyDump g_party[kPartyMaxBodies];
-static PartyBodyDump g_partyChosen[2];
-static int            g_nParty = 0;
-static int            g_partyRawCandidates = 0;
-static uintptr_t      g_partyPawnMgr[8];
-static int            g_nPartyPawnMgr = 0;
-static PartyVtClass   g_partyVtCache[kPartyVtCacheSize];
-static int            g_partyVtChecked = 0;
-static int            g_partyVtNamed = 0;
-static PartyNearType  g_partyNear[kPartyMaxNearTypes];
-static int            g_nPartyNear = 0;
-static PartyRuntimeProbe g_partyRuntime[kPartyMaxRuntimeProbes];
-static int            g_nPartyRuntime = 0;
-static PawnAiCandidate g_pawnAi[kPawnAiMaxCandidates];
-static int            g_nPawnAi = 0;
-static TargetSelCandidate g_targetSel[128];
-static int            g_nTargetSel = 0;
 static int            g_partyAiSeq = 0;
 static char           g_partyAiLastFile[MAX_PATH] = "";
 static char           g_partyAiStatus[192] = "AI bridge not captured";
-static int            g_partySeq = 0;
-static DWORD          g_partyFindMs = 0;
-static volatile LONG  g_partyBusy = 0;
-static char           g_partyStatus[192] = "not scanned";
-static char           g_partyLastFile[MAX_PATH] = "";
+
 
 // Build 46: generalized persistent priority profile. Every entry identifies
 // one cCodeParam by the complete cPrioParam tuple plus personality rule index.
 // No transient address is persisted. Switching profiles is transactional:
 // validate all -> restore old -> apply all -> verify, otherwise rollback.
-static const int kPriorityProfileMaxRules = 48;
-struct PartyPriorityProfileRule {
-    uint32_t sensor;
-    uint32_t code;
-    uint32_t category;
-    uint32_t objectId;
-    uint32_t extra;
-    uint32_t ruleIndex;
-    int32_t  expectedAddS32;
-    int32_t  desiredAddS32;
-    uint32_t expectedAddF32Bits;
-    uint32_t expectedBreak;
-    uint32_t expectedCheckCount;
-    int32_t  expectedSlot; // -1 = memory verification only
 
-    uintptr_t prioPtr;
-    uintptr_t rulePtr;
-    uintptr_t ruleVt;
-    bool      resolved;
-    bool      applied;
-    int32_t   currentAddS32;
-    int32_t   liveSlot;
-};
-static PartyPriorityProfileRule g_priorityProfileRules[kPriorityProfileMaxRules];
-static int            g_nPriorityProfileRules = 0;
-static char           g_priorityProfileActive[40] = "vanilla";
-static uint32_t       g_priorityProfileConfigHash = 0;
-static bool           g_priorityProfileLoaded = false;
-static bool           g_priorityProfileFileOk = false;
-static bool           g_priorityProfileApplied = false;
-static bool           g_priorityProfileConverged = false;
-static int            g_priorityProfileWrites = 0;
-static int            g_priorityProfileRestores = 0;
-static DWORD          g_priorityProfileLastPoll = 0;
-static DWORD          g_priorityProfileWorldSince = 0;
-static DWORD          g_priorityProfileLastDiscover = 0;
-static char           g_priorityProfileStatus[192] = "Priority profile: vanilla";
 
 // Build 39 live trace. It is intentionally write-free with respect to game
 // memory: only a CSV file is written. Find starts it; '-' stops/starts it.
@@ -2688,7 +2167,7 @@ static char           g_partyTraceFile[MAX_PATH] = "";
 // Build 53: compact semantic transition trace. One baseline JSON provides the
 // GOAP ActionInterfaceParam address map; CSV rows only record changing intent,
 // exact cPlAct, current target and selected PlanCtrl node links.
-static FILE*          g_intentTrace = nullptr;
+
 static int            g_intentTraceSeq = 0;
 static DWORD          g_intentTraceStartMs = 0;
 static DWORD          g_intentTraceLastMs = 0;
@@ -2703,1060 +2182,19 @@ static char           g_intentLiveAction[64] = "";
 static uintptr_t      g_intentLiveTarget = 0;
 static char           g_intentLiveTargetName[64] = "";
 
-static bool PartyStartsWith(const char* s, const char* prefix)
-{
-    if (!s || !prefix) return false;
-    return strncmp(s, prefix, strlen(prefix)) == 0;
-}
-
-static bool PartyRelevantName(const char* n)
-{
-    if (!n || !n[0]) return false;
-    return PartyStartsWith(n, "cPlAct")
-        || PartyStartsWith(n, "cCmc")
-        || PartyStartsWith(n, "uCmc")
-        || PartyStartsWith(n, "uPawn")
-        || PartyStartsWith(n, "cAIPlayer")
-        || PartyStartsWith(n, "rAIPlayer")
-        || strstr(n, "ActionManager") != nullptr
-        || strstr(n, "ActBank") != nullptr
-        || strstr(n, "Motion") != nullptr
-        || strstr(n, "Status") != nullptr
-        || strstr(n, "Stamina") != nullptr
-        || strstr(n, "Health") != nullptr
-        || strstr(n, "AICtrl") != nullptr
-        || strstr(n, "Think") != nullptr;
-}
-
-static bool PartyBlockHasPtr(const BYTE* data, uint32_t bytes, uintptr_t want)
-{
-    if (!data || !want || bytes < 4) return false;
-    for (uint32_t off = 0; off + 4 <= bytes; off += 4)
-        if (*(const uint32_t*)(data + off) == (uint32_t)want) return true;
-    return false;
-}
-
-static void PartyNoteValueHit(PartyBodyDump& P, uint32_t containerOff,
-                              const char* container, uint32_t valueOff,
-                              const char* label, const char* encoding)
-{
-    if (P.nValueHit >= kPartyMaxValueHits) return;
-    PartyValueHit& H = P.valueHit[P.nValueHit++];
-    memset(&H, 0, sizeof(H));
-    H.containerOff = containerOff;
-    H.valueOff = valueOff;
-    lstrcpynA(H.container, container ? container : "?", sizeof(H.container));
-    lstrcpynA(H.label, label ? label : "?", sizeof(H.label));
-    lstrcpynA(H.encoding, encoding ? encoding : "?", sizeof(H.encoding));
-}
-
-static void PartyScanKnownValues(PartyBodyDump& P, const BYTE* data, uint32_t bytes,
-                                 const char* container, uint32_t containerOff)
-{
-    if (!data || bytes < 4) return;
-    for (uint32_t off = 0; off + 4 <= bytes; off += 4) {
-        uint32_t raw = *(const uint32_t*)(data + off);
-        for (int k = 0; k < kPartyKnownValueCount; ++k) {
-            if (raw == (uint32_t)kPartyKnownValues[k].value)
-                PartyNoteValueHit(P, containerOff, container, off,
-                                  kPartyKnownValues[k].label, "i32");
-            float fv = (float)kPartyKnownValues[k].value;
-            uint32_t fraw = 0;
-            memcpy(&fraw, &fv, sizeof(fraw));
-            if (raw == fraw)
-                PartyNoteValueHit(P, containerOff, container, off,
-                                  kPartyKnownValues[k].label, "f32");
-        }
-    }
-}
-
-static void PartyRememberNearType(const char* name, uintptr_t vt, uintptr_t sample)
-{
-    if (!name || (!strstr(name, "Player") && !strstr(name, "Pawn")
-               && !strstr(name, "Cmc"))) return;
-    for (int i = 0; i < g_nPartyNear; ++i)
-        if (g_partyNear[i].vt == vt) return;
-    if (g_nPartyNear >= kPartyMaxNearTypes) return;
-    PartyNearType& N = g_partyNear[g_nPartyNear++];
-    memset(&N, 0, sizeof(N));
-    N.vt = vt;
-    N.sample = sample;
-    lstrcpynA(N.name, name, sizeof(N.name));
-}
-
-static bool PartyRuntimeProbeName(const char* name)
-{
-    if (!name || !name[0]) return false;
-    return strstr(name, "Stamina") != nullptr
-        || strstr(name, "Health") != nullptr
-        || !strcmp(name, "rStatusParam");
-}
-
-static int PartyRuntimeProbePriority(const char* name)
-{
-    if (!name) return 0;
-    if (!strcmp(name, "cPlStamina")) return 4;
-    if (strstr(name, "Health")) return 3;
-    if (name[0] == 'c' && strstr(name, "Stamina")) return 2;
-    if (!strcmp(name, "rStatusParam")) return 1;
-    return 0; // rPlStamina and other rule resources
-}
-
-static void PartyAddRuntimeProbe(uintptr_t obj, uintptr_t vt, const char* name)
-{
-    if (!obj || !vt || !PartyRuntimeProbeName(name)) return;
-    for (int i = 0; i < g_nPartyRuntime; ++i)
-        if (g_partyRuntime[i].ptr == obj) return;
-
-    int slot = g_nPartyRuntime;
-    if (slot >= kPartyMaxRuntimeProbes) {
-        int weakest = 0;
-        for (int i = 1; i < g_nPartyRuntime; ++i)
-            if (PartyRuntimeProbePriority(g_partyRuntime[i].name)
-                < PartyRuntimeProbePriority(g_partyRuntime[weakest].name))
-                weakest = i;
-        if (PartyRuntimeProbePriority(name)
-            <= PartyRuntimeProbePriority(g_partyRuntime[weakest].name)) return;
-        slot = weakest;
-    }
-
-    BYTE head[kPartyRuntimeProbeBytes];
-    if (!Rd((void*)obj, head, sizeof(head))) return;
-
-    PartyRuntimeProbe& R = g_partyRuntime[slot];
-    memset(&R, 0, sizeof(R));
-    R.ptr = obj;
-    R.vt = vt;
-    lstrcpynA(R.name, name, sizeof(R.name));
-    memcpy(R.head, head, sizeof(head));
-    R.headOk = true;
-    if (slot == g_nPartyRuntime) ++g_nPartyRuntime;
-}
-
-static bool PawnAiRelevantName(const char* name)
-{
-    if (!name || !name[0]) return false;
-
-    // Build 48 is a semantic-linking census. Hundreds of inline runtime
-    // PlanCtrl/PlanResult/GoalInfoParam objects are derivable from the planner
-    // root and previously exhausted the 1024 cap after reload. Keep only the
-    // roots plus compact resources needed to link priority code -> GOAP.
-    if (PartyStartsWith(name, "cCmc")) return true;
-    if (!strcmp(name, "cAIGoalPlanning")) return true;
-    if (!strcmp(name, "rAIGoalPlanning")) return true;
-    if (!strcmp(name, "rAIPriorityThink")
-        || !strcmp(name, "cAIPriorityThink")
-        || !strcmp(name, "rAIPriorityThink::cPrioParam")
-        || !strcmp(name, "rAIPriorityThink::cOrderValue")
-        || !strcmp(name, "rAIPriorityThink::cCodeParam")
-        || !strcmp(name, "rAIPlayerActionParameter")
-        || !strcmp(name, "cAICheckSituationCmc")
-        || !strcmp(name, "cAIActionInterfaceCmc"))
-        return true;
-    return false;
-}
-
-static void PartyAddPawnAiCandidate(uintptr_t obj, uintptr_t vt, const char* name)
-{
-    if (!obj || !vt || !PawnAiRelevantName(name)) return;
-    for (int i = 0; i < g_nPawnAi; ++i)
-        if (g_pawnAi[i].ptr == obj) return;
-    if (g_nPawnAi >= kPawnAiMaxCandidates) return;
-
-    const TypeAtlas::Info* info = TypeAtlas::FindByName(name);
-    PawnAiCandidate& A = g_pawnAi[g_nPawnAi++];
-    memset(&A, 0, sizeof(A));
-    A.ptr = obj;
-    A.vt = vt;
-    A.typeSize = info ? info->size : 0;
-    lstrcpynA(A.name, name, sizeof(A.name));
-}
-
-// Build 59 — target-selection кандидаты (имена из TypeAtlas).
-// Build 59.1: убраны мелкие пул-типы (cTargetEnemy 16B, cTargetInfoFromList 20B,
-// cTargetLink 24B) — они забивали кап 128 слотов одинаковыми FF FF-заглушками
-// и вытесняли содержательные объекты. Оставляем только объекты с реальным
-// состоянием: sRecognition*, sLockOnManager*, sUnitSearchManager, rLockOnTarget.
-static bool TargetSelRelevantName(const char* name)
-{
-    if (!name || !name[0]) return false;
-    if (PartyStartsWith(name, "sRecognition")) return true;
-    if (PartyStartsWith(name, "sLockOnManager")) return true;
-    if (PartyStartsWith(name, "sUnitSearchManager")) return true;
-    if (!strcmp(name, "rLockOnTarget") || !strcmp(name, "cLockOnTarget")) return true;
-    return false;
-}
-
-static void PartyAddTargetSelCandidate(uintptr_t obj, uintptr_t vt, const char* name)
-{
-    if (!obj || !TargetSelRelevantName(name)) return;
-    for (int i = 0; i < g_nTargetSel; ++i)
-        if (g_targetSel[i].ptr == obj) return;
-    if (g_nTargetSel >= 128) return;
-    const TypeAtlas::Info* info = TypeAtlas::FindByName(name);
-    TargetSelCandidate& T = g_targetSel[g_nTargetSel++];
-    memset(&T, 0, sizeof(T));
-    T.ptr = obj;
-    T.vt = vt;
-    T.typeSize = info ? info->size : 0;
-    lstrcpynA(T.name, name, sizeof(T.name));
-    int n = T.typeSize ? (T.typeSize < 256 ? T.typeSize : 256) : 256;
-    T.rawLen = Rd((void*)obj, T.raw, n) ? n : 0;
-}
-
-static bool PartyPriorityProfileAutoDiscover();
-
-static const char* PartyPriorityProfilePath()
-{
-    return ModPaths::File("ddda_pawn_ai_profiles.ini", 7);
-}
-
-static uint32_t PartyPriorityProfileHash(const void* data, size_t bytes, uint32_t h = 2166136261u)
-{
-    const BYTE* p = (const BYTE*)data;
-    for (size_t i = 0; i < bytes; ++i) { h ^= p[i]; h *= 16777619u; }
-    return h;
-}
-
-static int PartyPriorityProfileGetInt(
-    const char* section, const char* key, int fallback)
-{
-    char def[24] = {};
-    char value[24] = {};
-    sprintf_s(def, sizeof(def), "%d", fallback);
-    GetPrivateProfileStringA(section, key, def, value, sizeof(value),
-        PartyPriorityProfilePath());
-    return (int)strtol(value, nullptr, 0);
-}
-
-static bool PartyPriorityProfileNameOk(const char* name)
-{
-    if (!name || !name[0]) return false;
-    for (int i = 0; name[i]; ++i) {
-        const char c = name[i];
-        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-            || (c >= '0' && c <= '9') || c == '_' || c == '-'))
-            return false;
-    }
-    return true;
-}
-
-static void PartyPriorityProfileEnsureFile()
-{
-    const char* path = PartyPriorityProfilePath();
-    const bool exists = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-    if (!exists)
-        WritePrivateProfileStringA("profile", "active", "vanilla", path);
-
-    // Schema migration keeps the Build 45 active choice but expands the file
-    // into the generalized Build 46 rule-list format.
-    const int schema = PartyPriorityProfileGetInt("profile", "schemaVersion", 0);
-    if (schema < 2) {
-        WritePrivateProfileStringA("profile", "schemaVersion", "2", path);
-        WritePrivateProfileStringA("vanilla", "ruleCount", "0", path);
-        WritePrivateProfileStringA("research_code45", "ruleCount", "1", path);
-        const char* s = "research_code45.rule0";
-        WritePrivateProfileStringA(s, "sensor", "0", path);
-        WritePrivateProfileStringA(s, "code", "45", path);
-        WritePrivateProfileStringA(s, "category", "0", path);
-        WritePrivateProfileStringA(s, "objectId", "0", path);
-        WritePrivateProfileStringA(s, "extra", "1", path);
-        WritePrivateProfileStringA(s, "ruleIndex", "0", path);
-        WritePrivateProfileStringA(s, "expectedAddS32", "-1", path);
-        WritePrivateProfileStringA(s, "desiredAddS32", "-2", path);
-        WritePrivateProfileStringA(s, "expectedAddF32", "0.0", path);
-        WritePrivateProfileStringA(s, "expectedBreak", "1", path);
-        WritePrivateProfileStringA(s, "expectedCheckCount", "1", path);
-        WritePrivateProfileStringA(s, "expectedSlot", "34", path);
-
-        WritePrivateProfileStringA("research_pair45_46", "ruleCount", "2", path);
-        const char* p0 = "research_pair45_46.rule0";
-        const char* p1 = "research_pair45_46.rule1";
-        const char* pairSections[2] = { p0, p1 };
-        const char* pairCodes[2] = { "45", "46" };
-        for (int i = 0; i < 2; ++i) {
-            WritePrivateProfileStringA(pairSections[i], "sensor", "0", path);
-            WritePrivateProfileStringA(pairSections[i], "code", pairCodes[i], path);
-            WritePrivateProfileStringA(pairSections[i], "category", "0", path);
-            WritePrivateProfileStringA(pairSections[i], "objectId", "0", path);
-            WritePrivateProfileStringA(pairSections[i], "extra", "1", path);
-            WritePrivateProfileStringA(pairSections[i], "ruleIndex", "0", path);
-            WritePrivateProfileStringA(pairSections[i], "expectedAddS32", "-1", path);
-            WritePrivateProfileStringA(pairSections[i], "desiredAddS32", "-2", path);
-            WritePrivateProfileStringA(pairSections[i], "expectedAddF32", "0.0", path);
-            WritePrivateProfileStringA(pairSections[i], "expectedBreak", "1", path);
-            WritePrivateProfileStringA(pairSections[i], "expectedCheckCount", "1", path);
-            WritePrivateProfileStringA(pairSections[i], "expectedSlot", "34", path);
-        }
-    }
-    g_priorityProfileFileOk = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
-}
-
-static bool PartyPriorityProfileReadConfig(
-    char* activeOut, PartyPriorityProfileRule* rulesOut, int* countOut,
-    uint32_t* hashOut)
-{
-    if (!activeOut || !rulesOut || !countOut || !hashOut) return false;
-    PartyPriorityProfileEnsureFile();
-    memset(rulesOut, 0, sizeof(PartyPriorityProfileRule) * kPriorityProfileMaxRules);
-
-    GetPrivateProfileStringA("profile", "active", "vanilla",
-        activeOut, 40, PartyPriorityProfilePath());
-    if (!PartyPriorityProfileNameOk(activeOut)) return false;
-
-    int count = PartyPriorityProfileGetInt(activeOut, "ruleCount", 0);
-    if (count < 0 || count > kPriorityProfileMaxRules) return false;
-
-    uint32_t h = PartyPriorityProfileHash(activeOut, strlen(activeOut) + 1);
-    for (int i = 0; i < count; ++i) {
-        char section[72] = {};
-        sprintf_s(section, sizeof(section), "%s.rule%d", activeOut, i);
-        PartyPriorityProfileRule& R = rulesOut[i];
-        R.sensor = (uint32_t)PartyPriorityProfileGetInt(section, "sensor", -1);
-        R.code = (uint32_t)PartyPriorityProfileGetInt(section, "code", -1);
-        R.category = (uint32_t)PartyPriorityProfileGetInt(section, "category", -1);
-        R.objectId = (uint32_t)PartyPriorityProfileGetInt(section, "objectId", -1);
-        R.extra = (uint32_t)PartyPriorityProfileGetInt(section, "extra", -1);
-        R.ruleIndex = (uint32_t)PartyPriorityProfileGetInt(section, "ruleIndex", -1);
-        R.expectedAddS32 = PartyPriorityProfileGetInt(section, "expectedAddS32", 9999);
-        R.desiredAddS32 = PartyPriorityProfileGetInt(section, "desiredAddS32", 9999);
-        R.expectedBreak = (uint32_t)PartyPriorityProfileGetInt(
-            section, "expectedBreak", -1);
-        R.expectedCheckCount = (uint32_t)PartyPriorityProfileGetInt(
-            section, "expectedCheckCount", -1);
-        R.expectedSlot = PartyPriorityProfileGetInt(section, "expectedSlot", -1);
-        char f32Text[32] = {};
-        GetPrivateProfileStringA(section, "expectedAddF32", "0.0",
-            f32Text, sizeof(f32Text), PartyPriorityProfilePath());
-        const float expectedF32 = (float)atof(f32Text);
-        memcpy(&R.expectedAddF32Bits, &expectedF32, 4);
-        R.liveSlot = -1;
-
-        if (R.sensor > 1u || R.code > 255u || R.category > 32u
-            || R.objectId > 0xFFFFu || R.ruleIndex >= 16u
-            || R.expectedAddS32 < -32 || R.expectedAddS32 > 32
-            || R.desiredAddS32 < -32 || R.desiredAddS32 > 32
-            || R.expectedBreak > 1u || R.expectedCheckCount > 16u
-            || R.expectedSlot < -1 || R.expectedSlot >= 48)
-            return false;
-
-        for (int j = 0; j < i; ++j) {
-            PartyPriorityProfileRule& P = rulesOut[j];
-            if (P.sensor == R.sensor && P.code == R.code
-                && P.category == R.category && P.objectId == R.objectId
-                && P.extra == R.extra && P.ruleIndex == R.ruleIndex)
-                return false;
-        }
-        const size_t configBytes = (const BYTE*)&R.prioPtr - (const BYTE*)&R;
-        h = PartyPriorityProfileHash(&R, configBytes, h);
-    }
-    *countOut = count;
-    *hashOut = h;
-    return true;
-}
-
-static int PartyPriorityLiveSlot(uintptr_t prioParam)
-{
-    if (!prioParam) return -1;
-    // Build 57.2: искать во ВСЕХ экземплярах cAIPriorityThink, а не только
-    // в первом. Раньше брался первый и выходили — если у пешки несколько
-    // приоритетных корней (или первый — чужая пешка), slot давал -1.
-    for (int i = 0; i < g_nPawnAi; ++i) {
-        PawnAiCandidate& root = g_pawnAi[i];
-        if (strcmp(root.name, "cAIPriorityThink")) continue;
-
-        for (int slot = 0; slot < 48; ++slot) {
-            const uintptr_t field = root.ptr + 0x38u + (uint32_t)slot * 0x14u;
-            uint32_t before[5] = {};
-            uint32_t after[5] = {};
-            uintptr_t entries[16] = {};
-            if (!Rd((void*)field, before, sizeof(before))) continue;
-            if (before[1] > 16u || before[2] > 16u || before[1] > before[2]) continue;
-            if (before[1] && (!LooksHeap(before[4])
-                || !Rd((void*)(uintptr_t)before[4], entries,
-                    before[1] * sizeof(uintptr_t))))
-                continue;
-            if (!Rd((void*)field, after, sizeof(after))
-                || memcmp(before, after, sizeof(before)) != 0)
-                continue;
-            for (uint32_t n = 0; n < before[1]; ++n)
-                if (entries[n] == prioParam) return slot;
-        }
-    }
-    return -1;
-}
-
-static void PartyPriorityProfileResetRuntime()
-{
-    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        R.prioPtr = R.rulePtr = R.ruleVt = 0;
-        R.resolved = R.applied = false;
-        R.currentAddS32 = 0;
-        R.liveSlot = -1;
-    }
-    g_priorityProfileApplied = g_nPriorityProfileRules == 0;
-    g_priorityProfileConverged = g_nPriorityProfileRules == 0;
-}
-
-static bool PartyPriorityProfileResolveRule(PartyPriorityProfileRule& R)
-{
-    for (int i = 0; i < g_nPawnAi; ++i) {
-        PawnAiCandidate& A = g_pawnAi[i];
-        if (strcmp(A.name, "rAIPriorityThink::cPrioParam")) continue;
-        uintptr_t currentPrioVt = 0;
-        uint32_t raw[16] = {};
-        if (!RdPtr((void*)A.ptr, &currentPrioVt) || currentPrioVt != A.vt
-            || !Rd((void*)A.ptr, raw, sizeof(raw)))
-            continue;
-        if (raw[1] != R.sensor || raw[2] != R.code || raw[3] != R.category
-            || raw[4] != R.objectId || raw[5] != R.extra)
-            continue;
-        if (raw[7] > 16u || raw[8] > 16u || raw[7] > raw[8]
-            || R.ruleIndex >= raw[7] || !LooksHeap(raw[10]))
-            return false;
-
-        uintptr_t rule = 0;
-        if (!RdPtr((void*)(uintptr_t)(raw[10] + R.ruleIndex * 4u), &rule)
-            || !LooksHeap(rule))
-            return false;
-        uint32_t cp[9] = {};
-        if (!Rd((void*)rule, cp, sizeof(cp))
-            || !LooksLikeVtable(cp[0]) || !LooksLikeVtable(cp[4]))
-            return false;
-        const int32_t current = (int32_t)cp[1];
-        if ((current != R.expectedAddS32 && current != R.desiredAddS32)
-            || cp[2] != R.expectedAddF32Bits || cp[3] != R.expectedBreak
-            || cp[5] != R.expectedCheckCount || cp[6] > 16u
-            || cp[5] > cp[6] || cp[7] != 1u
-            || (cp[5] && !LooksHeap(cp[8])))
-            return false;
-
-        R.prioPtr = A.ptr;
-        R.rulePtr = rule;
-        R.ruleVt = cp[0];
-        R.currentAddS32 = current;
-        R.liveSlot = PartyPriorityLiveSlot(A.ptr);
-        R.resolved = true;
-        return true;
-    }
-    return false;
-}
-
-static bool PartyPriorityProfileResolveAll()
-{
-    for (int i = 0; i < g_nPriorityProfileRules; ++i)
-        if (!PartyPriorityProfileResolveRule(g_priorityProfileRules[i]))
-            return false;
-    return true;
-}
-
-static bool PartyPriorityProfileRestoreAll(const char* reason)
-{
-    // Build 56.7: ничего не применено — нечего и восстанавливать. Без этого
-    // вызова на «world unload» логировали впустую (спам в логе).
-    if (!g_priorityProfileApplied) return true;
-
-    // Prevalidate every still-live target before changing any of them.
-    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        if (!R.applied || !R.resolved) continue;
-        uintptr_t vt = 0;
-        int32_t current = 0;
-        if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
-            || !Rd((void*)(R.rulePtr + 0x04), &current, 4)) {
-            R.resolved = R.applied = false; // object is gone; nothing remains to restore
-            continue;
-        }
-        if (current != R.expectedAddS32 && current != R.desiredAddS32) {
-            sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
-                "Priority profile: ROLLBACK REFUSED rule %d value=%d", i, current);
-            return false;
-        }
-        R.currentAddS32 = current;
-    }
-
-    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        if (!R.applied || !R.resolved) continue;
-        if (R.currentAddS32 == R.desiredAddS32
-            && R.desiredAddS32 != R.expectedAddS32) {
-            if (!WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4))
-                return false;
-            int32_t verify = 0;
-            if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4)
-                || verify != R.expectedAddS32)
-                return false;
-            ++g_priorityProfileRestores;
-        }
-        R.currentAddS32 = R.expectedAddS32;
-        R.applied = false;
-    }
-    g_priorityProfileApplied = false;
-    g_priorityProfileConverged = false;
-    logFile << "PartyRecon: priority profile restored reason="
-            << (reason ? reason : "unknown") << std::endl;
-    return true;
-}
-
-static void PartyPriorityProfileUndoWrites(const bool* wrote, int count)
-{
-    for (int i = 0; i < count; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        if (wrote && wrote[i] && R.rulePtr)
-            WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4);
-        R.currentAddS32 = R.expectedAddS32;
-        R.applied = false;
-    }
-    g_priorityProfileApplied = false;
-    g_priorityProfileConverged = false;
-}
-
-static bool PartyPriorityProfileApplyAll()
-{
-    if (g_nPriorityProfileRules == 0) {
-        g_priorityProfileApplied = g_priorityProfileConverged = true;
-        return true;
-    }
-    if (!PartyPriorityProfileResolveAll()) return false;
-
-    bool wrote[kPriorityProfileMaxRules] = {};
-    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        if (R.currentAddS32 == R.desiredAddS32) {
-            R.applied = true;
-            continue;
-        }
-        if (R.currentAddS32 != R.expectedAddS32
-            || !WrSafe((void*)(R.rulePtr + 0x04), &R.desiredAddS32, 4)) {
-            PartyPriorityProfileUndoWrites(wrote, g_nPriorityProfileRules);
-            return false;
-        }
-        int32_t verify = 0;
-        if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4)
-            || verify != R.desiredAddS32) {
-            WrSafe((void*)(R.rulePtr + 0x04), &R.expectedAddS32, 4);
-            PartyPriorityProfileUndoWrites(wrote, g_nPriorityProfileRules);
-            return false;
-        }
-        wrote[i] = true;
-        ++g_priorityProfileWrites;
-        R.currentAddS32 = verify;
-        R.applied = true;
-    }
-    g_priorityProfileApplied = true;
-    return true;
-}
-
-static void PartyPriorityProfileUpdateState()
-{
-    if (g_nPriorityProfileRules == 0) {
-        g_priorityProfileApplied = g_priorityProfileConverged = true;
-        sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
-            "Priority profile: %s, 0 rules (vanilla)", g_priorityProfileActive);
-        return;
-    }
-
-    int applied = 0;
-    int converged = 0;
-    for (int i = 0; i < g_nPriorityProfileRules; ++i) {
-        PartyPriorityProfileRule& R = g_priorityProfileRules[i];
-        if (!R.resolved) continue;
-        uintptr_t vt = 0;
-        int32_t current = 0;
-        if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
-            || !Rd((void*)(R.rulePtr + 0x04), &current, 4)) {
-            R.resolved = R.applied = false;
-            continue;
-        }
-        R.currentAddS32 = current;
-        R.liveSlot = PartyPriorityLiveSlot(R.prioPtr);
-        if (current == R.desiredAddS32 && R.applied) ++applied;
-        if (R.expectedSlot < 0 || R.liveSlot == R.expectedSlot) ++converged;
-    }
-    g_priorityProfileApplied = applied == g_nPriorityProfileRules;
-    g_priorityProfileConverged = g_priorityProfileApplied
-        && converged == g_nPriorityProfileRules;
-    sprintf_s(g_priorityProfileStatus, sizeof(g_priorityProfileStatus),
-        "Priority profile: %s, rules %d/%d, %s",
-        g_priorityProfileActive, applied, g_nPriorityProfileRules,
-        g_priorityProfileConverged ? "CONVERGED" : "PENDING");
-}
-
-static bool PartyPriorityProfileLoadIfChanged()
-{
-    PartyPriorityProfileRule next[kPriorityProfileMaxRules] = {};
-    char active[40] = {};
-    int count = 0;
-    uint32_t hash = 0;
-    if (!PartyPriorityProfileReadConfig(active, next, &count, &hash)) {
-        lstrcpynA(g_priorityProfileStatus,
-            "Priority profile: INVALID SIDECAR, keeping current profile",
-            sizeof(g_priorityProfileStatus));
-        return false;
-    }
-    if (g_priorityProfileLoaded && hash == g_priorityProfileConfigHash) return true;
-    if (g_priorityProfileLoaded
-        && !PartyPriorityProfileRestoreAll("sidecar switch"))
-        return false;
-
-    memset(g_priorityProfileRules, 0, sizeof(g_priorityProfileRules));
-    memcpy(g_priorityProfileRules, next, sizeof(next));
-    g_nPriorityProfileRules = count;
-    lstrcpynA(g_priorityProfileActive, active, sizeof(g_priorityProfileActive));
-    g_priorityProfileConfigHash = hash;
-    g_priorityProfileLoaded = true;
-    PartyPriorityProfileResetRuntime();
-    return true;
-}
-
-static void PartyPriorityProfileSetActive(const char* active)
-{
-    if (!PartyPriorityProfileNameOk(active)) active = "vanilla";
-    PartyPriorityProfileEnsureFile();
-    WritePrivateProfileStringA("profile", "active", active,
-        PartyPriorityProfilePath());
-    g_priorityProfileLastPoll = 0;
-}
-
-static void PartyPriorityProfileTick()
-{
-    DWORD now = MsNow();
-    if (!g_priorityProfileWorldSince) g_priorityProfileWorldSince = now;
-    if (!g_priorityProfileLastPoll || now - g_priorityProfileLastPoll >= 1000u) {
-        g_priorityProfileLastPoll = now;
-        PartyPriorityProfileLoadIfChanged();
-    }
-
-    if (!g_priorityProfileApplied && g_nPriorityProfileRules > 0) {
-        if (!PartyPriorityProfileApplyAll()) {
-            const bool allowDiscover = now - g_priorityProfileWorldSince >= 5000u
-                && (!g_priorityProfileLastDiscover
-                    || now - g_priorityProfileLastDiscover >= 30000u);
-            if (allowDiscover) {
-                g_priorityProfileLastDiscover = now;
-                if (PartyPriorityProfileAutoDiscover())
-                    PartyPriorityProfileApplyAll();
-            }
-        }
-    }
-    PartyPriorityProfileUpdateState();
-}
-
-static void PartyPriorityProfileToggle()
-{
-    PartyPriorityProfileLoadIfChanged();
-    PartyPriorityProfileSetActive(!strcmp(g_priorityProfileActive, "vanilla")
-        ? "research_pair45_46" : "vanilla");
-    PartyPriorityProfileLoadIfChanged();
-    if (g_nPriorityProfileRules > 0) PartyPriorityProfileApplyAll();
-    PartyPriorityProfileUpdateState();
-}
-
-static void PartyPriorityProfileHotkeyTick()
-{
-    PartyPriorityProfileTick();
-    static bool wasDown = false;
-    const bool down = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
-    if (down && !wasDown) PartyPriorityProfileToggle();
-    wasDown = down;
-}
-
-static PartyVtClass* PartyClassifyVt(uintptr_t vt, uintptr_t sample)
-{
-    if (!vt || !InImage(vt)) return nullptr;
-    uint32_t idx = (uint32_t)(((vt >> 4) ^ (vt >> 16)) & (kPartyVtCacheSize - 1));
-    for (int probe = 0; probe < kPartyVtCacheSize; ++probe) {
-        PartyVtClass& C = g_partyVtCache[(idx + probe) & (kPartyVtCacheSize - 1)];
-        if (C.vt == vt) return &C;
-        if (C.vt != 0) continue;
-
-        C.vt = vt;
-        C.kind = PVK_OTHER;
-        C.name[0] = 0;
-        ++g_partyVtChecked;
-
-        char name[64] = {};
-        if (NameOfLiveObject(sample, name, sizeof(name)) && name[0]) {
-            ++g_partyVtNamed;
-            lstrcpynA(C.name, name, sizeof(C.name));
-            if (!strcmp(name, "uPlayer") || !strcmp(name, "uCmc"))
-                C.kind = PVK_PARTY_BODY;
-            else if (!strcmp(name, "sPawnManager"))
-                C.kind = PVK_PAWN_MANAGER;
-            PartyRememberNearType(name, vt, sample);
-        }
-        return &C;
-    }
-    return nullptr;
-}
-
-static void PartyAddBodyCandidate(uintptr_t obj, uintptr_t wantVt, const char* dtiName)
-{
-    if (!obj || !dtiName || g_nParty >= kPartyMaxBodies) return;
-    uint32_t bodySize = 0;
-    if (!strcmp(dtiName, "uPlayer")) bodySize = kPartyBodySize;
-    else if (!strcmp(dtiName, "uCmc")) bodySize = kCmcBodySize;
-    else return;
-
-    for (int i = 0; i < g_nParty; ++i)
-        if (g_party[i].ptr == obj) return;
-
-    uintptr_t vt = 0;
-    if (!RdPtr((void*)obj, &vt) || vt != wantVt) return;
-    BYTE tail = 0;
-    if (!Rd((void*)(obj + bodySize - 1), &tail, 1)) return;
-
-    PartyBodyDump& P = g_party[g_nParty++];
-    memset(&P, 0, sizeof(P));
-    P.ptr = obj;
-    P.vt = vt;
-    P.bodySize = bodySize;
-    lstrcpynA(P.dti, dtiName, sizeof(P.dti));
-}
-
-static void PartyAddPawnManagerCandidate(uintptr_t obj, uintptr_t wantVt)
-{
-    if (!obj || g_nPartyPawnMgr >= 8) return;
-    for (int i = 0; i < g_nPartyPawnMgr; ++i)
-        if (g_partyPawnMgr[i] == obj) return;
-    uintptr_t vt = 0;
-    if (!RdPtr((void*)obj, &vt) || vt != wantVt) return;
-    BYTE tail = 0;
-    if (!Rd((void*)(obj + kPawnManagerSize - 1), &tail, 1)) return;
-    g_partyPawnMgr[g_nPartyPawnMgr++] = obj;
-}
-
-// Build 60: partyOnly=true — ранний выход, как только найдены ОБА тела
-// (uPlayer и uCmc). Позиции нужны лишь от этих двух; полный проход до
-// 0x7FFF0000 ради priority/targetSel при позиционном трекинге не нужен и
-// давал ~1.5 с на каждую итерацию. При partyOnly не собираем runtime/pawnAi/
-// targetSel (они для профиля/аудита) — только тела.
-static void PartyFindBodies(bool partyOnly = false)
-{
-    g_nParty = 0;
-    g_partyRawCandidates = 0;
-    g_nPartyPawnMgr = 0;
-    g_partyVtChecked = 0;
-    g_partyVtNamed = 0;
-    g_nPartyNear = 0;
-    g_nPartyRuntime = 0;
-    g_nPawnAi = 0;
-    g_nTargetSel = 0;
-    memset(g_partyRuntime, 0, sizeof(g_partyRuntime));
-    memset(g_pawnAi, 0, sizeof(g_pawnAi));
-    memset(g_partyVtCache, 0, sizeof(g_partyVtCache));
-    if (!g_base) return;
-
-    bool havePlayer = false, haveCmc = false;
-    DWORD t0 = MsNow();
-    uintptr_t addr = 0x00010000u;
-    MEMORY_BASIC_INFORMATION mbi;
-    memset(&mbi, 0, sizeof(mbi));
-    bool done = false;
-    while (addr < 0x7FFF0000u && !done) {
-        SIZE_T got = VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi));
-        if (!got) break;
-        uintptr_t start = (uintptr_t)mbi.BaseAddress;
-        uintptr_t end = start + mbi.RegionSize;
-        if (end <= addr) break;
-
-        DWORD prot = mbi.Protect & 0xFF;
-        bool readable = prot == PAGE_READONLY || prot == PAGE_READWRITE
-                     || prot == PAGE_WRITECOPY || prot == PAGE_EXECUTE_READ
-                     || prot == PAGE_EXECUTE_READWRITE;
-        bool scan = mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE
-                 && readable && !(mbi.Protect & PAGE_GUARD);
-        if (scan) {
-            __try {
-                const uint32_t* p = (const uint32_t*)start;
-                uint32_t n = (uint32_t)((end - start) / 4);
-                for (uint32_t i = 0; i < n; ++i) {
-                    uintptr_t obj = start + (uintptr_t)i * 4;
-                    uintptr_t vt = p[i];
-                    if (!InImage(vt) || !LooksLikeVtable(vt)) continue;
-
-                    // No hardcoded instance-vtable. Classify each distinct
-                    // genuine vtable once by asking the live object for its DTI name.
-                    PartyVtClass* C = PartyClassifyVt(vt, obj);
-                    if (!C) continue;
-                    if (C->kind == PVK_PARTY_BODY) {
-                        PartyAddBodyCandidate(obj, vt, C->name);
-                        if (partyOnly) {
-                            if (!strcmp(C->name, "uPlayer")) havePlayer = true;
-                            else if (!strcmp(C->name, "uCmc")) haveCmc = true;
-                            if (havePlayer && haveCmc) { done = true; break; }
-                            continue; // не собираем pawnAi/targetSel в fast-режиме
-                        }
-                    } else if (C->kind == PVK_PAWN_MANAGER) {
-                        PartyAddPawnManagerCandidate(obj, vt);
-                        if (partyOnly) continue;
-                    }
-                    if (!partyOnly && C->name[0]) {
-                        PartyAddRuntimeProbe(obj, vt, C->name);
-                        PartyAddPawnAiCandidate(obj, vt, C->name);
-                        PartyAddTargetSelCandidate(obj, vt, C->name); // Build 59
-                    }
-                }
-            } __except (EXCEPTION_EXECUTE_HANDLER) {
-            }
-        }
-        addr = end;
-    }
-    g_partyRawCandidates = g_nParty;
-    g_partyFindMs = MsNow() - t0;
-}
-
-static void PartyInspectBody(PartyBodyDump& P)
-{
-    uintptr_t ptr = P.ptr;
-    uintptr_t vt = P.vt;
-    uint32_t bodySize = P.bodySize;
-    char dti[40];
-    lstrcpynA(dti, P.dti, sizeof(dti));
-    memset(&P, 0, sizeof(P));
-    P.ptr = ptr;
-    P.vt = vt;
-    P.bodySize = bodySize;
-    lstrcpynA(P.dti, dti, sizeof(P.dti));
-    P.bodyOk = P.bodySize > 0 && P.bodySize <= sizeof(P.body)
-            && Rd((void*)P.ptr, P.body, P.bodySize);
-    if (!P.bodyOk) return;
-
-    uintptr_t playerRecord = 0;
-    uintptr_t mainPawnRecord = 0;
-    if (pBase && *pBase) {
-        playerRecord = (uintptr_t)(*pBase + 0xA7000);
-        mainPawnRecord = playerRecord + 0x7F0;
-    }
-    P.playerRecordRef = PartyBlockHasPtr(P.body, P.bodySize, playerRecord);
-    P.mainPawnRecordRef = PartyBlockHasPtr(P.body, P.bodySize, mainPawnRecord);
-    PartyScanKnownValues(P, P.body, P.bodySize, P.dti, 0);
-
-    int bestActScore = -1;
-    for (uint32_t off = 0x100; off + 4 <= P.bodySize; off += 4) {
-        uintptr_t child = *(uint32_t*)(P.body + off);
-        if (!LooksHeap(child)) continue;
-        uintptr_t childVt = 0;
-        if (!RdPtr((void*)child, &childVt) || !LooksLikeVtable(childVt)) continue;
-
-        char name[48] = {};
-        if (!NameOfLiveObject(child, name, sizeof(name)) || !PartyRelevantName(name)) continue;
-        if (P.nChild >= kPartyMaxChildren) continue;
-
-        PartyChildDump& C = P.child[P.nChild++];
-        memset(&C, 0, sizeof(C));
-        C.off = off;
-        C.ptr = child;
-        C.vt = childVt;
-        lstrcpynA(C.name, name, sizeof(C.name));
-        C.headOk = Rd((void*)child, C.head, sizeof(C.head));
-        C.ownerRef = C.headOk && PartyBlockHasPtr(C.head, sizeof(C.head), P.ptr);
-
-        if (!strcmp(C.name, "uPawnIntel")) P.hasPawnIntel = true;
-        if (C.headOk) {
-            if (PartyBlockHasPtr(C.head, sizeof(C.head), playerRecord)) P.playerRecordRef = true;
-            if (PartyBlockHasPtr(C.head, sizeof(C.head), mainPawnRecord)) P.mainPawnRecordRef = true;
-            PartyScanKnownValues(P, C.head, sizeof(C.head), C.name, C.off);
-        }
-
-        // Player actions are cPlAct*. Pawn/controller actions are cCmc*.
-        // Both normally point back to the owning body. Prefer that evidence
-        // over parameter/check-table objects with a similar prefix.
-        bool plAct = PartyStartsWith(C.name, "cPlAct");
-        bool cmcAct = PartyStartsWith(C.name, "cCmc");
-        if ((plAct || cmcAct)
-            && !strstr(C.name, "Param") && !strstr(C.name, "CheckTbl")) {
-            int score = (plAct ? 20 : 10) + (C.ownerRef ? 100 : 0);
-            if (score > bestActScore) {
-                bestActScore = score;
-                P.actOff = C.off;
-                P.actPtr = C.ptr;
-                P.actOwnerRef = C.ownerRef;
-                lstrcpynA(P.actName, C.name, sizeof(P.actName));
-            }
-        }
-    }
-}
-
-static void PartyMarkPawnManagerRefs()
-{
-    for (int i = 0; i < g_nParty; ++i) g_party[i].pawnManagerRef = false;
-    for (int m = 0; m < g_nPartyPawnMgr; ++m) {
-        static BYTE mgr[kPawnManagerSize];
-        if (!Rd((void*)g_partyPawnMgr[m], mgr, sizeof(mgr))) continue;
-        for (int i = 0; i < g_nParty; ++i)
-            if (PartyBlockHasPtr(mgr, sizeof(mgr), g_party[i].ptr))
-                g_party[i].pawnManagerRef = true;
-    }
-}
-
-static int PartyCountValueHits(const PartyBodyDump& P, const char* prefix)
-{
-    int n = 0;
-    size_t len = prefix ? strlen(prefix) : 0;
-    if (!len) return 0;
-    for (int i = 0; i < P.nValueHit; ++i)
-        if (!strncmp(P.valueHit[i].label, prefix, len)) ++n;
-    return n;
-}
-
-static void PartySelectWorkingPair()
-{
-    if (g_nParty <= 2) return;
-
-    int arisen = -1, pawn = -1;
-    int bestArisen = 0, bestPawn = 0;
-    for (int i = 0; i < g_nParty; ++i) {
-        PartyBodyDump& P = g_party[i];
-        bool pawnEvidence = P.mainPawnRecordRef || P.pawnManagerRef || P.hasPawnIntel;
-
-        int a = !strcmp(P.dti, "uPlayer") ? 500 : 0;
-        if (P.playerRecordRef) a += 2000;
-        a += PartyCountValueHits(P, "player_") * 20;
-        if (pawnEvidence) a -= 1000;
-        if (a > bestArisen) { bestArisen = a; arisen = i; }
-
-        int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
-        if (P.mainPawnRecordRef) p += 2000;
-        if (P.pawnManagerRef) p += 2000;
-        if (P.hasPawnIntel) p += 2000;
-        p += PartyCountValueHits(P, "pawn_") * 20;
-        if (p > bestPawn) { bestPawn = p; pawn = i; }
-    }
-
-    // A body cannot fill both roles. If that happened, keep the stronger role
-    // and look for the next-best distinct candidate.
-    if (arisen >= 0 && pawn == arisen) {
-        pawn = -1; bestPawn = 0;
-        for (int i = 0; i < g_nParty; ++i) {
-            if (i == arisen) continue;
-            PartyBodyDump& P = g_party[i];
-            int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
-            if (P.mainPawnRecordRef) p += 2000;
-            if (P.pawnManagerRef) p += 2000;
-            if (P.hasPawnIntel) p += 2000;
-            p += PartyCountValueHits(P, "pawn_") * 20;
-            if (p > bestPawn) { bestPawn = p; pawn = i; }
-        }
-    }
-
-    int keep = 0;
-    if (arisen >= 0) g_partyChosen[keep++] = g_party[arisen];
-    if (pawn >= 0 && pawn != arisen && keep < 2) g_partyChosen[keep++] = g_party[pawn];
-    if (!keep) return;
-    for (int i = 0; i < keep; ++i) g_party[i] = g_partyChosen[i];
-    g_nParty = keep;
-}
-
-static void PartyAssignRoles()
-{
-    int pawn = -1, arisen = -1;
-    for (int i = 0; i < g_nParty; ++i) {
-        bool cmcBody = !strcmp(g_party[i].dti, "uCmc");
-        bool playerBody = !strcmp(g_party[i].dti, "uPlayer");
-        bool pawnEvidence = cmcBody
-                         || g_party[i].mainPawnRecordRef
-                         || g_party[i].pawnManagerRef
-                         || g_party[i].hasPawnIntel;
-        if (pawnEvidence && pawn < 0) pawn = i;
-        if ((playerBody || g_party[i].playerRecordRef) && !pawnEvidence && arisen < 0)
-            arisen = i;
-    }
-    if (g_nParty == 2) {
-        if (pawn >= 0 && arisen < 0) arisen = 1 - pawn;
-        if (arisen >= 0 && pawn < 0) pawn = 1 - arisen;
-    }
-    for (int i = 0; i < g_nParty; ++i) {
-        if (i == arisen) lstrcpynA(g_party[i].role, "Arisen", sizeof(g_party[i].role));
-        else if (i == pawn) lstrcpynA(g_party[i].role, "Main Pawn", sizeof(g_party[i].role));
-        else sprintf_s(g_party[i].role, sizeof(g_party[i].role), "Candidate %c", 'A' + i);
-    }
-}
-
-static bool PartyCandidatesStillValid()
-{
-    if (g_nParty <= 0) return false;
-    for (int i = 0; i < g_nParty; ++i) {
-        uintptr_t vt = 0;
-        if (!RdPtr((void*)g_party[i].ptr, &vt) || vt != g_party[i].vt) return false;
-        char name[40] = {};
-        if (!NameOfLiveObject(g_party[i].ptr, name, sizeof(name))
-            || strcmp(name, g_party[i].dti))
-            return false;
-    }
-    return true;
-}
 
 // Build 56.2 — Guardian doctrine anchor/pawn world positions.
 // +0x40/+0x44/+0x48 = world XYZ (SOURCE_OF_TRUTH §2, live units).
 // Тела Аризена/пешки резолвятся тем же census'ом, что и priority-профиль
 // (PartyFindBodies → PartyAssignRoles); позиции читаются ДЁШЕВО каждый тик,
 // а сам census — throttled, только когда тела невалидны/не найдены.
-static bool   g_arisenPosOk = false;
-static bool   g_pawnPosOk   = false;
-static bool   g_wasInWorld  = false;  // для dedupe cleanup'а «world unload»
-static float  g_arisenPosX = 0, g_arisenPosY = 0, g_arisenPosZ = 0;
-static float  g_pawnPosX = 0, g_pawnPosY = 0, g_pawnPosZ = 0;
 
-static DWORD  g_pawnPosLastFailLog = 0;  // rate-limit диагностики
-static bool   g_pawnPosWasOk = true;     // для логирования только на переходе
 
-// Читает позиции из уже разрешённых тел (дешёво, без census).
-// Вызывается каждый тик и после каждого PartyAssignRoles.
-static void PartyReadPositions()
-{
-    g_arisenPosOk = false;
-    g_pawnPosOk = false;
-    if (g_nParty <= 0) return;
-    int arisen = -1, pawn = -1;
-    for (int i = 0; i < g_nParty; ++i) {
-        if (!strcmp(g_party[i].role, "Arisen")) arisen = i;
-        else if (!strcmp(g_party[i].role, "Main Pawn")) pawn = i;
-    }
-    float x = 0, y = 0, z = 0;
-    // (0,0,0) считается sentinel «нет позиции»: мировые координаты DDDA —
-    // тысячи, никогда не нулевые в реальной точке.
-    if (arisen >= 0
-        && Rd((void*)(g_party[arisen].ptr + 0x40), &x, 4)
-        && Rd((void*)(g_party[arisen].ptr + 0x44), &y, 4)
-        && Rd((void*)(g_party[arisen].ptr + 0x48), &z, 4)
-        && !(x == 0.0f && y == 0.0f && z == 0.0f)) {
-        g_arisenPosX = x; g_arisenPosY = y; g_arisenPosZ = z;
-        g_arisenPosOk = true;
-    } else {
-        g_arisenPosX = g_arisenPosY = g_arisenPosZ = 0;
-    }
-    if (pawn >= 0
-        && Rd((void*)(g_party[pawn].ptr + 0x40), &x, 4)
-        && Rd((void*)(g_party[pawn].ptr + 0x44), &y, 4)
-        && Rd((void*)(g_party[pawn].ptr + 0x48), &z, 4)
-        && !(x == 0.0f && y == 0.0f && z == 0.0f)) {
-        g_pawnPosX = x; g_pawnPosY = y; g_pawnPosZ = z;
-        g_pawnPosOk = true;
-        g_pawnPosWasOk = true;
-        // Build 62: боевая цель пешки (uCmc+0x2EB8, SOURCE_OF_TRUTH §4).
-        uintptr_t tgt = 0;
-        if (RdPtr((void*)(g_party[pawn].ptr + 0x2EB8), &tgt))
-            g_pawnCombatTarget = tgt;
-    } else {
-        g_pawnPosX = g_pawnPosY = g_pawnPosZ = 0;
-        // Диагностика: только при ПЕРЕХОДЕ в сбой (было ок → стало ок-нет),
-        // плюс редко (раз в 60с), чтобы не спамить лог каждые 3 секунды.
-        DWORD now = MsNow();
-        if ((g_pawnPosWasOk || now - g_pawnPosLastFailLog >= 60000u)) {
-            g_pawnPosLastFailLog = now;
-            logFile << "PartyPositions: pawn read FAILED nParty=" << g_nParty
-                    << " pawnIdx=" << pawn << std::endl;
-            for (int i = 0; i < g_nParty; ++i) {
-                logFile << "  [" << i << "] role='" << g_party[i].role
-                        << "' dti='" << g_party[i].dti << "' body=0x" << std::hex
-                        << g_party[i].ptr << std::dec << std::endl;
-            }
-        }
-        g_pawnPosWasOk = false;
-    }
-}
+  // для dedupe cleanup'а «world unload»
+
+
+  // rate-limit диагностики
+
 
 // Ленивый census + дешёвое чтение позиций каждый тик.
 // Build 60:
@@ -3765,74 +2203,7 @@ static void PartyReadPositions()
 //    (иначе позиции висели 0,0,0 до смены мира — баг холодного старта);
 //  - при неполном наборе (пешка ещё не найдена) — бэкофф повторов
 //    (2с → 8с → 20с), а не постоянные 5с (не молотит полный скан).
-static DWORD g_partyPosLastDiscover = 0;
-static int   g_partyPosAttempts = 0;
 
-static void PartyPositionsTick()
-{
-    int arisen = -1, pawn = -1;
-    for (int i = 0; i < g_nParty; ++i) {
-        if (!strcmp(g_party[i].role, "Arisen")) arisen = i;
-        else if (!strcmp(g_party[i].role, "Main Pawn")) pawn = i;
-    }
-    bool complete = (arisen >= 0 && pawn >= 0);
-
-    if (g_nParty > 0) {
-        if (!PartyCandidatesStillValid()) {
-            // Тело стало невалидным (пересоздано в бою/воскрешении) без смены
-            // мира. Немедленный пере-резолв, без троттла.
-            g_partyPosLastDiscover = 0;
-            if (InterlockedCompareExchange(&g_partyBusy, 1, 0) == 0) {
-                PartyFindBodies(true);
-                for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
-                PartyMarkPawnManagerRefs();
-                PartySelectWorkingPair();
-                PartyAssignRoles();
-                InterlockedExchange(&g_partyBusy, 0);
-            }
-            if (g_nParty > 0) PartyReadPositions();
-            return;
-        }
-        PartyReadPositions(); // тела валидны — читаем (даже если неполный набор)
-        if (complete) return;
-    }
-
-    // Нужен (до)резолв: бэкофф по числу попыток.
-    DWORD now = MsNow();
-    DWORD wait = (g_partyPosAttempts == 0) ? 0u
-               : (g_partyPosAttempts == 1) ? 2000u
-               : (g_partyPosAttempts == 2) ? 8000u : 20000u;
-    if (g_partyPosLastDiscover && now - g_partyPosLastDiscover < wait) return;
-    g_partyPosLastDiscover = now;
-    ++g_partyPosAttempts;
-    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
-    PartyFindBodies(true);
-    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
-    PartyMarkPawnManagerRefs();
-    PartySelectWorkingPair();
-    PartyAssignRoles();
-    InterlockedExchange(&g_partyBusy, 0);
-    if (g_nParty > 0) PartyReadPositions();
-}
-
-static bool PartyPriorityProfileAutoDiscover()
-{
-    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return false;
-    PartyFindBodies();
-    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
-    PartyMarkPawnManagerRefs();
-    PartySelectWorkingPair();
-    PartyAssignRoles();
-    PartyReadPositions();
-    InterlockedExchange(&g_partyBusy, 0);
-
-    const bool found = PartyPriorityProfileResolveAll();
-    logFile << "PartyRecon: priority profile auto-discovery found="
-            << (found ? 1 : 0) << " candidates=" << g_nPawnAi
-            << " rules=" << g_nPriorityProfileRules
-            << " findMs=" << g_partyFindMs << std::endl;
-    return found;
-}
 
 static void PartyWriteJson()
 {
@@ -4801,18 +3172,6 @@ static void PartyTraceTick()
     fflush(g_partyTrace);
 }
 
-static void PartyTraceHotkeyTick()
-{
-    static bool wasDown = false;
-    // Physical '-' key beside Backspace (layout-independent OEM key).
-    bool down = (GetAsyncKeyState(VK_OEM_MINUS) & 0x8000) != 0;
-    if (down && !wasDown) {
-        if (g_partyTrace) PartyTraceStop();
-        else PartyTraceStart();
-    }
-    wasDown = down;
-}
-
 static int PartyCollectIntentLinks(uintptr_t planner, uint32_t code,
     uintptr_t* links, int cap)
 {
@@ -4946,488 +3305,11 @@ static void PartyIntentTraceTick()
     g_intentTraceLastTarget = target;
 }
 
-static void PartyCapture(bool forceFind)
-{
-    if (InterlockedCompareExchange(&g_partyBusy, 1, 0) != 0) return;
-    if (!InWorld()) {
-        lstrcpynA(g_partyStatus, "load a save first", sizeof(g_partyStatus));
-        InterlockedExchange(&g_partyBusy, 0);
-        return;
-    }
-
-    if (forceFind || !PartyCandidatesStillValid()) PartyFindBodies();
-    for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
-    PartyMarkPawnManagerRefs();
-    PartySelectWorkingPair();
-    PartyAssignRoles();
-    PartyReadPositions();
-
-    ++g_partySeq;
-    if (g_researchDump) PartyWriteJson();
-
-    if (g_nParty <= 0) {
-        sprintf_s(g_partyStatus, sizeof(g_partyStatus),
-            "no uPlayer/uCmc yet; discovery %03d saved (%d/%d named vtables)",
-            g_partySeq, g_partyVtNamed, g_partyVtChecked);
-        logFile << "PartyRecon: dynamic DTI scan found no uPlayer/uCmc body"
-                << " vtChecked=" << g_partyVtChecked
-                << " vtNamed=" << g_partyVtNamed
-                << " nearTypes=" << g_nPartyNear
-                << " file=" << g_partyLastFile << std::endl;
-        for (int i = 0; i < g_nPartyNear; ++i)
-            logFile << "  near " << g_partyNear[i].name << " vt=0x" << std::hex
-                    << g_partyNear[i].vt << " sample=0x" << g_partyNear[i].sample
-                    << std::dec << std::endl;
-        InterlockedExchange(&g_partyBusy, 0);
-        return;
-    }
-
-    if (g_researchDump) PartyWriteAiBridgeJson();
-    if (g_researchDump && !g_intentTrace) PartyIntentTraceStart();
-
-    logFile << "PartyRecon: snapshot " << g_partySeq << " bodies=" << g_nParty
-            << " rawCandidates=" << g_partyRawCandidates
-            << " vtChecked=" << g_partyVtChecked << " vtNamed=" << g_partyVtNamed
-            << " file=" << g_partyLastFile << std::endl;
-    for (int i = 0; i < g_nParty; ++i) {
-        logFile << "  " << g_party[i].role << " body=0x" << std::hex << g_party[i].ptr
-                << " act@+0x" << g_party[i].actOff << " -> " << g_party[i].actName
-                << std::dec << " children=" << g_party[i].nChild
-                << " knownValueHits=" << g_party[i].nValueHit
-                << " pawnIntel=" << (g_party[i].hasPawnIntel ? 1 : 0)
-                << " pawnMgr=" << (g_party[i].pawnManagerRef ? 1 : 0) << std::endl;
-    }
-    // Build 40 snapshots the upper AI graph on demand. The old dense CSV
-    // remains available via '-' but is no longer started automatically.
-    InterlockedExchange(&g_partyBusy, 0);
-}
-
 // ============ Build 61 — прицельная охота за code 4 и code 66 ============
 // Эти два кода статически «unmatched» (PlanCtrl пуст без активации). Ловим
 // их в рантайме: при selected code == 4 или 66 снимаем exact action, target,
 // packed и PlanCtrl links → InterfaceID → имя GOAP-ресурса.
-static char   g_intentHuntStatus[320] = "Intent hunt: not caught yet";
-static uint32_t g_huntLastCode = 0xFFFFFFFFu;
-static uintptr_t g_huntLastActionVt = 0;
-static uintptr_t g_huntLastTarget = 0;
 
-const char* DevTools::GuardianIntentHunt()
-{
-    return g_intentHuntStatus;
-}
-
-// ============ Build 64 — разведка ПОВОДКА (follow-дистанции) ============
-// Поводок не лежит в cmc.prt (там только штрафы) и не в Follow.gop (нет float).
-// Кандидаты — runtime action-объект cCmcFollow (672B) / cCmcDistance (656B) /
-// cFSMOrder::cFSMOrderParamCheckDistance (16B). Живёт в act-буфере (+0x2DC8),
-// когда пешка следует (priority code 1).
-//
-// Проbe read-only: по кнопке снимает текущее действие пешки + его float-поля,
-// плюс текущую дистанцию пешка→Аризен. Снимать «стой близко» и «стой далеко»
-// → по diff найти поле, которое меняется (= целевая дистанция поводка).
-static char g_followProbeStatus[512] = "Follow probe: not run";
-static bool g_followProbeRequested = false;
-static void FollowProbeProcess(); // определена ниже, вызывается из WorldScan_Tick
-
-static float FollowDistMeters()
-{
-    float dx = g_pawnPosX - g_arisenPosX;
-    float dy = g_pawnPosY - g_arisenPosY;
-    float dz = g_pawnPosZ - g_arisenPosZ;
-    return sqrtf(dx*dx + dy*dy + dz*dz) / 100.0f; // ~см → м
-}
-
-const char* DevTools::FollowProbe()
-{
-    // Build 64.5: кнопка НЕ делает работу (render-поток). Ставит флаг,
-    // а census + дамп выполняет FollowProbeProcess() на pawn-потоке
-    // (вызывается из WorldScan_Tick), где уже безопасно работает auto-discover.
-    // Иначе полный census на render-потоке блокировал D3D9 present → краш.
-    g_followProbeRequested = true;
-    lstrcpynA(g_followProbeStatus,
-        "Follow probe: requested — see log in ~1s (runs on pawn thread)",
-        sizeof(g_followProbeStatus));
-    return g_followProbeStatus;
-}
-
-// Выполняется на pawn-потоке (из WorldScan_Tick). Build 64.6 — БЕЗ полного
-// census. Полный проход памяти (PartyFindBodies) в активной игре принципиально
-// хрупок (гонка с аллокациями) — он и был источником крашей. Вместо этого идём
-// по ПОДТВЕРЖДЁННОЙ цепочке указателей (SOURCE_OF_TRUTH §4/§5, Build 50):
-//   uCmc+0x2E64 → cAICtrl+0x68 → planner
-//   planner+0x190+code*0x110 → PlanCtrl[code] → cGoalPlanningNode+0x04
-//   → ActionInterfaceParam+0x08 → cCmc action → +0x258..+0x26C (range floats)
-static void FollowProbeProcess()
-{
-    if (!g_followProbeRequested) return;
-    g_followProbeRequested = false;
-
-    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
-    if (!pawn || !pawn->ptr) {
-        lstrcpynA(g_followProbeStatus, "Follow probe: pawn not resolved", sizeof(g_followProbeStatus));
-        return;
-    }
-
-    // Build 67: наполнить g_pawnAi полным census, если пуст. Это НА PAWN-ПОТОКЕ
-    // и ВНЕ БОЯ (пользователь снимает вне боя) — безопасно. В бою полный census
-    // запрещён (гонка с аллокациями, см. FIX_RULES «уроки разведки»).
-    if (g_nPawnAi == 0) {
-        if (InterlockedCompareExchange(&g_partyBusy, 1, 0) == 0) {
-            PartyFindBodies();  // полный (не partyOnly) — собирает cCmc*
-            for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
-            PartyMarkPawnManagerRefs();
-            PartySelectWorkingPair();
-            PartyAssignRoles();
-            PartyReadPositions();
-            InterlockedExchange(&g_partyBusy, 0);
-        }
-    }
-
-    uintptr_t aiCtrl = 0, planner = 0, action = 0;
-    uint32_t code = 0xFFFFFFFFu;
-    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
-    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
-    if (planner) Rd((void*)(planner + 0x17C), &code, 4);
-    RdPtr((void*)(pawn->ptr + 0x2DC8), &action);
-    char actName[64] = {};
-    if (action) NameOfLiveObject(action, actName, sizeof(actName));
-    float dist = (g_arisenPosOk && g_pawnPosOk) ? FollowDistMeters() : -1.0f;
-
-    logFile << "FollowProbe: dist=" << dist << "m code=" << code
-            << " act=" << (actName[0] ? actName : "none") << std::endl;
-
-    if (!planner) {
-        lstrcpynA(g_followProbeStatus, "Follow probe: planner not resolved", sizeof(g_followProbeStatus));
-        return;
-    }
-
-    // Build 67: дампим ВСЕ cCmcFollow из census (g_pawnAi), а не через planner.
-    // Их несколько (главная пешка + слоты наёмных) — у каждого СВОЯ лестница
-    // [70..76] (поводок сзади / радиус спереди). Выводим компактно:
-    // лестницу + признак владельца (содержит ли pawn->ptr).
-    int followCount = 0;
-    for (int i = 0; i < g_nPawnAi; ++i) {
-        PawnAiCandidate& A = g_pawnAi[i];
-        char nm[64]; nm[0] = 0;
-        memcpy(nm, A.name, 63); nm[63] = 0;
-        if (strcmp(nm, "cCmcFollow")) continue;
-        BYTE raw[672] = {};
-        int n = A.typeSize ? (A.typeSize < 672 ? A.typeSize : 672) : 672;
-        if (!Rd((void*)A.ptr, raw, n)) continue;
-
-        // лестница [70..76] = offset 0x118..0x130
-        float ladder[7] = {};
-        for (int k = 0; k < 7; ++k)
-            memcpy(&ladder[k], raw + 0x118 + k * 4, 4);
-
-        // owner: есть ли pawn->ptr среди первых 512 байт
-        bool ownsPawn = false;
-        for (int off = 0; off + 4 <= 512 && !ownsPawn; off += 4)
-            if (*(uint32_t*)(raw + off) == (uint32_t)pawn->ptr) ownsPawn = true;
-
-        logFile << "  cCmcFollow[" << followCount << "] 0x" << std::hex
-                << A.ptr << std::dec << " owner=" << (ownsPawn ? "PAWN" : "?")
-                << " ladder[70..76]=";
-        for (int k = 0; k < 7; ++k)
-            logFile << ladder[k] << (k < 6 ? "," : "");
-        logFile << "  (m: " << ladder[0]/100 << "," << ladder[1]/100 << ","
-                << ladder[2]/100 << "," << ladder[3]/100 << "," << ladder[4]/100
-                << "," << ladder[5]/100 << "," << ladder[6]/100 << ")" << std::endl;
-        ++followCount;
-    }
-    if (followCount == 0)
-        logFile << "  (no cCmcFollow in census — run Find both / full census first)" << std::endl;
-
-    sprintf_s(g_followProbeStatus, sizeof(g_followProbeStatus),
-        "Follow probe: dist=%.1fm code=%u act=%s followCount=%d (see log)",
-        dist, code, actName[0] ? actName : "none", followCount);
-}
-
-// ============ Build 64.8 — A/B поводка (транзакционная правка порога) ============
-// Проверяем, что float-порог [74] в cCmcFollow (offset 0x128, vanilla 1500 = 15 м)
-// реально управляет дистанцией, с которой пешка начинает догонять.
-// Резолв по цепочке указателей (без census), validate → write → readback → rollback.
-static bool   g_leashAbArmed = false;
-static bool   g_leashAbApplied = false;
-static float  g_leashVanilla = 0.0f;
-static float  g_leashDesired = 2500.0f;   // тест: догонять с 25 м
-static char   g_leashAbStatus[192] = "Leash A/B: disabled";
-static uintptr_t g_leashCmc = 0;
-
-// Резолв cCmcFollow через planner (SOURCE_OF_TRUTH §4/§5, цепочка Build 50).
-// Build 64.9: среди кандидатов ищем тот, что содержит ОБРАТНУЮ ссылку на тело
-// главной пешки (pawn->ptr). Раньше брали первый «Follow» — а инстансов три
-// (гл.пешка + слоты), и значения у них разные (отсюда 1500 vs 2500).
-static uintptr_t ResolveCmcFollow(PartyBodyDump* pawn)
-{
-    if (!pawn || !pawn->ptr) return 0;
-    uintptr_t aiCtrl = 0, planner = 0;
-    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
-    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
-    if (!planner) return 0;
-    uintptr_t links[8] = {};
-    int n = PartyCollectIntentLinks(planner, 1, links, 8); // code 1 = Follow
-    uintptr_t fallback = 0;
-    for (int i = 0; i < n; ++i) {
-        uintptr_t cmc = 0;
-        if (!RdPtr((void*)(links[i] + 0x08), &cmc) || !cmc) continue;
-        char nm[64] = {};
-        NameOfLiveObject(cmc, nm, sizeof(nm));
-        if (!strstr(nm, "Follow")) continue;
-        if (!fallback) fallback = cmc;
-        // owner back-ref: сканируем первые 512 байт на pawn->ptr (u32).
-        BYTE raw[512] = {};
-        if (Rd((void*)cmc, raw, sizeof(raw))) {
-            for (int off = 0; off + 4 <= (int)sizeof(raw); off += 4) {
-                if (*(uint32_t*)(raw + off) == (uint32_t)pawn->ptr) {
-                    logFile << "ResolveCmcFollow: owner match at +0x" << std::hex
-                            << off << " cmc=0x" << cmc << std::dec << std::endl;
-                    return cmc;
-                }
-            }
-        }
-    }
-    return fallback;
-}
-
-void DevTools::LeashAbSet(bool armed)
-{
-    g_leashAbArmed = armed;
-    if (!armed) g_leashAbApplied = false;
-}
-
-bool DevTools::LeashAbIsApplied() { return g_leashAbApplied; }
-const char* DevTools::LeashAbStatus() { return g_leashAbStatus; }
-
-static void LeashAbTick()
-{
-    static bool init = false;
-    if (!init) {
-        init = true;
-        g_leashDesired = config.getFloat("pawnAI", "leashAbDesired", 2500.0f);
-    }
-
-    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
-    if (!pawn || !pawn->ptr) {
-        lstrcpynA(g_leashAbStatus, "Leash A/B: pawn not resolved", sizeof(g_leashAbStatus));
-        return;
-    }
-    uintptr_t cmc = ResolveCmcFollow(pawn);
-    if (!cmc) {
-        lstrcpynA(g_leashAbStatus, "Leash A/B: cCmcFollow not resolved", sizeof(g_leashAbStatus));
-        return;
-    }
-    g_leashCmc = cmc;
-
-    // offset [74] = float idx 74 * 4 = 0x128
-    float cur = 0;
-    if (!Rd((void*)(cmc + 0x128), &cur, 4)) {
-        lstrcpynA(g_leashAbStatus, "Leash A/B: read FAILED", sizeof(g_leashAbStatus));
-        return;
-    }
-
-    if (!g_leashAbArmed) {
-        // Откат к vanilla (если применили и значение == desired).
-        if (g_leashAbApplied && g_leashVanilla > 0.0f) {
-            float target = g_leashVanilla;
-            if (!WrSafe((void*)(cmc + 0x128), &target, 4)) return;
-            float v = 0;
-            if (!Rd((void*)(cmc + 0x128), &v, 4) || v != target) return;
-            g_leashAbApplied = false;
-            sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
-                "Leash A/B: rolled back to %.0f", g_leashVanilla);
-        } else {
-            sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
-                "Leash A/B: vanilla (cur=%.0f)", cur);
-        }
-        return;
-    }
-
-    // Armed: запомнить vanilla один раз, применить desired = vanilla + 1200
-    // (гарантированно другой порог — пешка должна догонять с ~на 12 м дальше).
-    if (!g_leashAbApplied) {
-        g_leashVanilla = cur;
-        g_leashDesired = g_leashVanilla + 1200.0f;
-        float target = g_leashDesired;
-        if (!WrSafe((void*)(cmc + 0x128), &target, 4)) {
-            lstrcpynA(g_leashAbStatus, "Leash A/B: write FAILED", sizeof(g_leashAbStatus));
-            return;
-        }
-        float v = 0;
-        if (!Rd((void*)(cmc + 0x128), &v, 4) || v != target) {
-            WrSafe((void*)(cmc + 0x128), &g_leashVanilla, 4); // откат
-            lstrcpynA(g_leashAbStatus, "Leash A/B: readback FAILED (rolled back)", sizeof(g_leashAbStatus));
-            return;
-        }
-        g_leashAbApplied = true;
-        logFile << "LeashAb: applied [74] " << g_leashVanilla << " -> " << g_leashDesired << std::endl;
-
-        // Дамп лестницы [70..76] — для сверки в этой же сессии.
-        float ladder[7] = {};
-        for (int k = 0; k < 7; ++k) Rd((void*)(cmc + 0x118 + k * 4), &ladder[k], 4);
-        logFile << "LeashAb ladder[70..76]: "
-                << ladder[0] << "," << ladder[1] << "," << ladder[2] << ","
-                << ladder[3] << "," << ladder[4] << "," << ladder[5] << ","
-                << ladder[6] << std::endl;
-    }
-
-    float now = 0;
-    Rd((void*)(cmc + 0x128), &now, 4);
-    sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
-        "Leash A/B: APPLIED [74]=%.0f (vanilla %.0f, desired %.0f)",
-        now, g_leashVanilla, g_leashDesired);
-}
-
-static void GuardianIntentHuntTick()
-{
-    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
-    if (!pawn || !pawn->ptr) return;
-    uintptr_t bodyVt = 0;
-    if (!RdPtr((void*)pawn->ptr, &bodyVt) || bodyVt != pawn->vt) return;
-
-    uintptr_t action = 0, actionVt = 0, target = 0, aiCtrl = 0, planner = 0;
-    uint32_t packed = 0xFFFFFFFFu, code = 0xFFFFFFFFu;
-    RdPtr((void*)(pawn->ptr + 0x2DC8), &action);
-    if (action) RdPtr((void*)action, &actionVt);
-    Rd((void*)(pawn->ptr + 0x2DD4), &packed, 4);
-    RdPtr((void*)(pawn->ptr + 0x2EB8), &target);
-    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
-    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
-    if (planner) Rd((void*)(planner + 0x17C), &code, 4);
-
-    // Build 66: ловим СМЕНУ ИНТЕНТА (code), а не только 4/66. Это вскрывает:
-    //  - Pioneer-обгон: что за intent (DashFollow/StandOff/Goto/...) когда пешка
-    //    вырывается вперёд по камере;
-    //  - Guardian-прилипание: что за intent удерживает у игрока (Follow?).
-    // Логируем только при смене code (не спамим каждый тик на одном интенте).
-    if (code == g_huntLastCode) return;
-    g_huntLastCode = code;
-    g_huntLastActionVt = actionVt;
-    g_huntLastTarget = target;
-
-    char actionName[64] = {};
-    char targetName[64] = {};
-    if (action) NameOfLiveObject(action, actionName, sizeof(actionName));
-    if (target) NameOfLiveObject(target, targetName, sizeof(targetName));
-
-    // PlanCtrl links -> InterfaceID -> имя ресурса.
-    uintptr_t links[64] = {};
-    int nLinks = PartyCollectIntentLinks(planner, code, links, 64);
-    char linkDesc[256] = "";
-    for (int i = 0; i < nLinks && i < 8; ++i) {
-        uint32_t ifaceId = 0;
-        Rd((void*)(links[i] + 0x04), &ifaceId, 4);
-        const char* resName = GoapInterfaceName(ifaceId);
-        char tmp[64];
-        sprintf_s(tmp, sizeof(tmp), "%s%d=%s", i ? "," : "", ifaceId,
-            resName ? resName : "?");
-        if (strlen(linkDesc) + strlen(tmp) < sizeof(linkDesc))
-            strcat_s(linkDesc, sizeof(linkDesc), tmp);
-    }
-
-    logFile << "IntentHunt: code=" << code
-            << " (" << PawnPriorityIntentName(code) << ")"
-            << " action=" << (actionName[0] ? actionName : "none")
-            << " packed=0x" << std::hex << packed << std::dec
-            << " target=" << (targetName[0] ? targetName : "none")
-            << " links=" << (nLinks ? linkDesc : "none") << std::endl;
-
-    sprintf_s(g_intentHuntStatus, sizeof(g_intentHuntStatus),
-        "code %u (%s): action=%s target=%s iface=%s",
-        code, PawnPriorityIntentName(code),
-        actionName[0] ? actionName : "none",
-        targetName[0] ? targetName : "none",
-        nLinks ? linkDesc : "none");
-}
-
-static void PartyHotkeyTick()
-{
-    // '-' switches persistent sidecar profiles transactionally.
-    // The legacy dense trace remains file-only but has no hotkey in this build.
-    PartyPriorityProfileHotkeyTick();
-    PartyTraceTick();
-    PartyIntentTraceTick();
-    GuardianIntentHuntTick(); // Build 61
-
-    static bool wasDown = false;
-    // Physical '=' key beside Backspace (VK_OEM_PLUS without Shift).
-    bool down = (GetAsyncKeyState(VK_OEM_PLUS) & 0x8000) != 0;
-    if (down && !wasDown) PartyCapture(false);
-    wasDown = down;
-}
-
-static void ScanActSlot(ActorDump& A)
-{
-    A.actOff = 0; A.actPtr = 0; A.actVtRva = 0;
-    A.actName = 0; A.actCat = 0; A.actHits = 0;
-    A.actOff2 = 0; A.actName2 = 0;
-    A.nRaw = 0;
-
-    // Живое имя состояния и признак смерти (билд 29).
-    A.liveAct[0] = 0;
-    A.isDead     = false;
-    if (ReadLiveAct(A.ptr, A.liveAct, sizeof(A.liveAct)))
-        A.isDead = ActNameIsDeath(A.liveAct);
-    if (!g_base) return;
-
-    // Fast path: we already know where it lives.
-    if (!g_actFullScan && g_actSlotOff) {
-        uintptr_t ptr = 0; uint32_t rva = 0;
-        if (const ActMap::Act* a = ActAt(A.ptr, g_actSlotOff, &ptr, &rva)) {
-            A.actOff = g_actSlotOff; A.actPtr = ptr; A.actVtRva = rva;
-            A.actName = a->name; A.actCat = a->category; A.actHits = 1;
-        }
-        return;
-    }
-
-    // Full search. Copy the body first: 8 guarded reads instead of thousands.
-    static BYTE  buf[0x7400];
-    static bool  ok[0x7400 / 0x1000 + 1];
-    const uint32_t kEnd = 0x7400, kChunk = 0x1000;
-    for (uint32_t c = 0, off = 0; off < kEnd; ++c, off += kChunk) {
-        uint32_t n = (off + kChunk <= kEnd) ? kChunk : (kEnd - off);
-        ok[c] = Rd((void*)(A.ptr + off), buf + off, n);
-    }
-
-    for (uint32_t off = 0x100; off + 4 <= kEnd; off += 4) {
-        if (!ok[off / kChunk]) continue;
-        uintptr_t cand = *(uintptr_t*)(buf + off);
-        if (!LooksHeap(cand)) continue;
-        uintptr_t vt = 0;
-        if (!RdPtr((void*)cand, &vt) || !InImage(vt)) continue;
-        uint32_t rva = (uint32_t)(vt - g_base);
-
-        // Zip 33: harvest every real vtable-bearing object, unfiltered.
-        // LooksLikeVtable = lives in .rdata and its first two slots point
-        // into .text — that is a genuine C++ object, Act or not.
-        if (A.nRaw < 40 && LooksLikeVtable(vt)) {
-            int dup = 0;
-            for (int r = 0; r < A.nRaw; ++r)
-                if (A.rawVt[r] == (uint32_t)vt) { dup = 1; break; }
-            if (!dup) {
-                A.rawOff[A.nRaw] = off;
-                A.rawVt[A.nRaw]  = (uint32_t)vt;
-                A.rawPtr[A.nRaw] = (uint32_t)cand;
-                // Zip 34: ask the object its own name. Atlas not involved.
-                if (!NameOfLiveObject(cand, A.rawName[A.nRaw], 40))
-                    A.rawName[A.nRaw][0] = 0;
-                A.nRaw++;
-            }
-        }
-
-        const ActMap::Act* a = ActMap::FindByVt(rva);
-        if (!a) continue;
-
-        A.actHits++;
-        if (!A.actPtr) {
-            A.actOff = off; A.actPtr = cand; A.actVtRva = rva;
-            A.actName = a->name; A.actCat = a->category;
-        } else if (!A.actOff2) {
-            A.actOff2 = off; A.actName2 = a->name;
-        }
-    }
-    if (A.actOff) g_actSlotOff = A.actOff;   // remember for the cheap path
-}
 
 // Zip 36 — probe the decision/motion objects hanging off the actor.
 // Confirmed live offsets (dumps 14.08): +0x2DC0 cActBank, +0x2DC8 current Act,
@@ -5460,73 +3342,6 @@ static void ProbeSidecars(uintptr_t body)
     }
 }
 
-static void DumpActorsFrom(uintptr_t* seed, int ns)
-{
-    g_nAct = 0;
-    if (!seed || ns <= 0) return;
-    if (ns > 32) ns = 32;
-    for (int s = 0; s < ns && g_nAct < 32; ++s) {
-        uintptr_t p = seed[s];
-        if (!p || !LooksHeap(p)) continue;
-        int have = 0;
-        for (int k = 0; k < g_nAct; ++k) if (g_act[k].ptr == p) { have = 1; break; }
-        if (have) continue;
-        uintptr_t vt = 0;
-        if (!RdPtr((void*)p, &vt) || !LooksLikeVtable(vt)) continue;
-        ActorDump& A = g_act[g_nAct];
-        memset(&A, 0, sizeof(A));
-        A.ptr = p;
-        A.vt = vt;
-        BYTE gidb = 0;
-        if (Rd((void*)(p + 0x2D), &gidb, 1)) A.gid = gidb;
-        Rd((void*)(p + 0x40), &A.x, 4);
-        Rd((void*)(p + 0x44), &A.y, 4);
-        Rd((void*)(p + 0x48), &A.z, 4);
-        RdPtr((void*)(p + 0x0C), &A.next);
-        RdPtr((void*)(p + 0x10), &A.prev);
-        if (A.vt == kGoblinInst)
-            A.subOk = RdPtr((void*)(p + 0x6150), &A.subVt);
-        BYTE probe = 0;
-        A.fat29 = Rd((void*)(p + 0x73BF), &probe, 1);
-        { BYTE st = 0; if (Rd((void*)(p + 0x14), &st, 1)) A.st14 = st; }
-        A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
-        A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
-        ScanActSlot(A);
-
-        // Имя вида — у самой игры, через DTI.
-        //
-        // РАНЬШЕ здесь был список из пяти захардкоженных vtable, и всё,
-        // чего в нём нет, получало kind="?" — то есть волки, бандиты и
-        // огры не считались никем. Список констант не масштабируется:
-        // видов в игре 35+, и каждый пришлось бы ловить вручную.
-        //
-        // DTI даёт настоящее имя класса любого существа сразу.
-        // Известные константы оставлены как быстрый путь: для них имя
-        // статическое, без чтения памяти.
-        if (A.vt == kGoblinInst)      A.kind = "uEm0100";
-        else if (A.vt == kNpcInst)    A.kind = "uNpc";
-        else if (A.vt == kEm8000Inst) A.kind = "uEm8000";
-        else if (A.vt == kHareInst)   A.kind = "uEm8600";
-        else {
-            if (NameOfLiveObject(p, A.kindBuf, sizeof(A.kindBuf)) && A.kindBuf[0])
-                A.kind = A.kindBuf;
-            else if (A.vt == kUnk84Inst) A.kind = "u?84";
-            else A.kind = "?";
-        }
-        g_nAct++;
-        if (A.next && LooksHeap(A.next) && ns < 32) {
-            int d = 0;
-            for (int k = 0; k < ns; ++k) if (seed[k] == A.next) { d = 1; break; }
-            if (!d) seed[ns++] = A.next;
-        }
-        if (A.prev && LooksHeap(A.prev) && ns < 32) {
-            int d = 0;
-            for (int k = 0; k < ns; ++k) if (seed[k] == A.prev) { d = 1; break; }
-            if (!d) seed[ns++] = A.prev;
-        }
-    }
-}
-
 static void DumpActors()
 {
     uintptr_t seed[32];
@@ -5535,122 +3350,6 @@ static void DumpActors()
         seed[ns++] = g_lives[i].ptr;
     DumpActorsFrom(seed, ns);
     PublishWorldFromActors();
-}
-
-static void RewalkActors()
-{
-    uintptr_t seed[32];
-    int ns = 0;
-    for (int i = 0; i < g_nAct && ns < 32; ++i)
-        if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
-    if (!ns) return;
-    DumpActorsFrom(seed, ns);
-    PublishWorldFromActors();
-}
-
-// Известные vtable — быстрый путь без чтения DTI.
-static int IsSeedVt(uint32_t val)
-{
-    return val == (uint32_t)kGoblinInst || val == (uint32_t)kEm8000Inst
-        || val == (uint32_t)kNpcInst || val == (uint32_t)kUnk84Inst
-        || val == (uint32_t)kHareInst;
-}
-
-// Тело существа ли это — по имени класса от самой игры.
-//
-// ЗАЧЕМ. Раньше поиск в куче принимал только пять захардкоженных vtable
-// (гоблин, uEm8000, uNpc, u?84, Hare). Волк, бандит, огр — всё остальное
-// не проходило фильтр и НИКОГДА не попадало в список акторов. Поэтому
-// «волков система не определяет»: дело не в классификации, их просто
-// не находили.
-//
-// Видов в игре 35+, ловить каждый константой нереально. Спрашиваем имя
-// у DTI: uEm* и uHumanEnemy — наши.
-//
-// Порядок проверок важен для скорости: сначала дешёвые отсечения по
-// памяти, только потом разбор vtable. Функция зовётся на каждом
-// 8-байтовом слове горячей кучи.
-static bool LooksLikeCreatureAt(uintptr_t obj, uint32_t vt)
-{
-    if (!LooksLikeVtable((uintptr_t)vt)) return false;
-    // У всех тел существ есть gid на +0x2D и координаты на +0x40.
-    BYTE probe = 0;
-    if (!Rd((void*)(obj + 0x2D), &probe, 1)) return false;
-    float x = 0;
-    if (!Rd((void*)(obj + 0x40), &x, 4)) return false;
-
-    char nm[40];
-    if (!NameOfLiveObject(obj, nm, sizeof(nm)) || !nm[0]) return false;
-    if (nm[0] == 'u' && nm[1] == 'E' && nm[2] == 'm') return true;
-    return strcmp(nm, "uHumanEnemy") == 0;
-}
-
-static uintptr_t PollSeedSlice(uint32_t budget)
-{
-    // Hot ring only. dump18-23 actors are 0x10DD..0x114F. Walking to 0x40000000
-    // skipped the classic band for ~30s (dump23 pack of 3).
-    if (!g_nExec) InitSections();
-    if (!budget) budget = 0x800000u;
-    const uint32_t kBudget = budget;
-    uint32_t used = 0;
-    int steps = 0;
-    if (g_pollAddr < kHotLo || g_pollAddr >= kHotHi)
-        g_pollAddr = kHotLo;
-    while (used < kBudget && steps < 64) {
-        steps++;
-        MEMORY_BASIC_INFORMATION mbi;
-        memset(&mbi, 0, sizeof(mbi));
-        SIZE_T got = VirtualQuery((LPCVOID)g_pollAddr, &mbi, sizeof(mbi));
-        if (!got) { g_pollAddr = kHotLo; break; }
-        uintptr_t base = (uintptr_t)mbi.BaseAddress;
-        uintptr_t next = base + mbi.RegionSize;
-        if (next <= g_pollAddr) { g_pollAddr = kHotLo; break; }
-        DWORD prot = mbi.Protect & 0xFF;
-        bool readable = prot == PAGE_READONLY || prot == PAGE_READWRITE
-                     || prot == PAGE_WRITECOPY || prot == PAGE_EXECUTE_READ
-                     || prot == PAGE_EXECUTE_READWRITE;
-        bool skip = mbi.State != MEM_COMMIT || mbi.Type != MEM_PRIVATE
-                 || !readable || (mbi.Protect & PAGE_GUARD)
-                 || next <= kHotLo || base >= kHotHi
-                 || (g_base && base < ImageEnd() && next > g_base);
-        if (skip) { g_pollAddr = (next >= kHotHi) ? kHotLo : next; continue; }
-        uintptr_t lo = g_pollAddr > base ? g_pollAddr : base;
-        if (lo < kHotLo) lo = kHotLo;
-        uintptr_t hi = next;
-        if (hi > kHotHi) hi = kHotHi;
-        if (hi <= lo) { g_pollAddr = (next >= kHotHi) ? kHotLo : next; continue; }
-        uint32_t span = (uint32_t)(hi - lo);
-        if (span > kBudget - used) span = kBudget - used;
-        hi = lo + span;
-        __try {
-            uint32_t* p32 = (uint32_t*)lo;
-            uint32_t n = span / 4;
-            for (uint32_t i = 0; i < n; ++i) {
-                uintptr_t obj = lo + (uintptr_t)i * 4;
-                if (obj & 7) continue;
-                uint32_t val = p32[i];
-                // Быстрый путь: известная vtable — берём без вопросов.
-                // Медленный: спрашиваем DTI, но только если значение
-                // вообще похоже на указатель в образ (иначе тратили бы
-                // разбор vtable на каждое случайное число в куче).
-                if (IsSeedVt(val)) {
-                    BYTE probe = 0;
-                    if (!Rd((void*)(obj + 0x2D), &probe, 1)) continue;
-                } else {
-                    if (!InImage((uintptr_t)val)) continue;
-                    if (!LooksLikeCreatureAt(obj, val)) continue;
-                }
-                g_pollAddr = obj + 8;
-                return obj;
-            }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
-        }
-        used += span;
-        g_pollAddr = hi;
-        if (g_pollAddr >= kHotHi) { g_pollAddr = kHotLo; break; }
-        if (hi < next) break;
-    }
-    return 0;
 }
 
 // --- доступ для модулей поведения -------------------------------------------
@@ -5670,20 +3369,6 @@ uintptr_t DevTools::FirstEnemyBody()
     return 0;
 }
 
-// Считает ЖИВЫХ врагов. Трупы не в счёт: иначе "рядом 5 врагов" после
-// выигранного боя, и любая логика "оценить опасность" врёт.
-int DevTools::EnemyCount()
-{
-    int n = 0;
-    for (int i = 0; i < g_nAct; ++i) {
-        if (!g_act[i].ptr) continue;
-        if (g_act[i].isDead) continue;
-        const char* k = g_act[i].kind;
-        if (KindIsEnemy(k)) ++n;
-    }
-    return n;
-}
-
 // Трупы отдельно — для диагностики и для будущего "поле боя после драки".
 int DevTools::DeadCount()
 {
@@ -5697,48 +3382,6 @@ int DevTools::DeadCount()
     return n;
 }
 
-// Перебор врагов по индексу. Нужен, потому что список разнороден:
-// в дампах 6x uEm8000 (лагерные, gid 0x61) + 1x uEm0100 (гоблин).
-// Кто пишет параметры вида — обязан идти по списку и смотреть kind.
-// ВАЖНО: перебор отдаёт только ЖИВЫХ.
-//
-// Труп остаётся в мире и в списке движка до выгрузки (это не баг, см.
-// "гистерезис выгрузки" в FIELD_MAP). Но для модулей поведения мёртвый
-// враг — мусор: мутировать его масштаб или поводок бессмысленно, а в
-// счётчике "врагов рядом" он завышает опасность.
-uintptr_t DevTools::EnemyBodyAt(int idx, const char** kindOut)
-{
-    if (idx < 0) return 0;
-    int n = 0;
-    for (int i = 0; i < g_nAct; ++i) {
-        if (!g_act[i].ptr) continue;
-        if (g_act[i].isDead) continue;          // труп — не цель
-        const char* k = g_act[i].kind;
-        // KindIsCreature, а НЕ KindIsEnemy: заяц не враг, но
-        // масштабировать его можно и нужно (разнообразие живности).
-        // Угрозу считает EnemyCount(), у него фильтр строже.
-        if (!KindIsCreature(k)) continue;
-        if (n == idx) {
-            if (kindOut) *kindOut = k;
-            return g_act[i].ptr;
-        }
-        ++n;
-    }
-    return 0;
-}
-
-uintptr_t DevTools::FirstBodyOfKind(const char* kind)
-{
-    if (!kind) return 0;
-    for (int i = 0; i < g_nAct; ++i) {
-        if (!g_act[i].ptr) continue;
-        if (g_act[i].isDead) continue;          // труп — не цель
-        const char* k = g_act[i].kind;
-        if (k && !strcmp(k, kind)) return g_act[i].ptr;
-    }
-    return 0;
-}
-
 // Состояние существа по индексу в общем списке (включая мёртвых).
 // Нужно диагностике: показать, что труп опознан, а не потерян.
 const char* DevTools::EnemyActAt(int idx, bool* deadOut)
@@ -5748,536 +3391,12 @@ const char* DevTools::EnemyActAt(int idx, bool* deadOut)
     return g_act[idx].liveAct[0] ? g_act[idx].liveAct : nullptr;
 }
 
-const char* DevTools::NameOfLiveObjectSafe(const void* obj, char* out, int cap)
-{
-    if (!obj || !out || cap < 2) return nullptr;
-    out[0] = 0;
-    if (!NameOfLiveObject((uintptr_t)obj, out, cap)) return nullptr;
-    return out[0] ? out : nullptr;
-}
-
-// Build 56.2 — Guardian doctrine anchor/pawn world positions.
-// Читает +0x40/+0x44/+0x48 из уже разрешённых тел (PartyReadPositions).
-bool DevTools::GetArisenWorldPos(float* x, float* y, float* z)
-{
-    if (!g_arisenPosOk) return false;
-    if (x) *x = g_arisenPosX;
-    if (y) *y = g_arisenPosY;
-    if (z) *z = g_arisenPosZ;
-    return true;
-}
-
-bool DevTools::GetMainPawnWorldPos(float* x, float* y, float* z)
-{
-    if (!g_pawnPosOk) return false;
-    if (x) *x = g_pawnPosX;
-    if (y) *y = g_pawnPosY;
-    if (z) *z = g_pawnPosZ;
-    return true;
-}
-
-// Build 57 — разведка Guardian-штрафов (read-only).
-// Читает уже разрешённые cPrioParam-строки из g_pawnAi. Для кодов
-// Guardian-семейства (4/13/15/54/60/66) + лук 57 снимает identity-кортеж,
-// AddS32 каждого personality-правила (cCodeParam) и СЫРЫЕ байты checks
-// (условия выбора правила). НЕ пишет в игру.
-// cCodeParam layout (SOURCE_OF_TRUTH §3.5): +0x04 AddS32, +0x08 AddF32,
-// +0x0C BreakAfterApply, +0x10..+0x20 checks cArray (+0x14 count, +0x20 mpArray).
-static char g_guardianAuditStatus[640] = "Guardian audit: not run";
-
-// Имя склонности по id (совпадает с InclIdx, SOURCE_OF_TRUTH §3.5.2).
-static const char* InclNameById(uint32_t id)
-{
-    static const char* n[] = {"Scather","Medicant","Mitigator","Challenger",
-                              "Utilitarian","Guardian","Nexus","Pioneer","Acquisitor"};
-    return (id < 9) ? n[id] : "?";
-}
-
-const char* DevTools::GuardianPenaltyAudit()
-{
-    // Build 65: ПОЛНАЯ карта модификаторов всех склонностей. Для каждой
-    // priority-строки (cPrioParam) выводим code + каждое правило с AddS32 и
-    // checks (inclId + ранг). Это вскрывает точные параметры ПОВОДКА:
-    // какие коды и насколько двигает Pioneer(7)/Guardian(5)/Nexus(6).
-    int totalRows = 0;
-    char tail[512] = {};
-    size_t tailLen = 0;
-
-    logFile << "=== InclinationModifierAudit (all 9 inclinations) ===" << std::endl;
-
-    for (int i = 0; i < g_nPawnAi; ++i) {
-        PawnAiCandidate& A = g_pawnAi[i];
-        if (strcmp(A.name, "rAIPriorityThink::cPrioParam")) continue;
-        ++totalRows;
-
-        BYTE prioRaw[64] = {};
-        uintptr_t vt = 0;
-        if (!RdPtr((void*)A.ptr, &vt) || vt != A.vt
-            || !Rd((void*)A.ptr, prioRaw, sizeof(prioRaw)))
-            continue;
-
-        const uint32_t sensor   = *(uint32_t*)(prioRaw + 0x04);
-        const uint32_t code     = *(uint32_t*)(prioRaw + 0x08);
-        const uint32_t category = *(uint32_t*)(prioRaw + 0x0C);
-        const uint32_t objectId = *(uint32_t*)(prioRaw + 0x10);
-        const uint32_t extra    = *(uint32_t*)(prioRaw + 0x14);
-
-        uint32_t pCount = *(uint32_t*)(prioRaw + 0x1C);
-        if (pCount > 16u) pCount = 0;
-        uintptr_t pArray = *(uint32_t*)(prioRaw + 0x28);
-        uintptr_t pPtrs[16] = {};
-        const bool pOk = pCount == 0u
-            || (LooksHeap(pArray) && Rd((void*)pArray, pPtrs, pCount * 4));
-
-        // Build 65.1: читаем и ORDER-массив (cOrderValue**) — команды
-        // «отойди на N / держи дистанцию». Pioneer(7) не найден в personality,
-        // значит его пинок — скорее всего здесь.
-        uint32_t oCount = *(uint32_t*)(prioRaw + 0x30);
-        if (oCount > 16u) oCount = 0;
-        uintptr_t oArray = *(uint32_t*)(prioRaw + 0x3C);
-        uintptr_t oPtrs[16] = {};
-        const bool oOk = oCount == 0u
-            || (LooksHeap(oArray) && Rd((void*)oArray, oPtrs, oCount * 4));
-
-        if ((!pOk || pCount == 0u) && (!oOk || oCount == 0u)) continue;
-
-        // Собрать описание каждого правила: AddS32 + (склонность, ранг).
-        bool interesting = false;
-        char rules[512] = "";
-        int rUsed = 0;
-        if (pOk) for (uint32_t n = 0; n < pCount; ++n) {
-            BYTE cp[0x24] = {};
-            if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
-            const int32_t addS32 = *(int32_t*)(cp + 0x04);
-            const uint32_t chkCnt = *(uint32_t*)(cp + 0x14);
-            const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
-
-            char checks[96] = "";
-            if (chkCnt && chkCnt <= 8u && LooksHeap(chkArr)) {
-                uintptr_t ckPtrs[8] = {};
-                if (Rd((void*)chkArr, ckPtrs, chkCnt * 4)) {
-                    for (uint32_t c = 0; c < chkCnt; ++c) {
-                        BYTE ck[0x10] = {};
-                        if (Rd((void*)ckPtrs[c], ck, sizeof(ck))) {
-                            uint32_t inclId = *(uint32_t*)(ck + 0x04);
-                            uint32_t rank   = *(uint32_t*)(ck + 0x08);
-                            char tmp[48];
-                            sprintf_s(tmp, sizeof(tmp), "%s%s/r%u",
-                                checks[0] ? "," : "", InclNameById(inclId), rank);
-                            if (strlen(checks) + strlen(tmp) < sizeof(checks))
-                                strcat_s(checks, sizeof(checks), tmp);
-                            if (inclId == 5 || inclId == 6 || inclId == 7)
-                                interesting = true;
-                        }
-                    }
-                }
-            }
-            char tmp[96];
-            sprintf_s(tmp, sizeof(tmp), "%sp[%d]=%d(%s)",
-                rUsed ? " " : "", n, addS32, checks[0] ? checks : "no-check");
-            if (rUsed + (int)strlen(tmp) < (int)sizeof(rules)) {
-                strcat_s(rules, sizeof(rules), tmp);
-                rUsed += (int)strlen(tmp);
-            }
-        }
-        // order rules: cOrderValue { +0x04 Value (int32), +0x08 Type (uint32) }
-        if (oOk) for (uint32_t n = 0; n < oCount; ++n) {
-            BYTE ov[12] = {};
-            if (!Rd((void*)oPtrs[n], ov, sizeof(ov))) continue;
-            const int32_t val  = *(int32_t*)(ov + 0x04);
-            const uint32_t typ = *(uint32_t*)(ov + 0x08);
-            interesting = true; // order-команды всегда интересны (поводок)
-            char tmp[80];
-            sprintf_s(tmp, sizeof(tmp), "%so[%d]=val%d/type%u",
-                rUsed ? " " : "", n, val, typ);
-            if (rUsed + (int)strlen(tmp) < (int)sizeof(rules)) {
-                strcat_s(rules, sizeof(rules), tmp);
-                rUsed += (int)strlen(tmp);
-            }
-        }
-
-        if (interesting) {
-            logFile << "code=" << code
-                    << " (" << PawnPriorityIntentName(code) << ")"
-                    << " tuple{s=" << sensor << ",cat=" << category
-                    << ",obj=" << objectId << ",extra=" << extra << "}"
-                    << " : " << rules << std::endl;
-            if (tailLen + 96 < sizeof(tail)) {
-                tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
-                    " c%d", code);
-            }
-        }
-    }
-
-    if (tailLen == 0) {
-        lstrcpynA(g_guardianAuditStatus,
-            "Incl audit: no Guardian/Nexus/Pioneer rules (census not ready?)",
-            sizeof(g_guardianAuditStatus));
-    } else {
-        sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
-            "Incl audit: %d rows, leash codes:%s (see log)",
-            totalRows, tail);
-    }
-    logFile << "=== InclAudit: totalRows=" << totalRows << " ===" << std::endl;
-    return g_guardianAuditStatus;
-}
-
-// ============ Build 59 — разведка target-selection слоя (read-only) ============
-static char g_targetSelStatus[512] = "Target audit: not run";
-
-const char* DevTools::TargetSelectionAudit()
-{
-    if (g_nTargetSel == 0) {
-        lstrcpynA(g_targetSelStatus,
-            "Target audit: no candidates (run Find both / census first)",
-            sizeof(g_targetSelStatus));
-        return g_targetSelStatus;
-    }
-
-    // Текущая цель пешки: uCmc+0x2EB8 (SOURCE_OF_TRUTH §4). Корреляция:
-    // какая cEnemyInfo/cLockOnTarget ссылается на неё — тот и есть «карточка»
-    // текущей цели, её байты дадут поле threat-скора.
-    uintptr_t pawnBody = 0;
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].role, "Main Pawn")) { pawnBody = g_party[i].ptr; break; }
-    uintptr_t curTarget = 0;
-    if (pawnBody) RdPtr((void*)(pawnBody + 0x2EB8), &curTarget);
-
-    logFile << "TargetAudit: candidates=" << g_nTargetSel
-            << " pawnBody=0x" << std::hex << pawnBody
-            << " curTarget=0x" << curTarget << std::dec << std::endl;
-
-    // Build 59.1: главное — дамп САМОГО объекта цели пешки (uCmc+0x2EB8).
-    // Его DTI-имя + байты дадут тип, от которого пляшем (обратные ссылки).
-    if (curTarget) {
-        char tgtName[64] = {};
-        NameOfLiveObject((uintptr_t)curTarget, tgtName, sizeof(tgtName));
-        BYTE tgtRaw[256] = {};
-        int tgtLen = Rd((void*)curTarget, tgtRaw, 256) ? 256 : 0;
-        logFile << "TargetAudit: CURTARGET type='" << (tgtName[0] ? tgtName : "?")
-                << "' 0x" << std::hex << curTarget << std::dec
-                << " rawLen=" << tgtLen << std::endl;
-        char hex[256 * 3 + 8];
-        int hp = 0;
-        for (int b = 0; b < 64 && hp < (int)sizeof(hex) - 8; ++b)
-            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", tgtRaw[b]);
-        logFile << "    head64: " << hex << std::endl;
-    } else {
-        logFile << "TargetAudit: CURTARGET = null (pawn has no current target)" << std::endl;
-    }
-
-    // Обратные ссылки: кто из AI-кандидатов держит указатель на curTarget
-    // (или на тела врагов) в своих первых 512 байтах.
-    int refHits = 0;
-    for (int i = 0; i < g_nPawnAi && refHits < 64; ++i) {
-        PawnAiCandidate& A = g_pawnAi[i];
-        BYTE raw[512] = {};
-        int n = A.typeSize ? (A.typeSize < 512 ? A.typeSize : 512) : 512;
-        if (!Rd((void*)A.ptr, raw, n)) continue;
-        for (int off = 0; off + 4 <= n; off += 4) {
-            uint32_t v = *(uint32_t*)(raw + off);
-            for (int e = 0; e < g_nAct && e < 32; ++e) {
-                if (v == (uint32_t)g_act[e].ptr) {
-                    logFile << "  ref: " << A.name << "+0x" << std::hex << off
-                            << std::dec << " -> " << (g_act[e].kind ? g_act[e].kind : "?")
-                            << (g_act[e].ptr == curTarget ? " (CURTARGET)" : "") << std::endl;
-                    ++refHits;
-                }
-            }
-        }
-    }
-
-    // Build 59.2: ИСКАТЬ ссылки в самих targetSel-объектах (cLockOnTarget и т.д.)
-    // — это по записи на врага, внутри почти наверняка указатель на тело.
-    int tsRefHits = 0;
-    for (int i = 0; i < g_nTargetSel && tsRefHits < 128; ++i) {
-        TargetSelCandidate& T = g_targetSel[i];
-        for (int off = 0; off + 4 <= T.rawLen; off += 4) {
-            uint32_t v = *(uint32_t*)(T.raw + off);
-            for (int e = 0; e < g_nAct && e < 32; ++e) {
-                if (v == (uint32_t)g_act[e].ptr) {
-                    logFile << "  tsRef: " << T.name << " 0x" << std::hex << T.ptr
-                            << "+0x" << off << std::dec << " -> "
-                            << (g_act[e].kind ? g_act[e].kind : "?")
-                            << (g_act[e].ptr == curTarget ? " (CURTARGET)" : "") << std::endl;
-                    ++tsRefHits;
-                }
-            }
-        }
-    }
-
-    if (!refHits && !tsRefHits)
-        logFile << "TargetAudit: no back-refs to enemies anywhere" << std::endl;
-
-    // Build 59.2: дамп сырых байтов содержательных объектов (их мало).
-    for (int i = 0; i < g_nTargetSel; ++i) {
-        TargetSelCandidate& T = g_targetSel[i];
-        bool meaningful =
-               !strcmp(T.name, "sRecognition")
-            || !strcmp(T.name, "sLockOnManager")
-            || !strcmp(T.name, "sLockOnManager::cLockOnTarget")
-            || !strcmp(T.name, "rLockOnTarget");
-        if (!meaningful) continue;
-        char hex[256 * 3 + 8];
-        int hp = 0;
-        for (int b = 0; b < T.rawLen && hp < (int)sizeof(hex) - 8; ++b)
-            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", T.raw[b]);
-        logFile << "  [" << i << "] " << T.name << " 0x" << std::hex << T.ptr
-                << std::dec << " size=" << T.typeSize << " rawLen=" << T.rawLen << std::endl;
-        logFile << "    " << hex << std::endl;
-    }
-
-    // Build 59.3: дамп cLockOnTarget (80B) — по записи на врага. Ищем внутри
-    // указатель на тело врага (uHumanEnemy/uEm*) и owner (пешка).
-    for (int i = 0; i < g_nTargetSel; ++i) {
-        TargetSelCandidate& T = g_targetSel[i];
-        if (strcmp(T.name, "cLockOnTarget")) continue;
-        char hex[80 * 3 + 8];
-        int hp = 0;
-        for (int b = 0; b < T.rawLen && hp < (int)sizeof(hex) - 8; ++b)
-            hp += sprintf_s(hex + hp, sizeof(hex) - hp, "%02X ", T.raw[b]);
-        logFile << "  lockon[" << i << "] cLockOnTarget 0x" << std::hex << T.ptr
-                << std::dec << " : " << hex << std::endl;
-    }
-
-    // Build 59.3: обратная связь — в теле цели (uHumanEnemy, 512 байт) ищем
-    // указатели на lockon/recognition объекты (тело → карточка).
-    if (curTarget) {
-        BYTE bodyRaw[512] = {};
-        int bn = Rd((void*)curTarget, bodyRaw, 512) ? 512 : 0;
-        int bodyRefs = 0;
-        for (int off = 0; off + 4 <= bn; off += 4) {
-            uint32_t v = *(uint32_t*)(bodyRaw + off);
-            for (int i = 0; i < g_nTargetSel; ++i) {
-                if (v == (uint32_t)g_targetSel[i].ptr) {
-                    logFile << "  bodyRef: uHumanEnemy+0x" << std::hex << off
-                            << std::dec << " -> " << g_targetSel[i].name
-                            << " 0x" << std::hex << g_targetSel[i].ptr << std::dec << std::endl;
-                    ++bodyRefs;
-                }
-            }
-        }
-        if (!bodyRefs)
-            logFile << "TargetAudit: body has no ptr to lockon objects (first 512B)" << std::endl;
-    }
-
-    int enemyInfo = 0, lockOn = 0;
-    for (int i = 0; i < g_nTargetSel; ++i) {
-        TargetSelCandidate& T = g_targetSel[i];
-        if (!strcmp(T.name, "sRecognition::cEnemyInfo")) ++enemyInfo;
-        else if (strstr(T.name, "LockOn")) ++lockOn;
-        logFile << "  [" << i << "] " << T.name << " 0x" << std::hex << T.ptr
-                << std::dec << " size=" << T.typeSize << " rawLen=" << T.rawLen << std::endl;
-    }
-
-    char tgtSummary[64] = "null";
-    if (curTarget) {
-        char tn[64] = {};
-        if (NameOfLiveObject((uintptr_t)curTarget, tn, sizeof(tn)) && tn[0])
-            lstrcpynA(tgtSummary, tn, sizeof(tgtSummary));
-        else
-            lstrcpynA(tgtSummary, "unnamed", sizeof(tgtSummary));
-    }
-    sprintf_s(g_targetSelStatus, sizeof(g_targetSelStatus),
-        "Target audit: %d obj (enemyInfo=%d lockOn=%d) curTarget type='%s' -> log",
-        g_nTargetSel, enemyInfo, lockOn, tgtSummary);
-    return g_targetSelStatus;
-}
-
 // ============ Build 57.1 — динамический Guardian-фикс ============
 // Снимает доказанный штраф -3 с code 54 (WpnDaggerAtk) rule 0, транзакционно.
 // Кортеж подтверждён дампом Build 57 (GuardianAudit):
 //   code=54 tuple{sensor=1, category=0, objectId=0, extra=1} personality=5
 //     rule[0] AddS32=-3 AddF32=0 break=0 checks=1
-static PartyPriorityProfileRule g_guardianFixRule;
-static bool   g_guardianFixInit = false;
-static bool   g_guardianFixArmed = false;
-static bool   g_guardianFixApplied = false;
-static int    g_guardianFixWrites = 0;
-static int    g_guardianFixRollbacks = 0;
-static char   g_guardianFixStatus[160] = "Guardian fix: disabled";
 
-static void GuardianFixInitOnce()
-{
-    if (g_guardianFixInit) return;
-    g_guardianFixInit = true;
-    memset(&g_guardianFixRule, 0, sizeof(g_guardianFixRule));
-    g_guardianFixRule.sensor     = 1;
-    g_guardianFixRule.code       = 54;
-    g_guardianFixRule.category   = 0;
-    g_guardianFixRule.objectId   = 0;
-    g_guardianFixRule.extra      = 1;
-    g_guardianFixRule.ruleIndex  = 0;
-    g_guardianFixRule.expectedAddS32 = -3;
-    g_guardianFixRule.desiredAddS32  = 0;
-    g_guardianFixRule.expectedBreak  = 0;
-    g_guardianFixRule.expectedCheckCount = 1;
-    g_guardianFixRule.expectedSlot = -1; // слот не проверяем (конвергенция по AddS32)
-}
-
-void DevTools::GuardianFixSetTarget(int32_t desiredAddS32)
-{
-    GuardianFixInitOnce();
-    g_guardianFixRule.desiredAddS32 = desiredAddS32;
-    // desired == vanilla (-3) → откат; иначе — активен.
-    g_guardianFixArmed = (desiredAddS32 != g_guardianFixRule.expectedAddS32);
-}
-
-bool DevTools::GuardianFixIsApplied()
-{
-    return g_guardianFixApplied;
-}
-
-const char* DevTools::GuardianFixStatus()
-{
-    return g_guardianFixStatus;
-}
-
-// Build 58: единый tick с градиентом. Целевое значение = desired (если armed)
-// или expected (rollback). Каждый тик читаем текущее, при расхождении —
-// write + readback (verify) + откат к прежнему при неудаче. Поддерживает
-// плавную смену desired (градиент: -3 → 0 → +2 по дистанции угрозы).
-void DevTools::GuardianFixTick()
-{
-    GuardianFixInitOnce();
-    PartyPriorityProfileRule& R = g_guardianFixRule;
-
-    if (g_guardianFixArmed && !R.resolved) {
-        if (!PartyPriorityProfileResolveRule(R)) {
-            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-                "Guardian fix: ARMED, rule not resolved (census pending)");
-            return;
-        }
-    }
-    if (!R.resolved) {
-        g_guardianFixApplied = false;
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: disabled (not resolved)");
-        return;
-    }
-
-    const int32_t target = g_guardianFixArmed ? R.desiredAddS32 : R.expectedAddS32;
-    int32_t cur = 0;
-    uintptr_t vt = 0;
-    if (!RdPtr((void*)R.rulePtr, &vt) || vt != R.ruleVt
-        || !Rd((void*)(R.rulePtr + 0x04), &cur, 4)) {
-        R.resolved = R.applied = false;
-        g_guardianFixApplied = false;
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: rule lost");
-        return;
-    }
-    R.currentAddS32 = cur;
-
-    if (cur == target) {
-        g_guardianFixApplied = g_guardianFixArmed;
-        if (g_guardianFixArmed) {
-            int slot = PartyPriorityLiveSlot(R.prioPtr);
-            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-                "Guardian fix: APPLIED (code54 = %d) slot=%d writes=%d",
-                target, slot, g_guardianFixWrites);
-        } else {
-            sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-                "Guardian fix: vanilla (rolled back x%d)", g_guardianFixRollbacks);
-        }
-        return;
-    }
-
-    // Переход к целевому значению: write + readback (verify), при неудаче —
-    // вернуть прежнее.
-    if (!WrSafe((void*)(R.rulePtr + 0x04), &target, 4)) {
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: write FAILED");
-        return;
-    }
-    int32_t verify = 0;
-    if (!Rd((void*)(R.rulePtr + 0x04), &verify, 4) || verify != target) {
-        WrSafe((void*)(R.rulePtr + 0x04), &cur, 4);
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: verify FAILED");
-        return;
-    }
-    R.currentAddS32 = verify;
-    if (g_guardianFixArmed) {
-        ++g_guardianFixWrites;
-        int slot = PartyPriorityLiveSlot(R.prioPtr);
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: APPLIED (code54 = %d) slot=%d writes=%d",
-            target, slot, g_guardianFixWrites);
-    } else {
-        ++g_guardianFixRollbacks;
-        sprintf_s(g_guardianFixStatus, sizeof(g_guardianFixStatus),
-            "Guardian fix: vanilla (rolled back x%d)", g_guardianFixRollbacks);
-    }
-    g_guardianFixApplied = g_guardianFixArmed;
-}
-
-void DevTools::WorldScan_Tick()
-{
-    // Presence only. Engine keeps uEm* on the list and on screen far
-    // past the spawn sphere. World=0 means the 29KB body is gone.
-    // Do not invent a distance despawn.
-    if (!g_enabled) return;
-    bool inWorld = InWorld();
-    if (!inWorld) {
-        // Build 56.7: cleanup только на ПЕРЕХОДЕ в «не в мире», а не каждый тик
-        // (раньше RestoreAll логировал «world unload» каждые 150 мс — спам).
-        if (g_wasInWorld) {
-            PartyIntentTraceStop("world unload");
-            PartyPriorityProfileRestoreAll("world unload");
-            PartyPriorityProfileResetRuntime();
-            g_priorityProfileWorldSince = 0;
-            g_priorityProfileLastDiscover = 0;
-            g_arisenPosOk = false;
-            g_pawnPosOk = false;
-            g_pawnPosWasOk = true;
-            g_partyPosLastDiscover = 0;
-            g_partyPosAttempts = 0;
-            g_pawnCombatTarget = 0; // Build 62: цель пешки невалидна после выгрузки
-            // Сброс тел: старые body-указатели после выгрузки недействительны.
-            // Без этого PartyPositionsTick мог залипнуть на старом uPlayer.
-            g_nParty = 0;
-            // Build 57.1: сброс dynamic fix-правила (указатели устарели).
-            g_guardianFixRule.resolved = g_guardianFixRule.applied = false;
-            g_guardianFixRule.prioPtr = g_guardianFixRule.rulePtr = 0;
-            g_guardianFixApplied = false;
-        }
-        g_wasInWorld = false;
-        return;
-    }
-    g_wasInWorld = true;
-
-    // Build 56.2: Guardian doctrine anchor/pawn positions (throttled discover + cheap read).
-    PartyPositionsTick();
-
-    // Temporary player/pawn probe: '=' takes an AI snapshot. This is
-    // intentionally checked before the WorldScan throttle so a deliberate
-    // key press is not lost while the Arisen or pawn is sprinting.
-    PartyHotkeyTick();
-    FollowProbeProcess(); // Build 64.5: поводок-разведка по требованию (pawn-поток)
-    LeashAbTick();        // Build 64.8: A/B поводка (транзакционно)
-
-    static DWORD last = 0;
-    DWORD now = MsNow();
-    if (last && now - last < 150) return;
-    last = now;
-    if (g_nAct)
-        RewalkActors();
-    // Always poll the hot ring. Empty: 8MB/tick. Have list: 4MB, merge new camps.
-    uintptr_t s = PollSeedSlice(g_nAct ? 0x400000u : 0x800000u);
-    if (!s) return;
-    int have = 0;
-    for (int i = 0; i < g_nAct; ++i)
-        if (g_act[i].ptr == s) { have = 1; break; }
-    if (have) return;
-    uintptr_t seed[32];
-    int ns = 0;
-    seed[ns++] = s;
-    for (int i = 0; i < g_nAct && ns < 32; ++i)
-        if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
-    DumpActorsFrom(seed, ns);
-    PublishWorldFromActors();
-}
 
 static void DumpFactoryHeads()
 {
@@ -6771,7 +3890,6 @@ static void WriteDumpJson()
     fputs("  ],\n  \"gids\":[\n", f);
 
 
-
     for (int i = 0; i < g_nGid; ++i) {
         fprintf(f, "    %s{\"gid\":\"0x%02X\",\"name\":\"%s\",\"vt\":\"0x%08X\",\"ptr\":\"0x%08X\",\"want\":%s,\"head\":\"",
             i ? "," : " ", g_gid[i].gid, g_gid[i].name ? g_gid[i].name : "",
@@ -7142,6 +4260,24 @@ static void RenderDevToolsUI()
     ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1), "build %s  (%s %s)",
                        MOD_BUILD_TAG, __DATE__, __TIME__);
     ImGui::Text("exe base 0x%08X   image end 0x%08X", (unsigned)g_base, (unsigned)ImageEnd());
+
+    // Build 69.2: цена продуктового тика. Оптимизируем по цифрам, а не по
+    // ощущениям. Тик идёт раз в 150 мс, поэтому «мс на тик» — это и есть
+    // почти вся стоимость скана.
+    {
+        const Runtime::ScanStats st = Runtime::ScanGetStats();
+        const Runtime::Mem::NameCacheStats nc = Runtime::Mem::NameCacheGetStats();
+        const uint32_t total = nc.hits + nc.misses;
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1),
+            "WorldScan: last %u us | avg %u us | max %u us | ticks %u | actors %d | poll %u KB",
+            st.lastUs, st.avgUs, st.maxUs, st.ticks, st.actors, st.pollKb);
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1),
+            "Name cache: %u%% hit (%u hit / %u miss), %u vtables known",
+            total ? (unsigned)((nc.hits * 100ull) / total) : 0u,
+            nc.hits, nc.misses, nc.entries);
+        ImGui::SameLine();
+        if (ImGui::Button("Reset scan stats")) Runtime::ScanResetStats();
+    }
     ImGui::TextWrapped(
         "Factory slots = dead TSV column, always empty. "
         "DUMP is safe anatomy. HUNT (in-world only) derives instance vts and censuses the heap.");
@@ -7672,6 +4808,32 @@ static void RenderDevToolsUI()
     ImGui::PopID();
 }
 
+// ---------------------------------------------------------------------------
+// Build 69: реализация Runtime::ResearchHooks. Продукт вызывает эти функции
+// в фиксированных точках и не знает, что за ними стоит.
+// ---------------------------------------------------------------------------
+static void ResearchOnSnapshotEarly()
+{
+    if (g_researchDump) PartyWriteJson();
+}
+
+static void ResearchOnSnapshotFull()
+{
+    if (g_researchDump) PartyWriteAiBridgeJson();
+    if (g_researchDump && !g_intentTrace) PartyIntentTraceStart();
+}
+
+static void ResearchOnTick()
+{
+    PartyTraceTick();
+    PartyIntentTraceTick();
+}
+
+static void ResearchOnWorldUnload(const char* reason)
+{
+    PartyIntentTraceStop(reason);
+}
+
 void Hooks::DevTools()
 {
     // Дефолт OFF: игроку DevTools не нужен, а WorldScan_Tick стоит 150 мс-обхода.
@@ -7679,22 +4841,27 @@ void Hooks::DevTools()
     g_enabled = config.getBool("devtools", "enabled", false);
     // Исследовательские дампы (JSON/CSV) — отдельно, дефолт OFF.
     g_researchDump = config.getBool("devtools", "researchDump", false);
-    g_base = (uintptr_t)GetModuleHandle(nullptr);
+    // Build 69: базу образа и секции поднимает Runtime::Init() ДО этого места
+    // и независимо от [devtools] enabled. Здесь только проверка.
+    if (!g_base) logFile << "DevTools: image base not resolved by runtime" << std::endl;
 
-    if (g_base) {
-        auto dos = (IMAGE_DOS_HEADER*)g_base;
-        auto nt  = (IMAGE_NT_HEADERS*)(g_base + dos->e_lfanew);
-        g_imageSize = nt->OptionalHeader.SizeOfImage;
-    }
+    // Build 69: DevTools подписывает свой research-слой на продуктовые хуки.
+    // Пока панель выключена, указатели нулевые и продукт в research не заходит.
+    Runtime::ResearchHooks hooks = {};
+    hooks.onSnapshotEarly = ResearchOnSnapshotEarly;
+    hooks.onSnapshotFull  = ResearchOnSnapshotFull;
+    hooks.onTick          = ResearchOnTick;
+    hooks.onWorldUnload   = ResearchOnWorldUnload;
+    Runtime::SetResearchHooks(hooks);
 
     if (!g_enabled) {
-        logFile << "DevTools: disabled" << std::endl;
+        logFile << "DevTools: disabled (продукт работает независимо)" << std::endl;
         return;
     }
 
+    // Build 69: priority-профили поднимает Runtime::Init() — они нужны
+    // продукту, а не панели.
     BuildWatch();
-    PartyPriorityProfileEnsureFile();
-    PartyPriorityProfileLoadIfChanged();
 
     logFile << "DevTools: TypeAtlas " << TypeAtlas::kCount
             << "  watch=" << g_nWatch
@@ -7708,7 +4875,7 @@ void Hooks::DevTools()
 
 void Hooks::DevTools_Shutdown()
 {
+    // Build 69: здесь остаётся только research. Откат priority-правил —
+    // забота продукта, он делается в Runtime::Shutdown().
     PartyIntentTraceStop("DLL detach");
-    // Guarded rule rollback only; no waits or thread joins.
-    PartyPriorityProfileRestoreAll("DLL detach");
 }

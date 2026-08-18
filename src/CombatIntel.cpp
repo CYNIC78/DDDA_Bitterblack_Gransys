@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "runtime/MemProbe.h"
 #include "MinHook/MinHook.h"
 extern BYTE *codeBase, *codeEnd;
 #include "CombatIntel.h"
@@ -7,7 +8,6 @@ extern BYTE *codeBase, *codeEnd;
 #include "EnemyTypes.Generated.h"
 // Опознание живых объектов через DTI. Тот же резолвер, которым сканер
 // врагов определяет вид: обе подсистемы обязаны видеть мир одинаково.
-#include "devtools/DevTools.h"
 
 #define PLAYER_BASE         0xA7000
 #define PAWN_OFFSET         0x7F0
@@ -145,7 +145,7 @@ static bool IsPartyMember(void* ptr) {
         //
         // Имя класса от DTI закрывает всё семейство разом.
         char nm[40];
-        if (DevTools::NameOfLiveObjectSafe(ptr, nm, sizeof(nm))) {
+        if (Runtime::Mem::NameOfLiveObjectSafe(ptr, nm, sizeof(nm))) {
             // Build 37: ГГ = uPlayer, главная пешка = uCmc. uPawnIntel —
             // лишь маленький компонент, а не live body пешки.
             if (strstr(nm, "Pawn") || strstr(nm, "uPlayer") || !strcmp(nm, "uCmc"))
@@ -204,7 +204,7 @@ static bool IsValidEnemyCharacter(BYTE* cand, BYTE* healthPtr, BYTE* outGid) {
         // его с бестиарием. Это же имя использует сканер врагов, так что
         // обе подсистемы теперь опознают существ ОДИНАКОВО.
         char nm[40];
-        if (DevTools::NameOfLiveObjectSafe(cand, nm, sizeof(nm))) {
+        if (Runtime::Mem::NameOfLiveObjectSafe(cand, nm, sizeof(nm))) {
             // ЛОВУШКА ЗАЙЦЕВ (FIELD_MAP, dump19-24). Тела с gid 0x61 и
             // именем uEm8000 — это лагерная живность, а НЕ Григори.
             // Но в бестиарии 0x61 = "The Dragon", family Dragon, а
@@ -328,7 +328,7 @@ static void OnDamageInternal(BYTE* targetBase, DamageSource src) {
     char kindBuf[24];
     kindBuf[0] = 0;
     if (body)
-        DevTools::NameOfLiveObjectSafe(body, kindBuf, sizeof(kindBuf));
+        Runtime::Mem::NameOfLiveObjectSafe(body, kindBuf, sizeof(kindBuf));
 
     DWORD now = MsNow();
     int srcIdx = (src == SRC_PLAYER) ? 0 : 1;

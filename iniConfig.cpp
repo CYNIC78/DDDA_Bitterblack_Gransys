@@ -35,10 +35,28 @@ std::vector<int> iniConfig::getSectionInts(LPCSTR section)
 	return keys;
 }
 
+// Build 69.4: лог засорялся сотнями строк «has invalid value» на КАЖДЫЙ
+// отсутствующий ключ. Отсутствие ключа — норма: почти все настройки
+// необязательны и берут значение по умолчанию. Ругаться нужно только тогда,
+// когда ключ В ФАЙЛЕ ЕСТЬ, но значение не разбирается, — вот это ошибка
+// пользователя, о которой стоит сказать. И сказать один раз, а не каждый
+// раз, когда конфиг перечитывается по mtime.
+static bool reportOnce(LPCSTR section, LPCSTR key)
+{
+	static std::vector<string> seen;
+	string id = string(section ? section : "?") + "->" + string(key ? key : "?");
+	for (size_t i = 0; i < seen.size(); ++i)
+		if (seen[i] == id) return false;
+	seen.push_back(id);
+	return true;
+}
+
 template <typename T>
 T printError(LPCSTR section, LPCSTR key, T defValue)
 {
-	logFile << "Config: " << section << "->" << key << " has invalid value, using default (" << defValue << ")" << std::endl;
+	if (reportOnce(section, key))
+		logFile << "Config: " << section << "->" << key
+		        << " has invalid value, using default (" << defValue << ")" << std::endl;
 	return defValue;
 }
 
@@ -46,64 +64,50 @@ string iniConfig::getStr(LPCSTR section, LPCSTR key, string defValue)
 {
 	if (get(section, key, defValue.empty()))
 		return buffer;
-	return printError(section, key, defValue);
+	return defValue;   // ключа нет — это норма, молчим
 }
 
 int iniConfig::getInt(LPCSTR section, LPCSTR key, int defValue)
 {
-	try
-	{
-		if (get(section, key))
-			return std::stoi(buffer, nullptr, 0);
-	}
+	if (!get(section, key)) return defValue;   // ключа нет — норма
+	try { return std::stoi(buffer, nullptr, 0); }
 	catch (...) {}
-	return printError(section, key, defValue);
+	return printError(section, key, defValue); // ключ есть, но значение битое
 }
 
 unsigned int iniConfig::getUInt(LPCSTR section, LPCSTR key, unsigned defValue)
 {
-	try
-	{
-		if (get(section, key))
-			return std::stoul(buffer, nullptr, 0);
-	}
+	if (!get(section, key)) return defValue;
+	try { return std::stoul(buffer, nullptr, 0); }
 	catch (...) {}
 	return printError(section, key, defValue);
 }
 
 float iniConfig::getFloat(LPCSTR section, LPCSTR key, float defValue)
 {
-	try
-	{
-		if (get(section, key))
-			return std::stof(buffer, nullptr);
-	}
+	if (!get(section, key)) return defValue;
+	try { return std::stof(buffer, nullptr); }
 	catch (...) {}
 	return printError(section, key, defValue);
 }
 
 double iniConfig::getDouble(LPCSTR section, LPCSTR key, double defValue)
 {
-	try
-	{
-		if (get(section, key))
-			return std::stod(buffer, nullptr);
-	}
+	if (!get(section, key)) return defValue;
+	try { return std::stod(buffer, nullptr); }
 	catch (...) {}
 	return printError(section, key, defValue);
 }
 
 bool iniConfig::getBool(LPCSTR section, LPCSTR key, bool defValue)
 {
+	if (!get(section, key)) return defValue;
 	try
 	{
-		if (get(section, key))
-		{
-			if (_stricmp("true", buffer) == 0 || _stricmp("on", buffer) == 0)
-				return true;
-			if (_stricmp("false", buffer) == 0 || _stricmp("off", buffer) == 0)
-				return false;
-		}
+		if (_stricmp("true", buffer) == 0 || _stricmp("on", buffer) == 0)
+			return true;
+		if (_stricmp("false", buffer) == 0 || _stricmp("off", buffer) == 0)
+			return false;
 	}
 	catch (...) {}
 	return printError(section, key, defValue);
@@ -111,14 +115,12 @@ bool iniConfig::getBool(LPCSTR section, LPCSTR key, bool defValue)
 
 int iniConfig::getEnum(LPCSTR section, LPCSTR key, int defValue, std::pair<int, LPCSTR> map[], int size)
 {
+	if (!get(section, key)) return defValue;
 	try
 	{
-		if (get(section, key))
-		{
-			for (int i = 0; i < size; i++)
-				if (_stricmp(map[i].second, buffer) == 0)
-					return map[i].first;
-		}
+		for (int i = 0; i < size; i++)
+			if (_stricmp(map[i].second, buffer) == 0)
+				return map[i].first;
 	}
 	catch (...) {}
 	return printError(section, key, defValue);

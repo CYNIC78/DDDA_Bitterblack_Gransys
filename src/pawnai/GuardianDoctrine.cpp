@@ -1,4 +1,5 @@
 #include "stdafx.h"
+#include "runtime/Runtime.h"
 #include <math.h>
 #include "GuardianDoctrine.h"
 #include "../CombatBus.h"
@@ -42,7 +43,7 @@ static float Dist3(float ax, float ay, float az, float bx, float by, float bz)
     return sqrtf(dx * dx + dy * dy + dz * dz);
 }
 
-// Враг или безобидная живность? Повторяем логику DevTools::KindIsEnemy,
+// Враг или безобидная живность? Повторяем логику Runtime::KindIsEnemy,
 // чтобы SitRep не считал зайцев (uEm8000/uEm8600) угрозами.
 static bool SitRepIsEnemy(const char* kind)
 {
@@ -251,8 +252,8 @@ void BuildGuardianSitRep(GuardianSitRep& s)
     // игрока/пешки берём из census-тел (PartyFindBodies), которые DevTools
     // резолвит один раз лениво (в фоне) и читает дёшево каждый тик.
     float ax = 0, ay = 0, az = 0, px = 0, py = 0, pz = 0;
-    bool haveAnchor = DevTools::GetArisenWorldPos(&ax, &ay, &az);
-    bool havePawn   = DevTools::GetMainPawnWorldPos(&px, &py, &pz);
+    bool haveAnchor = Runtime::GetArisenWorldPos(&ax, &ay, &az);
+    bool havePawn   = Runtime::GetMainPawnWorldPos(&px, &py, &pz);
     s.anchorValid = haveAnchor;
     s.pawnValid   = havePawn;
     s.anchorX = ax; s.anchorY = ay; s.anchorZ = az;
@@ -270,9 +271,9 @@ int32_t g_guardianDaggerBiasPreempt = 0; // снятие штрафа в preempt
 void GuardianDoctrineTick()
 {
     static GuardianDoctrine d;
-    DevTools::GuardianFixSetTarget(-3); // vanilla по умолчанию
+    Runtime::GuardianFixSetTarget(-3); // vanilla по умолчанию
     if (!g_guardianFixEnabled) {
-        DevTools::GuardianFixTick();
+        Runtime::GuardianFixTick();
         return;
     }
 
@@ -295,8 +296,8 @@ void GuardianDoctrineTick()
         else if (dist < g_guardianPreemptRadius) desired = g_guardianDaggerBiasPreempt;
     }
 
-    DevTools::GuardianFixSetTarget(desired);
-    DevTools::GuardianFixTick();
+    Runtime::GuardianFixSetTarget(desired);
+    Runtime::GuardianFixTick();
 }
 
 } // namespace PawnAI

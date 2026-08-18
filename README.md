@@ -4,7 +4,10 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** Build 63 — Guardian Doctrine (ролевая матрица + градиентная зона телохранителя).
+**Текущий milestone:** Build 69 — разделение слоёв: продуктовый рантайм
+(`src/runtime/`) отделён от исследовательского DevTools и работает независимо
+от него. Игровая вертикаль прежняя — Guardian Doctrine (ролевая матрица +
+градиентная зона телохранителя).
 
 ## Что уже работает
 
@@ -25,10 +28,11 @@ Priority profiles не запускают действие насильно. О�
 
 ### Existing modules
 
-- Pawn inclination modules: presets, Sanitary Cordon, Smart Utilitarian, Tactical Switch;
+- Pawn inclination modules: presets, Acquisitor Manager, Smart Utilitarian, Tactical Switch, Guardian Doctrine;
 - CombatIntel/CombatBus и bestiary mapping;
 - Camera Plus: tactical free camera with optional player tracking, pause, party cam slider: Arisen <-> main pawn;
-- TypeAtlas/WorldScan/DevTools research platform;
+- WorldScan/PartyRecon/PriorityPlatform — продуктовый рантайм (`src/runtime/`);
+- TypeAtlas/SCAN/DUMP/HUNT — исследовательская платформа (`src/devtools/`, отключаемая);
 - experimental EnemyTuner.
 
 ## Важные ограничения
@@ -57,7 +61,7 @@ Build 63 — development milestone, не законченный пользова
 3. Build Solution.
 4. Скопировать `dinput8.dll` и `ddda_ai_overhaul.ini` в папку с `DDDA.exe`.
 
-Подробно: [`docs/BUILD_INSTRUCTIONS_RU.md`](docs/BUILD_INSTRUCTIONS_RU.md).
+Подробно (требования, установка в игру, разбор ошибок): [`docs/BUILD_INSTRUCTIONS_RU.md`](docs/BUILD_INSTRUCTIONS_RU.md).
 
 Если уже используется другой `dinput8.dll`, его можно загрузить цепочкой через `loadLibrary` в ini.
 
@@ -88,6 +92,16 @@ sensor / code / category / objectId / extra / ruleIndex
 
 **F9 модом не используется** — у пользователя это сохранение игры.
 
+## Слои
+
+```text
+src/runtime/    продукт: работает всегда, не зависит от DevTools
+src/devtools/   исследование: выключается целиком через [devtools] enabled = off
+```
+
+Продукт не вызывает research напрямую — только через `Runtime::ResearchHooks`.
+Инвариант проверяется `tools/analyze_devtools_layers.py` (код возврата 1 при нарушении).
+
 ## Архитектура AI
 
 ```text
@@ -106,6 +120,7 @@ Sensors / target selection
 
 | Документ | Назначение |
 |---|---|
+| [`docs/VISION.md`](docs/VISION.md) | замысел: три слоя и философия проекта |
 | [`docs/README.md`](docs/README.md) | индекс документации |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | архитектура платформы |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | актуальный план |
@@ -113,6 +128,7 @@ Sensors / target selection
 | [`docs/FIELD_MAP.md`](docs/FIELD_MAP.md) | offsets |
 | [`docs/ASSET_FORMATS.md`](docs/ASSET_FORMATS.md) | игровые resource formats |
 | [`docs/PLAYER_PAWN_WORK/`](docs/PLAYER_PAWN_WORK/) | Main Pawn vertical slice |
+| [`CHANGELOG.md`](CHANGELOG.md) | мастер-индекс по дням (детали — `docs/changelog/`) |
 
 Завершённые `TEST_*`, protocol и промежуточные result-документы удалены из текущего дерева; история остаётся в Git.
 

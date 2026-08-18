@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "68.5-party-cam-stable"
+#define MOD_BUILD_TAG "69.6-release-prep"

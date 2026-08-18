@@ -6,7 +6,7 @@
 
 #include "stdafx.h"
 #include "MinHook/MinHook.h"
-#include "d3d9.h"
+#include "D3D9Hook.h"
 #include "PawnAI.h"
 #include "EnemyAI.h"
 #include "Nightmare.h"
@@ -14,6 +14,7 @@
 #include "CameraPlus.h"
 #include "TargetLock.h"
 #include "devtools/DevTools.h"
+#include "runtime/Runtime.h"
 #include "EntityConfig.h"
 #include "ModPaths.h"
 #include "BuildTag.h"
@@ -38,6 +39,11 @@ void InitHooks()
 
     if (Hooks::FindSignature("WorldPointer", sigWorld, &pOffset))
         pWorld = *(BYTE***)(pOffset + 2);
+
+    // Build 69: продуктовый слой поднимается ПЕРВЫМ и безусловно.
+    // Раньше вся инициализация висела внутри if (Hooks::InGameUI()) — то есть
+    // при отвале оверлея молча умирал и продукт.
+    Runtime::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();
@@ -112,6 +118,7 @@ void Unitialize()
     // Потоки сами завершатся после флага. DevTools performs only a guarded
     // four-byte priority rollback before hooks are disabled.
     Hooks::DevTools_Shutdown();
+    Runtime::Shutdown();
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
     Hooks::CameraPlusShutdown();  // останавливает поток, НО без Wait (через событие)

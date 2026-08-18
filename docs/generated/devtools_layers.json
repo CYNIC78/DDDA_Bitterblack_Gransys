@@ -1,0 +1,2145 @@
+{
+  "file": "src/devtools/DevTools.cpp",
+  "total_lines": 4882,
+  "functions": [
+    {
+      "name": "IsRepeatTag",
+      "qualifier": "",
+      "line_start": 127,
+      "line_end": 143,
+      "off_start": 7668,
+      "off_end": 8215,
+      "calls": [],
+      "globals": [],
+      "lines": 17,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "KindName",
+      "qualifier": "",
+      "line_start": 151,
+      "line_end": 162,
+      "off_start": 8457,
+      "off_end": 8727,
+      "calls": [],
+      "globals": [],
+      "lines": 12,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ProbeType",
+      "qualifier": "",
+      "line_start": 162,
+      "line_end": 186,
+      "off_start": 8727,
+      "off_end": 9423,
+      "calls": [],
+      "globals": [],
+      "lines": 25,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "ModuleBase",
+      "qualifier": "DevTools",
+      "line_start": 186,
+      "line_end": 188,
+      "off_start": 9423,
+      "off_end": 9476,
+      "calls": [],
+      "globals": [],
+      "lines": 3,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "Rebase",
+      "qualifier": "DevTools",
+      "line_start": 188,
+      "line_end": 189,
+      "off_start": 9476,
+      "off_end": 9566,
+      "calls": [],
+      "globals": [],
+      "lines": 2,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "Identify",
+      "qualifier": "DevTools",
+      "line_start": 191,
+      "line_end": 201,
+      "off_start": 9613,
+      "off_end": 9964,
+      "calls": [],
+      "globals": [],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsSharedStub",
+      "qualifier": "",
+      "line_start": 227,
+      "line_end": 232,
+      "off_start": 10827,
+      "off_end": 10919,
+      "calls": [],
+      "globals": [],
+      "lines": 6,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "AddHit",
+      "qualifier": "",
+      "line_start": 232,
+      "line_end": 239,
+      "off_start": 10919,
+      "off_end": 11091,
+      "calls": [],
+      "globals": [],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanImage",
+      "qualifier": "",
+      "line_start": 239,
+      "line_end": 311,
+      "off_start": 11091,
+      "off_end": 13641,
+      "calls": [
+        "AddHit",
+        "IsSharedStub"
+      ],
+      "globals": [
+        "g_nScans",
+        "g_scanMs",
+        "g_scanned",
+        "g_scans"
+      ],
+      "lines": 73,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "WriteScanJson",
+      "qualifier": "",
+      "line_start": 311,
+      "line_end": 337,
+      "off_start": 13641,
+      "off_end": 14807,
+      "calls": [],
+      "globals": [
+        "g_nScans",
+        "g_scanMs",
+        "g_scans"
+      ],
+      "lines": 27,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "WatchAdd",
+      "qualifier": "",
+      "line_start": 349,
+      "line_end": 359,
+      "off_start": 15143,
+      "off_end": 15491,
+      "calls": [],
+      "globals": [
+        "g_nWatch",
+        "g_watch"
+      ],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "KindForName",
+      "qualifier": "",
+      "line_start": 359,
+      "line_end": 380,
+      "off_start": 15491,
+      "off_end": 16413,
+      "calls": [],
+      "globals": [],
+      "lines": 22,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "BuildWatch",
+      "qualifier": "",
+      "line_start": 380,
+      "line_end": 408,
+      "off_start": 16413,
+      "off_end": 17637,
+      "calls": [
+        "KindForName",
+        "WatchAdd"
+      ],
+      "globals": [
+        "g_nWatch"
+      ],
+      "lines": 29,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "WatchVt",
+      "qualifier": "",
+      "line_start": 408,
+      "line_end": 415,
+      "off_start": 17637,
+      "off_end": 17798,
+      "calls": [],
+      "globals": [
+        "g_nWatch",
+        "g_watch"
+      ],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "NameOf",
+      "qualifier": "",
+      "line_start": 422,
+      "line_end": 442,
+      "off_start": 17903,
+      "off_end": 18621,
+      "calls": [
+        "KindForName",
+        "WatchVt"
+      ],
+      "globals": [],
+      "lines": 21,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsCharKind",
+      "qualifier": "",
+      "line_start": 442,
+      "line_end": 444,
+      "off_start": 18621,
+      "off_end": 18681,
+      "calls": [],
+      "globals": [],
+      "lines": 3,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsHopKind",
+      "qualifier": "",
+      "line_start": 444,
+      "line_end": 449,
+      "off_start": 18681,
+      "off_end": 18832,
+      "calls": [],
+      "globals": [],
+      "lines": 6,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "HistAdd",
+      "qualifier": "",
+      "line_start": 692,
+      "line_end": 700,
+      "off_start": 25432,
+      "off_end": 25690,
+      "calls": [],
+      "globals": [
+        "g_hist",
+        "g_nHist"
+      ],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "Seen",
+      "qualifier": "",
+      "line_start": 700,
+      "line_end": 707,
+      "off_start": 25690,
+      "off_end": 25860,
+      "calls": [],
+      "globals": [
+        "g_nSeen",
+        "g_seen"
+      ],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "AddLive",
+      "qualifier": "",
+      "line_start": 707,
+      "line_end": 727,
+      "off_start": 25860,
+      "off_end": 26525,
+      "calls": [
+        "IsCharKind"
+      ],
+      "globals": [
+        "g_lives",
+        "g_nLives"
+      ],
+      "lines": 21,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "AddDPtr",
+      "qualifier": "",
+      "line_start": 727,
+      "line_end": 737,
+      "off_start": 26525,
+      "off_end": 26862,
+      "calls": [],
+      "globals": [
+        "g_dptrs",
+        "g_nDptrs"
+      ],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanObjOf",
+      "qualifier": "",
+      "line_start": 737,
+      "line_end": 748,
+      "off_start": 26862,
+      "off_end": 27303,
+      "calls": [],
+      "globals": [
+        "g_nScans",
+        "g_scans"
+      ],
+      "lines": 12,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "BytesInImage",
+      "qualifier": "",
+      "line_start": 748,
+      "line_end": 757,
+      "off_start": 27303,
+      "off_end": 27567,
+      "calls": [],
+      "globals": [],
+      "lines": 10,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "Consider",
+      "qualifier": "",
+      "line_start": 759,
+      "line_end": 771,
+      "off_start": 27633,
+      "off_end": 28017,
+      "calls": [
+        "AddDPtr",
+        "AddLive",
+        "HistAdd",
+        "Hop",
+        "IsHopKind",
+        "NameOf",
+        "Seen"
+      ],
+      "globals": [],
+      "lines": 13,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "Hop",
+      "qualifier": "",
+      "line_start": 771,
+      "line_end": 789,
+      "off_start": 28017,
+      "off_end": 28575,
+      "calls": [
+        "Consider",
+        "NameOf"
+      ],
+      "globals": [],
+      "lines": 19,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanEmbedded",
+      "qualifier": "",
+      "line_start": 789,
+      "line_end": 849,
+      "off_start": 28575,
+      "off_end": 31138,
+      "calls": [
+        "AddDPtr",
+        "Consider",
+        "HistAdd",
+        "NameOf"
+      ],
+      "globals": [
+        "g_nDptrs",
+        "g_nLayout",
+        "g_nMoveLine",
+        "g_nUnitGroup"
+      ],
+      "lines": 61,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanRegionPtrs",
+      "qualifier": "",
+      "line_start": 849,
+      "line_end": 872,
+      "off_start": 31138,
+      "off_end": 31962,
+      "calls": [
+        "Consider",
+        "WatchVt"
+      ],
+      "globals": [],
+      "lines": 24,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DumpHeader",
+      "qualifier": "",
+      "line_start": 872,
+      "line_end": 878,
+      "off_start": 31962,
+      "off_end": 32060,
+      "calls": [],
+      "globals": [
+        "g_hdr",
+        "g_hdrOk"
+      ],
+      "lines": 7,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "HuntHeapSingletons",
+      "qualifier": "",
+      "line_start": 878,
+      "line_end": 941,
+      "off_start": 32060,
+      "off_end": 34461,
+      "calls": [
+        "Consider",
+        "HistAdd",
+        "IsSharedStub"
+      ],
+      "globals": [
+        "g_hunts",
+        "g_nHunts"
+      ],
+      "lines": 64,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "FollowJmp",
+      "qualifier": "",
+      "line_start": 941,
+      "line_end": 955,
+      "off_start": 34461,
+      "off_end": 34806,
+      "calls": [],
+      "globals": [],
+      "lines": 15,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CreateFromFactory",
+      "qualifier": "",
+      "line_start": 955,
+      "line_end": 972,
+      "off_start": 34806,
+      "off_end": 35403,
+      "calls": [
+        "FollowJmp"
+      ],
+      "globals": [],
+      "lines": 18,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ConsiderImm",
+      "qualifier": "",
+      "line_start": 972,
+      "line_end": 987,
+      "off_start": 35403,
+      "off_end": 35884,
+      "calls": [],
+      "globals": [],
+      "lines": 16,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsMovToRegPtr",
+      "qualifier": "",
+      "line_start": 987,
+      "line_end": 998,
+      "off_start": 35884,
+      "off_end": 36276,
+      "calls": [],
+      "globals": [],
+      "lines": 12,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DeriveOne",
+      "qualifier": "",
+      "line_start": 998,
+      "line_end": 1048,
+      "off_start": 36276,
+      "off_end": 38434,
+      "calls": [
+        "ConsiderImm",
+        "CreateFromFactory",
+        "IsMovToRegPtr"
+      ],
+      "globals": [],
+      "lines": 51,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanFuncForInst",
+      "qualifier": "",
+      "line_start": 1048,
+      "line_end": 1089,
+      "off_start": 38434,
+      "off_end": 40100,
+      "calls": [
+        "ConsiderImm",
+        "IsMovToRegPtr"
+      ],
+      "globals": [],
+      "lines": 42,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DeriveInstanceVts",
+      "qualifier": "",
+      "line_start": 1089,
+      "line_end": 1129,
+      "off_start": 40100,
+      "off_end": 41662,
+      "calls": [
+        "BuildWatch",
+        "DeriveOne",
+        "WatchAdd"
+      ],
+      "globals": [
+        "g_der",
+        "g_nDer",
+        "g_nWatch",
+        "g_watch"
+      ],
+      "lines": 41,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "LooksAsciiPtr",
+      "qualifier": "",
+      "line_start": 1129,
+      "line_end": 1143,
+      "off_start": 41662,
+      "off_end": 42022,
+      "calls": [],
+      "globals": [],
+      "lines": 15,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsForeignFactory",
+      "qualifier": "",
+      "line_start": 1143,
+      "line_end": 1159,
+      "off_start": 42022,
+      "off_end": 42639,
+      "calls": [],
+      "globals": [
+        "g_der",
+        "g_nDer"
+      ],
+      "lines": 17,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "RescueFactory",
+      "qualifier": "",
+      "line_start": 1159,
+      "line_end": 1308,
+      "off_start": 42639,
+      "off_end": 47458,
+      "calls": [
+        "CreateFromFactory",
+        "IsForeignFactory",
+        "LooksAsciiPtr"
+      ],
+      "globals": [],
+      "lines": 150,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CensusAdd",
+      "qualifier": "",
+      "line_start": 1308,
+      "line_end": 1324,
+      "off_start": 47458,
+      "off_end": 47891,
+      "calls": [],
+      "globals": [
+        "g_cen",
+        "g_nCen"
+      ],
+      "lines": 17,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "NameVt",
+      "qualifier": "",
+      "line_start": 1324,
+      "line_end": 1336,
+      "off_start": 47891,
+      "off_end": 48380,
+      "calls": [
+        "WatchVt"
+      ],
+      "globals": [
+        "g_der",
+        "g_nDer"
+      ],
+      "lines": 13,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CountMgrName",
+      "qualifier": "",
+      "line_start": 1336,
+      "line_end": 1344,
+      "off_start": 48380,
+      "off_end": 48535,
+      "calls": [],
+      "globals": [
+        "g_mgrs",
+        "g_nMgrs"
+      ],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "HuntAddKey",
+      "qualifier": "",
+      "line_start": 1344,
+      "line_end": 1355,
+      "off_start": 48535,
+      "off_end": 48979,
+      "calls": [],
+      "globals": [
+        "g_hvt",
+        "g_nHvt",
+        "g_vtMax",
+        "g_vtMin"
+      ],
+      "lines": 12,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "BuildHuntTable",
+      "qualifier": "",
+      "line_start": 1355,
+      "line_end": 1375,
+      "off_start": 48979,
+      "off_end": 49587,
+      "calls": [
+        "BuildWatch",
+        "HuntAddKey"
+      ],
+      "globals": [
+        "g_hvt",
+        "g_nHvt",
+        "g_nWatch",
+        "g_vtMax",
+        "g_vtMin",
+        "g_watch"
+      ],
+      "lines": 21,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "HuntLookup",
+      "qualifier": "",
+      "line_start": 1375,
+      "line_end": 1388,
+      "off_start": 49587,
+      "off_end": 49946,
+      "calls": [],
+      "globals": [
+        "g_hvt",
+        "g_nHvt",
+        "g_vtMax",
+        "g_vtMin"
+      ],
+      "lines": 14,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "AddHeapMgr",
+      "qualifier": "",
+      "line_start": 1388,
+      "line_end": 1399,
+      "off_start": 49946,
+      "off_end": 50296,
+      "calls": [
+        "HistAdd"
+      ],
+      "globals": [
+        "g_mgrs",
+        "g_nMgrs"
+      ],
+      "lines": 12,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CountGidOf",
+      "qualifier": "",
+      "line_start": 1399,
+      "line_end": 1406,
+      "off_start": 50296,
+      "off_end": 50432,
+      "calls": [],
+      "globals": [
+        "g_gid",
+        "g_nGid"
+      ],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CountGidVtOf",
+      "qualifier": "",
+      "line_start": 1406,
+      "line_end": 1412,
+      "off_start": 50432,
+      "off_end": 50568,
+      "calls": [],
+      "globals": [
+        "g_gid",
+        "g_nGid"
+      ],
+      "lines": 7,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CensusN",
+      "qualifier": "",
+      "line_start": 1412,
+      "line_end": 1417,
+      "off_start": 50568,
+      "off_end": 50698,
+      "calls": [],
+      "globals": [
+        "g_cen",
+        "g_nCen"
+      ],
+      "lines": 6,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "SameVtNearby",
+      "qualifier": "",
+      "line_start": 1417,
+      "line_end": 1425,
+      "off_start": 50698,
+      "off_end": 50987,
+      "calls": [],
+      "globals": [],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "TryGidScout",
+      "qualifier": "",
+      "line_start": 1425,
+      "line_end": 1492,
+      "off_start": 50987,
+      "off_end": 53294,
+      "calls": [
+        "CensusN",
+        "CountGidOf",
+        "CountGidVtOf",
+        "IsBannedInst",
+        "IsRepeatTag",
+        "SameVtNearby"
+      ],
+      "globals": [
+        "g_der",
+        "g_gid",
+        "g_nDer",
+        "g_nGid"
+      ],
+      "lines": 68,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "FindDti",
+      "qualifier": "",
+      "line_start": 1502,
+      "line_end": 1510,
+      "off_start": 53744,
+      "off_end": 53961,
+      "calls": [],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanDti",
+      "qualifier": "",
+      "line_start": 1510,
+      "line_end": 1603,
+      "off_start": 53961,
+      "off_end": 57752,
+      "calls": [],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 94,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "IsBannedInst",
+      "qualifier": "",
+      "line_start": 1603,
+      "line_end": 1611,
+      "off_start": 57752,
+      "off_end": 58044,
+      "calls": [],
+      "globals": [],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "AddCand",
+      "qualifier": "",
+      "line_start": 1611,
+      "line_end": 1625,
+      "off_start": 58044,
+      "off_end": 58510,
+      "calls": [
+        "IsBannedInst"
+      ],
+      "globals": [],
+      "lines": 15,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "HarvestFunc",
+      "qualifier": "",
+      "line_start": 1625,
+      "line_end": 1644,
+      "off_start": 58510,
+      "off_end": 59156,
+      "calls": [
+        "AddCand",
+        "ScanFuncForInst"
+      ],
+      "globals": [],
+      "lines": 20,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CountCandInst",
+      "qualifier": "",
+      "line_start": 1644,
+      "line_end": 1654,
+      "off_start": 59156,
+      "off_end": 59396,
+      "calls": [],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "GoldForName",
+      "qualifier": "",
+      "line_start": 1654,
+      "line_end": 1663,
+      "off_start": 59396,
+      "off_end": 59644,
+      "calls": [],
+      "globals": [],
+      "lines": 10,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "NearAnyDtiVt",
+      "qualifier": "",
+      "line_start": 1663,
+      "line_end": 1676,
+      "off_start": 59644,
+      "off_end": 60056,
+      "calls": [],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 14,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PickUniqueDti",
+      "qualifier": "",
+      "line_start": 1676,
+      "line_end": 1701,
+      "off_start": 60056,
+      "off_end": 60854,
+      "calls": [
+        "CountCandInst",
+        "GoldForName",
+        "IsBannedInst",
+        "NearAnyDtiVt"
+      ],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 26,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "EnrichDti",
+      "qualifier": "",
+      "line_start": 1701,
+      "line_end": 1741,
+      "off_start": 60854,
+      "off_end": 62165,
+      "calls": [
+        "HarvestFunc",
+        "PickUniqueDti"
+      ],
+      "globals": [
+        "g_dti",
+        "g_nDti"
+      ],
+      "lines": 41,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ApplyDtiToFacts",
+      "qualifier": "",
+      "line_start": 1741,
+      "line_end": 1760,
+      "off_start": 62165,
+      "off_end": 62757,
+      "calls": [
+        "FindDti"
+      ],
+      "globals": [
+        "g_fact",
+        "g_nFact"
+      ],
+      "lines": 20,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanDtiLinks",
+      "qualifier": "",
+      "line_start": 1760,
+      "line_end": 1788,
+      "off_start": 62757,
+      "off_end": 63703,
+      "calls": [
+        "LooksAsciiPtr"
+      ],
+      "globals": [
+        "g_dlink",
+        "g_dti",
+        "g_nDlink",
+        "g_nDti"
+      ],
+      "lines": 29,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "WalkDtiTree",
+      "qualifier": "",
+      "line_start": 1788,
+      "line_end": 1830,
+      "off_start": 63703,
+      "off_end": 65287,
+      "calls": [
+        "LooksAsciiPtr"
+      ],
+      "globals": [
+        "g_dti",
+        "g_nDti",
+        "g_nTree",
+        "g_tree"
+      ],
+      "lines": 43,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "AddLead",
+      "qualifier": "",
+      "line_start": 1830,
+      "line_end": 1852,
+      "off_start": 65287,
+      "off_end": 65962,
+      "calls": [
+        "NameOf"
+      ],
+      "globals": [
+        "g_lead",
+        "g_nLead"
+      ],
+      "lines": 23,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "TryBackActor",
+      "qualifier": "",
+      "line_start": 1852,
+      "line_end": 1868,
+      "off_start": 65962,
+      "off_end": 66485,
+      "calls": [
+        "AddLead",
+        "IsBannedInst",
+        "NearAnyDtiVt"
+      ],
+      "globals": [],
+      "lines": 17,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "CollectLeads",
+      "qualifier": "",
+      "line_start": 1868,
+      "line_end": 1894,
+      "off_start": 66485,
+      "off_end": 67446,
+      "calls": [
+        "AddLead",
+        "TryBackActor"
+      ],
+      "globals": [
+        "g_gid",
+        "g_mgrs",
+        "g_nGid",
+        "g_nLead",
+        "g_nMgrs"
+      ],
+      "lines": 27,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanNearFactory",
+      "qualifier": "",
+      "line_start": 1894,
+      "line_end": 1944,
+      "off_start": 67446,
+      "off_end": 69351,
+      "calls": [
+        "IsBannedInst"
+      ],
+      "globals": [
+        "g_nNear",
+        "g_near"
+      ],
+      "lines": 51,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "InInstBand",
+      "qualifier": "",
+      "line_start": 1944,
+      "line_end": 1952,
+      "off_start": 69351,
+      "off_end": 69695,
+      "calls": [],
+      "globals": [],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanTextWrites",
+      "qualifier": "",
+      "line_start": 1952,
+      "line_end": 2032,
+      "off_start": 69695,
+      "off_end": 73067,
+      "calls": [
+        "InInstBand",
+        "IsBannedInst",
+        "IsMovToRegPtr"
+      ],
+      "globals": [
+        "g_nWr",
+        "g_wr"
+      ],
+      "lines": 81,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DumpGidNodes",
+      "qualifier": "",
+      "line_start": 2032,
+      "line_end": 2052,
+      "off_start": 73067,
+      "off_end": 73705,
+      "calls": [
+        "AddLead"
+      ],
+      "globals": [
+        "g_gid",
+        "g_nGid",
+        "g_nNode",
+        "g_node"
+      ],
+      "lines": 21,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "DumpGoldCtors",
+      "qualifier": "",
+      "line_start": 2052,
+      "line_end": 2087,
+      "off_start": 73705,
+      "off_end": 74909,
+      "calls": [
+        "FindDti"
+      ],
+      "globals": [
+        "g_ctor",
+        "g_nCtor"
+      ],
+      "lines": 36,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyWriteJson",
+      "qualifier": "",
+      "line_start": 2183,
+      "line_end": 2295,
+      "off_start": 79142,
+      "off_end": 84354,
+      "calls": [],
+      "globals": [
+        "g_partyRuntime"
+      ],
+      "lines": 113,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyRoleBody",
+      "qualifier": "",
+      "line_start": 2295,
+      "line_end": 2302,
+      "off_start": 84354,
+      "off_end": 84536,
+      "calls": [],
+      "globals": [],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PartyFindPtrOffset",
+      "qualifier": "",
+      "line_start": 2302,
+      "line_end": 2310,
+      "off_start": 84536,
+      "off_end": 84818,
+      "calls": [],
+      "globals": [],
+      "lines": 9,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PartyHashBytes",
+      "qualifier": "",
+      "line_start": 2310,
+      "line_end": 2320,
+      "off_start": 84818,
+      "off_end": 85027,
+      "calls": [],
+      "globals": [],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PartyMainCmcInfo",
+      "qualifier": "",
+      "line_start": 2320,
+      "line_end": 2330,
+      "off_start": 85027,
+      "off_end": 85339,
+      "calls": [],
+      "globals": [],
+      "lines": 11,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PartyWriteAiBridgeJson",
+      "qualifier": "",
+      "line_start": 2330,
+      "line_end": 3067,
+      "off_start": 85339,
+      "off_end": 120466,
+      "calls": [
+        "PartyFindPtrOffset",
+        "PartyHashBytes",
+        "PartyMainCmcInfo",
+        "PartyRoleBody"
+      ],
+      "globals": [
+        "g_act",
+        "g_partyAiLastFile",
+        "g_partyAiSeq",
+        "g_partyAiStatus"
+      ],
+      "lines": 738,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyTraceStop",
+      "qualifier": "",
+      "line_start": 3067,
+      "line_end": 3078,
+      "off_start": 120466,
+      "off_end": 120839,
+      "calls": [],
+      "globals": [
+        "g_partyTrace",
+        "g_partyTraceFile",
+        "g_partyTraceSeq"
+      ],
+      "lines": 12,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyTraceStart",
+      "qualifier": "",
+      "line_start": 3078,
+      "line_end": 3121,
+      "off_start": 120839,
+      "off_end": 122870,
+      "calls": [
+        "PartyRoleBody",
+        "PartyTraceStop"
+      ],
+      "globals": [
+        "g_partyRuntime",
+        "g_partyTrace",
+        "g_partyTraceFile",
+        "g_partyTraceSeq",
+        "g_partyTraceStartMs"
+      ],
+      "lines": 44,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyTraceBody",
+      "qualifier": "",
+      "line_start": 3121,
+      "line_end": 3136,
+      "off_start": 122870,
+      "off_end": 123441,
+      "calls": [],
+      "globals": [],
+      "lines": 16,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyTraceRecord",
+      "qualifier": "",
+      "line_start": 3136,
+      "line_end": 3144,
+      "off_start": 123441,
+      "off_end": 123687,
+      "calls": [],
+      "globals": [],
+      "lines": 9,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyTraceTick",
+      "qualifier": "",
+      "line_start": 3144,
+      "line_end": 3173,
+      "off_start": 123687,
+      "off_end": 124703,
+      "calls": [
+        "PartyRoleBody",
+        "PartyTraceBody",
+        "PartyTraceRecord"
+      ],
+      "globals": [
+        "g_partyRuntime",
+        "g_partyTrace",
+        "g_partyTraceStartMs"
+      ],
+      "lines": 30,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyCollectIntentLinks",
+      "qualifier": "",
+      "line_start": 3173,
+      "line_end": 3207,
+      "off_start": 124703,
+      "off_end": 126234,
+      "calls": [],
+      "globals": [],
+      "lines": 35,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "PartyIntentTraceStop",
+      "qualifier": "",
+      "line_start": 3207,
+      "line_end": 3218,
+      "off_start": 126234,
+      "off_end": 126601,
+      "calls": [],
+      "globals": [
+        "g_intentLiveValid",
+        "g_intentTrace"
+      ],
+      "lines": 12,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyIntentTraceStart",
+      "qualifier": "",
+      "line_start": 3218,
+      "line_end": 3242,
+      "off_start": 126601,
+      "off_end": 127594,
+      "calls": [
+        "PartyIntentTraceStop"
+      ],
+      "globals": [
+        "g_intentLiveValid",
+        "g_intentTrace",
+        "g_intentTraceFile",
+        "g_intentTraceLastActionVt",
+        "g_intentTraceLastCode",
+        "g_intentTraceLastMs",
+        "g_intentTraceLastPacked",
+        "g_intentTraceLastTarget",
+        "g_intentTraceSeq",
+        "g_intentTraceStartMs"
+      ],
+      "lines": 25,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "PartyIntentTraceTick",
+      "qualifier": "",
+      "line_start": 3242,
+      "line_end": 3306,
+      "off_start": 127594,
+      "off_end": 130098,
+      "calls": [
+        "PartyCollectIntentLinks",
+        "PartyIntentTraceStop",
+        "PartyRoleBody"
+      ],
+      "globals": [
+        "g_intentLiveAction",
+        "g_intentLiveCode",
+        "g_intentLiveTarget",
+        "g_intentLiveTargetName",
+        "g_intentLiveValid",
+        "g_intentTrace",
+        "g_intentTraceLastActionVt",
+        "g_intentTraceLastCode",
+        "g_intentTraceLastMs",
+        "g_intentTraceLastPacked",
+        "g_intentTraceLastTarget",
+        "g_intentTraceStartMs"
+      ],
+      "lines": 65,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "ProbeSidecars",
+      "qualifier": "",
+      "line_start": 3326,
+      "line_end": 3343,
+      "off_start": 130868,
+      "off_end": 131427,
+      "calls": [],
+      "globals": [
+        "g_nSide",
+        "g_side"
+      ],
+      "lines": 18,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "DumpActors",
+      "qualifier": "",
+      "line_start": 3343,
+      "line_end": 3353,
+      "off_start": 131427,
+      "off_end": 131644,
+      "calls": [],
+      "globals": [
+        "g_lives",
+        "g_nLives"
+      ],
+      "lines": 11,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "FirstEnemyBody",
+      "qualifier": "DevTools",
+      "line_start": 3353,
+      "line_end": 3370,
+      "off_start": 131644,
+      "off_end": 132236,
+      "calls": [],
+      "globals": [
+        "g_act"
+      ],
+      "lines": 18,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DeadCount",
+      "qualifier": "DevTools",
+      "line_start": 3370,
+      "line_end": 3383,
+      "off_start": 132236,
+      "off_end": 132646,
+      "calls": [],
+      "globals": [
+        "g_act"
+      ],
+      "lines": 14,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "EnemyActAt",
+      "qualifier": "DevTools",
+      "line_start": 3383,
+      "line_end": 3392,
+      "off_start": 132646,
+      "off_end": 133001,
+      "calls": [],
+      "globals": [
+        "g_act"
+      ],
+      "lines": 10,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DumpFactoryHeads",
+      "qualifier": "",
+      "line_start": 3392,
+      "line_end": 3420,
+      "off_start": 133001,
+      "off_end": 134041,
+      "calls": [
+        "RescueFactory"
+      ],
+      "globals": [
+        "g_fact",
+        "g_nFact"
+      ],
+      "lines": 29,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "HopHeapMgrs",
+      "qualifier": "",
+      "line_start": 3420,
+      "line_end": 3440,
+      "off_start": 134041,
+      "off_end": 134673,
+      "calls": [
+        "AddDPtr",
+        "AddLive",
+        "NameOf",
+        "TryGidScout"
+      ],
+      "globals": [
+        "g_mgrs",
+        "g_nMgrs"
+      ],
+      "lines": 21,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "HeapHunt",
+      "qualifier": "",
+      "line_start": 3440,
+      "line_end": 3520,
+      "off_start": 134673,
+      "off_end": 137580,
+      "calls": [
+        "AddHeapMgr",
+        "AddLive",
+        "BuildHuntTable",
+        "CensusAdd",
+        "CountMgrName",
+        "HuntLookup",
+        "IsRepeatTag",
+        "TryGidScout"
+      ],
+      "globals": [
+        "g_huntBytes",
+        "g_huntMs",
+        "g_huntRegions",
+        "g_nCen",
+        "g_nMgrs"
+      ],
+      "lines": 81,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "NoteHolder",
+      "qualifier": "",
+      "line_start": 3520,
+      "line_end": 3534,
+      "off_start": 137580,
+      "off_end": 138056,
+      "calls": [],
+      "globals": [
+        "g_hold",
+        "g_nHold"
+      ],
+      "lines": 15,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ScanForLive",
+      "qualifier": "",
+      "line_start": 3534,
+      "line_end": 3553,
+      "off_start": 138056,
+      "off_end": 138670,
+      "calls": [
+        "NoteHolder"
+      ],
+      "globals": [
+        "g_lives",
+        "g_nHold",
+        "g_nLives"
+      ],
+      "lines": 20,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "FindHolders",
+      "qualifier": "",
+      "line_start": 3553,
+      "line_end": 3589,
+      "off_start": 138670,
+      "off_end": 140094,
+      "calls": [
+        "ScanForLive"
+      ],
+      "globals": [
+        "g_nHold",
+        "g_nLives",
+        "g_nScans",
+        "g_pWorldObj",
+        "g_sSet",
+        "g_sSetInImg",
+        "g_sUnit",
+        "g_sUnitInImg",
+        "g_scans"
+      ],
+      "lines": 37,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DumpWindow",
+      "qualifier": "",
+      "line_start": 3589,
+      "line_end": 3599,
+      "off_start": 140094,
+      "off_end": 140331,
+      "calls": [],
+      "globals": [
+        "g_nWin",
+        "g_sUnit",
+        "g_win"
+      ],
+      "lines": 11,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "WriteDumpJson",
+      "qualifier": "",
+      "line_start": 3599,
+      "line_end": 3917,
+      "off_start": 140331,
+      "off_end": 156948,
+      "calls": [
+        "NameVt"
+      ],
+      "globals": [
+        "g_act",
+        "g_cen",
+        "g_ctor",
+        "g_der",
+        "g_dlink",
+        "g_dptrs",
+        "g_dti",
+        "g_dumpMs",
+        "g_embedBytes",
+        "g_fact",
+        "g_gid",
+        "g_hdr",
+        "g_hdrOk",
+        "g_hist",
+        "g_hold",
+        "g_huntBytes",
+        "g_huntMs",
+        "g_huntRegions",
+        "g_hunts",
+        "g_lead",
+        "g_lives",
+        "g_mgrs",
+        "g_nCen",
+        "g_nCtor",
+        "g_nDer",
+        "g_nDlink",
+        "g_nDptrs",
+        "g_nDti",
+        "g_nFact",
+        "g_nGid",
+        "g_nHist",
+        "g_nHold",
+        "g_nHunts",
+        "g_nHvt",
+        "g_nLayout",
+        "g_nLead",
+        "g_nLives",
+        "g_nMgrs",
+        "g_nMoveLine",
+        "g_nNear",
+        "g_nNode",
+        "g_nSide",
+        "g_nTree",
+        "g_nUnitGroup",
+        "g_nWin",
+        "g_nWr",
+        "g_near",
+        "g_node",
+        "g_pWorldName",
+        "g_pWorldObj",
+        "g_sSet",
+        "g_sSetInImg",
+        "g_sUnit",
+        "g_sUnitFits",
+        "g_sUnitId",
+        "g_sUnitInImg",
+        "g_setHdr",
+        "g_setHdrOk",
+        "g_side",
+        "g_tree",
+        "g_win",
+        "g_worldHdr",
+        "g_worldHdrOk",
+        "g_wr"
+      ],
+      "lines": 319,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "FilterFakeLives",
+      "qualifier": "",
+      "line_start": 3917,
+      "line_end": 3954,
+      "off_start": 156948,
+      "off_end": 158328,
+      "calls": [],
+      "globals": [
+        "g_lives",
+        "g_mgrs",
+        "g_nLives",
+        "g_nMgrs"
+      ],
+      "lines": 38,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "HuntLive",
+      "qualifier": "",
+      "line_start": 3954,
+      "line_end": 4095,
+      "off_start": 158328,
+      "off_end": 164419,
+      "calls": [
+        "AddLead",
+        "ApplyDtiToFacts",
+        "BuildWatch",
+        "BytesInImage",
+        "CollectLeads",
+        "DeriveInstanceVts",
+        "DeriveOne",
+        "DumpActors",
+        "DumpFactoryHeads",
+        "DumpGidNodes",
+        "DumpGoldCtors",
+        "EnrichDti",
+        "FilterFakeLives",
+        "FindDti",
+        "FindHolders",
+        "HeapHunt",
+        "HopHeapMgrs",
+        "IsBannedInst",
+        "IsForeignFactory",
+        "NearAnyDtiVt",
+        "ProbeSidecars",
+        "ScanDti",
+        "ScanDtiLinks",
+        "ScanNearFactory",
+        "ScanObjOf",
+        "ScanTextWrites",
+        "WalkDtiTree",
+        "WatchAdd",
+        "WriteDumpJson"
+      ],
+      "globals": [
+        "g_act",
+        "g_der",
+        "g_dumped",
+        "g_fact",
+        "g_huntMs",
+        "g_lives",
+        "g_nCen",
+        "g_nDer",
+        "g_nFact",
+        "g_nGid",
+        "g_nHold",
+        "g_nLead",
+        "g_nLives",
+        "g_nMgrs",
+        "g_nWatch",
+        "g_sSet",
+        "g_sSetInImg",
+        "g_sUnit",
+        "g_sUnitInImg",
+        "g_watch"
+      ],
+      "lines": 142,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "DumpAnatomy",
+      "qualifier": "",
+      "line_start": 4095,
+      "line_end": 4214,
+      "off_start": 164419,
+      "off_end": 168361,
+      "calls": [
+        "BuildWatch",
+        "BytesInImage",
+        "Consider",
+        "DumpHeader",
+        "DumpWindow",
+        "HistAdd",
+        "HuntHeapSingletons",
+        "NameOf",
+        "ScanEmbedded",
+        "ScanObjOf",
+        "ScanRegionPtrs",
+        "WriteDumpJson"
+      ],
+      "globals": [
+        "g_dumpMs",
+        "g_dumped",
+        "g_embedBytes",
+        "g_hdr",
+        "g_hdrOk",
+        "g_hist",
+        "g_huntBytes",
+        "g_huntMs",
+        "g_huntRegions",
+        "g_lives",
+        "g_nCen",
+        "g_nCtor",
+        "g_nDer",
+        "g_nDlink",
+        "g_nDptrs",
+        "g_nDti",
+        "g_nFact",
+        "g_nGid",
+        "g_nHist",
+        "g_nHold",
+        "g_nHunts",
+        "g_nLayout",
+        "g_nLead",
+        "g_nLives",
+        "g_nMgrs",
+        "g_nMoveLine",
+        "g_nNear",
+        "g_nNode",
+        "g_nScans",
+        "g_nSeen",
+        "g_nTree",
+        "g_nUnitGroup",
+        "g_nWatch",
+        "g_nWin",
+        "g_nWr",
+        "g_pWorldName",
+        "g_pWorldObj",
+        "g_sSet",
+        "g_sSetInImg",
+        "g_sUnit",
+        "g_sUnitFits",
+        "g_sUnitId",
+        "g_sUnitInImg",
+        "g_scans",
+        "g_setHdr",
+        "g_setHdrOk",
+        "g_worldHdr",
+        "g_worldHdrOk"
+      ],
+      "lines": 120,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "HexDump",
+      "qualifier": "",
+      "line_start": 4222,
+      "line_end": 4240,
+      "off_start": 168622,
+      "off_end": 169200,
+      "calls": [],
+      "globals": [],
+      "lines": 19,
+      "layer": "RESEARCH"
+    },
+    {
+      "name": "SetInspect",
+      "qualifier": "",
+      "line_start": 4240,
+      "line_end": 4246,
+      "off_start": 169200,
+      "off_end": 169310,
+      "calls": [],
+      "globals": [
+        "g_inspect",
+        "g_inspectBuf"
+      ],
+      "lines": 7,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "RenderDevToolsUI",
+      "qualifier": "",
+      "line_start": 4246,
+      "line_end": 4809,
+      "off_start": 169310,
+      "off_end": 197740,
+      "calls": [
+        "DeadCount",
+        "DumpAnatomy",
+        "HexDump",
+        "HuntLive",
+        "KindName",
+        "NameOf",
+        "NameVt",
+        "PartyIntentTraceStop",
+        "ProbeType",
+        "ScanImage",
+        "SetInspect",
+        "WriteScanJson"
+      ],
+      "globals": [
+        "g_act",
+        "g_cen",
+        "g_der",
+        "g_dlink",
+        "g_dptrs",
+        "g_dti",
+        "g_dumpMs",
+        "g_dumped",
+        "g_embedBytes",
+        "g_fact",
+        "g_filter",
+        "g_gid",
+        "g_hist",
+        "g_hold",
+        "g_huntBytes",
+        "g_huntMs",
+        "g_huntRegions",
+        "g_hunts",
+        "g_inspOff",
+        "g_inspOffBuf",
+        "g_inspect",
+        "g_inspectBuf",
+        "g_intentLiveAction",
+        "g_intentLiveCode",
+        "g_intentLiveTarget",
+        "g_intentLiveTargetName",
+        "g_intentLiveValid",
+        "g_intentTrace",
+        "g_intentTraceSeq",
+        "g_lead",
+        "g_lives",
+        "g_mgrs",
+        "g_nCen",
+        "g_nDer",
+        "g_nDlink",
+        "g_nDptrs",
+        "g_nDti",
+        "g_nFact",
+        "g_nGid",
+        "g_nHist",
+        "g_nHold",
+        "g_nHunts",
+        "g_nHvt",
+        "g_nLayout",
+        "g_nLead",
+        "g_nLives",
+        "g_nMgrs",
+        "g_nMoveLine",
+        "g_nNear",
+        "g_nNode",
+        "g_nScans",
+        "g_nTree",
+        "g_nUnitGroup",
+        "g_nWr",
+        "g_near",
+        "g_pWorldName",
+        "g_pWorldObj",
+        "g_partyAiLastFile",
+        "g_partyAiSeq",
+        "g_partyAiStatus",
+        "g_researchDump",
+        "g_sSet",
+        "g_sSetInImg",
+        "g_sUnit",
+        "g_sUnitFits",
+        "g_sUnitId",
+        "g_sUnitInImg",
+        "g_scanMs",
+        "g_scanned",
+        "g_scans",
+        "g_sel",
+        "g_tree"
+      ],
+      "lines": 564,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ResearchOnSnapshotEarly",
+      "qualifier": "",
+      "line_start": 4809,
+      "line_end": 4818,
+      "off_start": 197740,
+      "off_end": 198117,
+      "calls": [
+        "PartyWriteJson"
+      ],
+      "globals": [
+        "g_researchDump"
+      ],
+      "lines": 10,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ResearchOnSnapshotFull",
+      "qualifier": "",
+      "line_start": 4818,
+      "line_end": 4824,
+      "off_start": 198117,
+      "off_end": 198276,
+      "calls": [
+        "PartyIntentTraceStart",
+        "PartyWriteAiBridgeJson"
+      ],
+      "globals": [
+        "g_intentTrace",
+        "g_researchDump"
+      ],
+      "lines": 7,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ResearchOnTick",
+      "qualifier": "",
+      "line_start": 4824,
+      "line_end": 4830,
+      "off_start": 198276,
+      "off_end": 198360,
+      "calls": [
+        "PartyIntentTraceTick",
+        "PartyTraceTick"
+      ],
+      "globals": [],
+      "lines": 7,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "ResearchOnWorldUnload",
+      "qualifier": "",
+      "line_start": 4830,
+      "line_end": 4835,
+      "off_start": 198360,
+      "off_end": 198453,
+      "calls": [
+        "PartyIntentTraceStop"
+      ],
+      "globals": [],
+      "lines": 6,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DevTools",
+      "qualifier": "Hooks",
+      "line_start": 4835,
+      "line_end": 4874,
+      "off_start": 198453,
+      "off_end": 200099,
+      "calls": [
+        "BuildWatch"
+      ],
+      "globals": [
+        "g_enabled",
+        "g_nWatch",
+        "g_researchDump"
+      ],
+      "lines": 40,
+      "layer": "DEVTOOLS"
+    },
+    {
+      "name": "DevTools_Shutdown",
+      "qualifier": "Hooks",
+      "line_start": 4874,
+      "line_end": 4881,
+      "off_start": 200099,
+      "off_end": 200308,
+      "calls": [
+        "PartyIntentTraceStop"
+      ],
+      "globals": [],
+      "lines": 8,
+      "layer": "DEVTOOLS"
+    }
+  ],
+  "statics": {
+    "g_enabled": 112,
+    "g_researchDump": 119,
+    "g_intentTrace": 126,
+    "g_scans": 223,
+    "g_nScans": 225,
+    "g_scanned": 226,
+    "g_scanMs": 227,
+    "g_watch": 348,
+    "g_nWatch": 349,
+    "g_lives": 456,
+    "g_nLives": 457,
+    "g_dptrs": 466,
+    "g_nDptrs": 467,
+    "g_hist": 470,
+    "g_nHist": 471,
+    "g_hunts": 477,
+    "g_nHunts": 478,
+    "g_nMoveLine": 479,
+    "g_nUnitGroup": 481,
+    "g_nLayout": 482,
+    "g_embedBytes": 483,
+    "g_dumped": 484,
+    "g_dumpMs": 485,
+    "g_pWorldObj": 486,
+    "g_pWorldName": 487,
+    "g_sUnit": 488,
+    "g_sSet": 488,
+    "g_sUnitInImg": 489,
+    "g_sSetInImg": 489,
+    "g_sUnitFits": 490,
+    "g_sUnitId": 491,
+    "g_hdr": 492,
+    "g_hdrOk": 493,
+    "g_worldHdr": 494,
+    "g_worldHdrOk": 495,
+    "g_setHdr": 496,
+    "g_setHdrOk": 502,
+    "g_win": 505,
+    "g_nWin": 506,
+    "g_hvt": 509,
+    "g_nHvt": 510,
+    "g_vtMin": 511,
+    "g_vtMax": 511,
+    "g_mgrs": 514,
+    "g_nMgrs": 515,
+    "g_fact": 538,
+    "g_nFact": 539,
+    "g_gid": 540,
+    "g_nGid": 541,
+    "g_hold": 549,
+    "g_nHold": 550,
+    "g_huntMs": 551,
+    "g_huntRegions": 553,
+    "g_huntBytes": 554,
+    "g_der": 562,
+    "g_nDer": 563,
+    "g_cen": 570,
+    "g_nCen": 571,
+    "g_dti": 596,
+    "g_nDti": 597,
+    "g_dlink": 624,
+    "g_nDlink": 625,
+    "g_lead": 637,
+    "g_nLead": 638,
+    "g_tree": 645,
+    "g_nTree": 646,
+    "g_near": 653,
+    "g_nNear": 654,
+    "g_wr": 660,
+    "g_nWr": 661,
+    "g_node": 668,
+    "g_nNode": 669,
+    "g_ctor": 677,
+    "g_nCtor": 678,
+    "g_emptyPoll": 679,
+    "g_seen": 686,
+    "g_nSeen": 692,
+    "g_partyAiSeq": 2126,
+    "g_partyAiLastFile": 2150,
+    "g_partyAiStatus": 2151,
+    "g_partyTrace": 2152,
+    "g_partyTraceSeq": 2163,
+    "g_partyTraceStartMs": 2164,
+    "g_partyTraceFile": 2165,
+    "g_intentTraceSeq": 2166,
+    "g_intentTraceStartMs": 2172,
+    "g_intentTraceLastMs": 2173,
+    "g_intentTraceLastCode": 2174,
+    "g_intentTraceLastActionVt": 2175,
+    "g_intentTraceLastPacked": 2176,
+    "g_intentTraceLastTarget": 2177,
+    "g_intentTraceFile": 2178,
+    "g_intentLiveValid": 2179,
+    "g_intentLiveCode": 2180,
+    "g_intentLiveAction": 2181,
+    "g_intentLiveTarget": 2182,
+    "g_intentLiveTargetName": 2183,
+    "g_side": 3325,
+    "g_nSide": 3326,
+    "g_filter": 4215,
+    "g_inspectBuf": 4218,
+    "g_inspOffBuf": 4219,
+    "g_inspect": 4220,
+    "g_inspOff": 4221,
+    "g_sel": 4222,
+    "g_partyRuntime": 3103,
+    "g_act": 3391
+  },
+  "product_entry_points": [],
+  "probe_entry_points": [],
+  "product_closure": [],
+  "research_passengers": [],
+  "probe_only_closure": [],
+  "shared_statics": [],
+  "product_api_usage": {}
+}

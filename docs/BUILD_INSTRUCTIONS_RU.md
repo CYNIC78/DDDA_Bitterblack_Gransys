@@ -1,157 +1,158 @@
-# Инструкция по сборке в Visual Studio
+# Сборка DDDA AI Overhaul (Release | Win32)
 
-## Что нужно сделать перед открытием проекта
+Единственный канонический документ по сборке. Раньше информация была размазана по
+`BUILD_THIS.txt`, `!ИНСТРУКЦИЯ_ПО_СБОРКЕ.txt`, `README_MODULAR.txt` и этому файлу —
+теперь всё здесь.
 
-### 1. Скопировать MinHook и ImGui из референс-репозитория
+---
 
-У нас уже есть склонированный репозиторий `/home/user/ddda-dinput8/`.
+## 0. Что нужно установить
 
-**На твоём Windows-компьютере** (где установлен Visual Studio):
+- **Visual Studio 2017 / 2019 / 2022** (Community подойдёт).
+  При установке обязательна нагрузка **«Разработка классических приложений на C++»**
+  (Desktop development with C++).
+- **DirectX SDK (June 2010)** — *опционально*. Проект ссылается на `$(DXSDK_DIR)`,
+  но современный Windows SDK обычно закрывает потребности. См. раздел «Если ругается на d3dx9.h».
 
-1. Склонируй оба репозитория или скопируй папки:
+Ничего копировать из сторонних репозиториев больше **не нужно**: `MinHook/`, `ImGui/`,
+`stdafx`, `iniConfig`, `d3d9`, `InGameUI` уже лежат в дереве проекта.
+
+---
+
+## 1. Сборка
+
+1. Открыть `ddda-ai-overhaul.sln` (или `.vcxproj`) в Visual Studio.
+   Если VS предложит **Retarget Projects** — согласиться, это нормально.
+2. Вверху выбрать конфигурацию: **Release** и платформу **Win32**.
+   Игра 32-битная — `x64` не собирать, `Debug` для игры не нужен.
+3. **Build → Build Solution** (`Ctrl+Shift+B`).
+4. Успех выглядит так:
+
+   ```text
+   ========== Build: 1 succeeded, 0 failed ==========
    ```
-   git clone https://github.com/kubik-jaroslav/ddda-dinput8.git
+
+   Результат: `Release\dinput8.dll`.
+
+---
+
+## 2. Установка в игру
+
+Скопировать в папку с `DDDA.exe`:
+
+| Откуда | Куда |
+|---|---|
+| `Release\dinput8.dll` | корень игры |
+| `ddda_ai_overhaul.ini` | корень игры |
+| `ddda_entities.ini` | корень игры |
+
+### Если в игре уже стоит другой `dinput8.dll`
+
+Две DLL с одним именем в папке не уживаются. Правильный путь — цепочка загрузки:
+
+1. Переименовать старый мод в `dinput8_OLD.dll`.
+2. Положить наш `dinput8.dll`.
+3. В `ddda_ai_overhaul.ini` прописать:
+
+   ```ini
+   loadLibrary = dinput8_OLD.dll
    ```
 
-2. Создай папку проекта и скопируй туда:
-   - Папку `src/` (все .cpp/.h файлы из нашего проекта)
-   - Папки `MinHook/` и `ImGui/` из `ddda-dinput8/`
-   - Файлы `dinput8.def`, `ddda_ai_overhaul.ini`
-   - Файл проекта `.vcxproj` (создам ниже схему)
+Тогда наш мод — главный, а старый подгружается как дополнительная библиотека.
 
-3. Также нужны будут файлы из `ddda-dinput8/`:
-   - `stdafx.cpp`, `stdafx.h` (прекомпилируемый заголовок)
-   - `iniConfig.cpp`, `iniConfig.h` (INI-парсер)
-   - `d3d9.cpp`, `d3d9.h` (D3D9 хук для ImGui)
-   - `InGameUI.cpp`, `InGameUI.h` (UI-фреймворк)
-   - `resource.h`, `steam_api.h`
+---
 
-### 2. Настройка проекта в Visual Studio
+## 3. Проверка после запуска
 
-#### Конфигурация проекта (.vcxproj):
-- **Configuration Type**: Dynamic Library (.dll)
-- **Platform**: Win32 (x86) — игра 32-битная!
-- **Character Set**: Multi-Byte
-- **Platform Toolset**: v141 (VS 2017) или новее
-- **Output Name**: `dinput8`
+1. Запустить игру, нажать **F12** — должна открыться панель мода с вкладками
+   (Pawn AI Overhaul, Combat Intel, Enemy AI Overhaul, Nightmare, Camera Plus).
+2. **Live Inclinations** — раскрыть; должны показываться реальные значения инклинаций
+   главной пешки. Видны числа → оффсеты живы.
+3. **Combat Intel** — включить галку, ударить врага; в Damage Ring Buffer появится
+   запись с `group=XX`.
+4. **Camera Plus** — `F4`, стрелки + PgUp/PgDn, слайдер party cam (Аризен ↔ пешка).
 
-#### Include Directories:
-```
+DevTools по умолчанию **выключен** (`[devtools] enabled = off`) — он стоит 150-мс обхода
+и обычному игроку не нужен. Для разработки включается в `ddda_ai_overhaul.ini`.
+
+---
+
+## 4. Настройки проекта (справка, если .vcxproj пересоздаётся с нуля)
+
+| Параметр | Значение |
+|---|---|
+| Configuration Type | Dynamic Library (.dll) |
+| Platform | Win32 (x86) |
+| Character Set | Multi-Byte |
+| Platform Toolset | v141 (VS 2017) или новее |
+| Output Name | `dinput8` |
+| Module Definition File | `dinput8.def` |
+
+**Include Directories**
+
+```text
 $(DXSDK_DIR)Include
 $(ProjectDir)ImGui
 $(ProjectDir)MinHook
 $(ProjectDir)src
 ```
 
-#### Library Directories:
-```
+**Library Directories**
+
+```text
 $(DXSDK_DIR)Lib\x86
 $(ProjectDir)MinHook
 ```
 
-#### Additional Dependencies:
-```
+**Additional Dependencies**
+
+```text
 d3dx9.lib
 d3d9.lib
-libMinHook-x86-v140-mt.lib  (для Release)
+libMinHook-x86-v140-mt.lib    (Release)
+libMinHook-x86-v140-mtd.lib   (Debug)
 ```
 
-#### Preprocessor Definitions:
-```
-WIN32
-NDEBUG  (для Release)
-_WINDOWS
-_USRDLL
-```
+**Preprocessor Definitions**: `WIN32`, `NDEBUG` (Release), `_WINDOWS`, `_USRDLL`.
 
-#### Module Definition File:
-```
-dinput8.def
-```
+### Post-Build Event (автокопирование в игру, опционально)
 
-### 3. Настройка Post-Build Event (автокопирование в папку игры)
-
-```
+```text
 xcopy /y /d "$(TargetPath)" "C:\Program Files (x86)\Steam\steamapps\common\DDDA\"
 xcopy /y /d "$(ProjectDir)ddda_ai_overhaul.ini" "C:\Program Files (x86)\Steam\steamapps\common\DDDA\"
 ```
 
-### 4. Порядок файлов в проекте
+---
 
-```
-Source Files:
-  dinput8.cpp
-  PawnAI.cpp
-  EnemyAI.cpp
-  d3d9.cpp
-  InGameUI.cpp
-  iniConfig.cpp
-  stdafx.cpp
-  ImGui/imgui.cpp
-  ImGui/imgui_draw.cpp
-  ImGui/imgui_impl_dx9.cpp
+## 5. Частые проблемы
 
-Header Files:
-  dinput8.h
-  PawnAI.h
-  EnemyAI.h
-  d3d9.h
-  InGameUI.h
-  iniConfig.h
-  stdafx.h
-  resource.h
-  steam_api.h
-  MinHook/MinHook.h
-  ImGui/imgui.h
-  ImGui/imgui_impl_dx9.h
-  ImGui/imgui_internal.h
-  ImGui/imconfig.h
-  ImGui/stb_rect_pack.h
-  ImGui/stb_textedit.h
-  ImGui/stb_truetype.h
+**Ошибки вида «LPDIRECT3DDEVICE9: необъявленный идентификатор» в `D3D9Hook.h`**
+Каталог проекта попал в пути поиска раньше DirectX SDK, и `#include <d3d9.h>`
+нашёл заголовок проекта вместо системного. Проверь порядок в
+Properties → C/C++ → Additional Include Directories: пути SDK должны идти
+первыми. По этой же причине хук называется `D3D9Hook.h`, а не `d3d9.h` —
+не переименовывай обратно.
 
-Resource Files:
-  dinput8.def (Module Definition File)
+**«Cannot open include file: d3dx9.h»**
+DirectX SDK не установлен. Либо поставить June 2010 SDK с сайта Microsoft, либо убрать
+`$(DXSDK_DIR)Include` из Include Directories и положиться на Windows SDK.
 
-Libraries:
-  MinHook/libMinHook-x86-v140-mt.lib     (Release)
-  MinHook/libMinHook-x86-v140-mtd.lib    (Debug)
-```
+**Линкер не находит MinHook**
+Проверить, что `MinHook/*.lib` реально в дереве. В `.gitignore` есть общий запрет `*.lib`,
+но для MinHook сделано исключение (`!MinHook/*.lib`) — библиотеки должны быть в репозитории.
 
-### 5. Сборка и тестирование
+**Собралось, но в игре ничего нет**
+- Проверить, что скопирована именно `Release\Win32` сборка;
+- проверить конфликт с другим `dinput8.dll` (см. раздел 2);
+- посмотреть `ddda_ai_overhaul.log` в папке игры.
 
-1. Выбери **Release | Win32**
-2. Build → Build Solution (Ctrl+Shift+B)
-3. Если настроен Post-Build Event, DLL и INI автоматически скопируются в папку игры
-4. Запусти игру, нажми F12 — должен появиться UI с вкладками "Pawn AI Overhaul" и "Enemy AI Overhaul"
+**Steam или GOG?**
+Оффсеты `pBase`, структуры данных и сигнатуры одинаковые. Работает на обеих.
 
-## Что уже работает
+---
 
-- ✅ Архитектура прокси-DLL (взята из dinput8)
-- ✅ Поиск сигнатур pBase и pWorld
-- ✅ MinHook инициализация
-- ✅ ImGui оверлей с меню
-- ✅ PawnAI: чтение/запись инклинаций
-- ✅ PawnAI: пресеты поведения
-- ✅ EnemyAI: заготовка модуля
+## 6. Что прислать, если не собирается
 
-## Что нужно доработать
-
-### Ближайшие шаги (Фаза 1):
-1. **Скопировать недостающие файлы из dinput8**: stdafx, iniConfig, d3d9, InGameUI, steam_api.h
-2. **Настроить .vcxproj** (я создам шаблон)
-3. **Скомпилировать и проверить** что DLL загружается
-4. **Проверить работу ImGui** (F12 должен показывать меню)
-5. **Проверить чтение/запись инклинаций** через UI
-
-### Фаза 2 — Поиск AI-адресов:
-1. Запустить игру с Cheat Engine
-2. Найти параметры поведения врагов (агрессия, дистанция, лимит атакующих)
-3. Задокументировать сигнатуры
-4. Добавить хуки в EnemyAI.cpp
-
-### Фаза 3 — Анализ .arc файлов:
-1. Скачать ARCtool
-2. Распаковать game_main.arc с флагом -xfs
-3. Найти AI-параметры в XML
-4. Документировать структуру
+1. Текст ошибок из окна **Output** Visual Studio.
+2. `ddda_ai_overhaul.log` из папки игры (если DLL всё же загрузилась).
+3. Скриншот панели F12 (если панель не появляется).

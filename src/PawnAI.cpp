@@ -10,12 +10,12 @@
  * Модуль, упавший дважды подряд, отключается до горячей перезагрузки.
  */
 #include "stdafx.h"
+#include "runtime/Runtime.h"
 #include "EntityConfig.h"
 #include "EnemyTuner.h"
 #include "PawnAI.h"
 #include "CombatIntel.h"
 #include "CombatBus.h"
-#include "devtools/DevTools.h"
 #include "pawnai/PawnAI_Common.h"
 #include "pawnai/PawnAI_BusOrchestrator.h"
 #include "pawnai/GuardianDoctrine.h"
@@ -30,7 +30,7 @@ static bool  g_enabled = true;
 void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
-    __try { DevTools::WorldScan_Tick(); }
+    __try { Runtime::WorldScan_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     if(!g_enabled || !pBase || !*pBase) return;
@@ -274,57 +274,8 @@ void RenderPawnAIUI(){
         }
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Transactional: lifts Guardian -3 penalty on WpnDaggerAtk ONLY while a threat is in your zone and pawn is melee/hybrid. Rollback when zone clears.");
-        ImGui::TextColored(DevTools::GuardianFixIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
-            "%s", DevTools::GuardianFixStatus());
-
-        ImGui::Separator();
-        // Build 65: полный аудит модификаторов ВСЕХ склонностей (read-only).
-        static char auditCache[640] = "Incl audit: press the button (needs bodies resolved).";
-        if (ImGui::Button("Audit all inclinations (leash params)")) {
-            const char* r = DevTools::GuardianPenaltyAudit();
-            if (r) lstrcpynA(auditCache, r, sizeof(auditCache));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("read-only, logs full map");
-        ImGui::TextWrapped("%s", auditCache);
-
-        ImGui::Separator();
-        // Build 59: разведка target-selection (read-only).
-        static char targetAuditCache[512] = "Target audit: press the button (needs census).";
-        if (ImGui::Button("Audit target selection (sRecognition/sLockOn)")) {
-            const char* r = DevTools::TargetSelectionAudit();
-            if (r) lstrcpynA(targetAuditCache, r, sizeof(targetAuditCache));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("read-only, logs raw bytes");
-        ImGui::TextWrapped("%s", targetAuditCache);
-
-        ImGui::Separator();
-        // Build 64: разведка поводка (follow-дистанции). Read-only, по кнопке.
-        static char followProbeCache[512] = "Follow probe: press (stand close, then far, compare log).";
-        if (ImGui::Button("Probe follow distance (leash)")) {
-            const char* r = DevTools::FollowProbe();
-            if (r) lstrcpynA(followProbeCache, r, sizeof(followProbeCache));
-        }
-        ImGui::SameLine();
-        ImGui::TextDisabled("read-only, logs act floats");
-        ImGui::TextWrapped("%s", followProbeCache);
-
-        ImGui::Separator();
-        // Build 64.8: A/B поводка — временная правка порога [74] (vanilla 1500 → 2500).
-        static bool leashAbOn = false;
-        if (ImGui::Checkbox("Leash A/B (follow from farther)", &leashAbOn)) {
-            DevTools::LeashAbSet(leashAbOn);
-            config.setBool("pawnAI", "leashAb", leashAbOn);
-        }
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("TEST ONLY: raises follow-start threshold [74] 1500->2500 (25m). Rollback-safe. Pawn should start chasing from farther.");
-        ImGui::TextColored(DevTools::LeashAbIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
-            "%s", DevTools::LeashAbStatus());
-
-        ImGui::Separator();
-        // Build 61: прицельная охота за code 4 / code 66 (всегда в фоне).
-        ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.3f, 1), "%s", DevTools::GuardianIntentHunt());
+        ImGui::TextColored(Runtime::GuardianFixIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
+            "%s", Runtime::GuardianFixStatus());
 
         ImGui::Separator();
         ImGui::Text("Role: %s | combat %s",
