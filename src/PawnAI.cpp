@@ -278,15 +278,14 @@ void RenderPawnAIUI(){
             "%s", DevTools::GuardianFixStatus());
 
         ImGui::Separator();
-        // Build 57: разведка Guardian-штрафов (read-only). Кнопка + статус.
-        // Результат кэшируем в static — аудит нельзя гонять каждый кадр (спам лога).
-        static char auditCache[640] = "Guardian audit: press the button (needs bodies resolved).";
-        if (ImGui::Button("Audit Guardian penalties (code 54)")) {
+        // Build 65: полный аудит модификаторов ВСЕХ склонностей (read-only).
+        static char auditCache[640] = "Incl audit: press the button (needs bodies resolved).";
+        if (ImGui::Button("Audit all inclinations (leash params)")) {
             const char* r = DevTools::GuardianPenaltyAudit();
             if (r) lstrcpynA(auditCache, r, sizeof(auditCache));
         }
         ImGui::SameLine();
-        ImGui::TextDisabled("read-only, logs full tuple");
+        ImGui::TextDisabled("read-only, logs full map");
         ImGui::TextWrapped("%s", auditCache);
 
         ImGui::Separator();
@@ -299,6 +298,29 @@ void RenderPawnAIUI(){
         ImGui::SameLine();
         ImGui::TextDisabled("read-only, logs raw bytes");
         ImGui::TextWrapped("%s", targetAuditCache);
+
+        ImGui::Separator();
+        // Build 64: разведка поводка (follow-дистанции). Read-only, по кнопке.
+        static char followProbeCache[512] = "Follow probe: press (stand close, then far, compare log).";
+        if (ImGui::Button("Probe follow distance (leash)")) {
+            const char* r = DevTools::FollowProbe();
+            if (r) lstrcpynA(followProbeCache, r, sizeof(followProbeCache));
+        }
+        ImGui::SameLine();
+        ImGui::TextDisabled("read-only, logs act floats");
+        ImGui::TextWrapped("%s", followProbeCache);
+
+        ImGui::Separator();
+        // Build 64.8: A/B поводка — временная правка порога [74] (vanilla 1500 → 2500).
+        static bool leashAbOn = false;
+        if (ImGui::Checkbox("Leash A/B (follow from farther)", &leashAbOn)) {
+            DevTools::LeashAbSet(leashAbOn);
+            config.setBool("pawnAI", "leashAb", leashAbOn);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("TEST ONLY: raises follow-start threshold [74] 1500->2500 (25m). Rollback-safe. Pawn should start chasing from farther.");
+        ImGui::TextColored(DevTools::LeashAbIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
+            "%s", DevTools::LeashAbStatus());
 
         ImGui::Separator();
         // Build 61: прицельная охота за code 4 / code 66 (всегда в фоне).

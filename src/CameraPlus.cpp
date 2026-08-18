@@ -9,6 +9,7 @@
 
 #include "stdafx.h"
 #include "CameraPlus.h"
+#include "devtools/DevTools.h"
 #include <windows.h>
 
 static BYTE* g_camPos    = nullptr;
@@ -21,6 +22,16 @@ static bool  g_paused   = false;
 static float g_pauseSpd = 0.0001f;
 static BYTE* g_pSpeedObj = nullptr;
 static bool  g_noAutoCorrect = false;
+
+// Build 68 — Pawn Cam: камера следует за пешкой (позиция пешки, взгляд игрока).
+static bool  g_pawnCam   = false;
+static float g_pawnCamHeight = 150.0f;  // см, подъём камеры над головой пешки
+static float g_pawnCamLerp   = 0.15f;   // 0..1, плавность следования (за тик ~5мс)
+static float g_pawnCamBias   = 1.0f;    // 0=у Аризена, 0.5=между, 1=у пешки (Party Cam)
+static bool  g_pawnCamInit = false;     // первая постановка — без lerp (мгновенно)
+static bool  g_pawnCamAutoCorrectOff = false; // мы отключили автокоррекцию ради pawn cam
+static DWORD g_camDumpLast = 0;   // rate-limit дампа объекта камеры (Build 68.3)
+static int   g_camDumpCount = 0;
 static HANDLE g_flyThread = nullptr;
 static volatile bool g_flyThreadStop = false;
 static HANDLE g_flyEvent = nullptr;  // для пробуждения без Sleep-ожидания
@@ -30,6 +41,7 @@ static int g_hkFreeCam = VK_MBUTTON; // был F4, теперь СКМ (сред
 static int g_hkPause   = VK_NUMPAD0;
 static int g_hkSpeedUp = VK_ADD;
 static int g_hkSpeedDn = VK_SUBTRACT;
+static int g_hkPawnCam = VK_NUMPAD1; // Pawn Cam toggle
 
 // ═══ HУК 1: ЗАХВАТ КАМЕРЫ ═══
 
@@ -66,6 +78,8 @@ void __declspec(naked) HDetach()
     __asm
     {
         cmp byte ptr [g_freeCam], 1
+        je skipUpdate
+        cmp byte ptr [g_pawnCam], 1
         je skipUpdate
         movss xmm0, [ecx + 0x20]
         addss xmm0, [ecx + 0x10]
@@ -131,8 +145,7 @@ void ApplyAutoCorrect(bool disable)
 
 static DWORD WINAPI FlyThread(LPVOID)
 {
-    bool f4w=false, n0w=false, plw=false, mnw=false;
-    HANDLE events[2] = { g_flyEvent, nullptr };
+    bool f4w=false, n0w=false, plw=false, mnw=false, pcw=false;
 
     while (!g_flyThreadStop) {
         // Ждём с таймаутом 5 мс — но при шатдауне пробуждаемся мгновенно через событие
@@ -151,8 +164,71 @@ static DWORD WINAPI FlyThread(LPVOID)
             bool mn = GetAsyncKeyState(g_hkSpeedDn)&0x8000;
             if (mn&&!mnw) { float s=g_pauseSpd/2.0f; if(s<0.00001f)s=0.00001f; g_pauseSpd=s; }
             mnw=mn;
-            if (!g_freeFly||!g_freeCam) continue;
-            if (!g_camPos||!g_camOrient) continue;
+
+            // Build 68: Pawn Cam — отдельный режим, независимый от freeFly.
+            bool pc = (GetAsyncKeyState(g_hkPawnCam)&0x8000);
+            if (pc && !pcw) {
+                g_pawnCam = !g_pawnCam;
+                g_pawnCamInit = false;
+                g_camDumpCount = 0;   // сброс дампа при переключении
+                g_camDumpLast = 0;
+                // Отключить авто-возврат камеры к игроку, иначе игра каждый кадр
+                // тянет камеру к ГГ, а мы — к пешке (борьба двух писателей =
+                // метание и «госты»). Включаем только если ini-флаг noAutoCorrect
+                // сам этого не сделал.
+                if (g_pawnCam) {
+                    if (!g_noAutoCorrect) { ApplyAutoCorrect(true); g_pawnCamAutoCorrectOff = true; }
+                } else {
+                    if (g_pawnCamAutoCorrectOff) { ApplyAutoCorrect(false); g_pawnCamAutoCorrectOff = false; }
+                }
+            }
+            pcw = pc;
+
+            if (!g_camPos) continue;
+
+            // --- Pawn Cam / Party Cam: камера на blend(Аризен, пешка, bias) ---
+            if (g_pawnCam) {
+                float px=0, py=0, pz=0, ax=0, ay=0, az=0;
+                bool havePawn   = DevTools::GetMainPawnWorldPos(&px, &py, &pz);
+                bool haveArisen = DevTools::GetArisenWorldPos(&ax, &ay, &az);
+                if (havePawn || haveArisen) {
+                    // если одной точки нет — берём другую целиком
+                    float srcX, srcY, srcZ;
+                    if (havePawn && haveArisen) {
+                        float b = g_pawnCamBias; if (b < 0) b = 0; if (b > 1) b = 1;
+                        srcX = ax + (px - ax) * b;
+                        srcY = az + (pz - az) * b;   // камера: Y = world Z
+                        srcZ = ay + (py - ay) * b;   // камера: Z(высота) = world Y
+                    } else if (havePawn) {
+                        srcX = px; srcY = pz; srcZ = py;
+                    } else {
+                        srcX = ax; srcY = az; srcZ = ay;
+                    }
+                    // Build 68.5: откат на запись в CURRENT (как в 68.3 — работает).
+                    // Target-подход (68.4) дал статичную камеру: current не ехал к
+                    // найденному target (видимо, интерполяцию ведёт другой потребитель).
+                    // Smoothness ЗАХАРДКОЖЕН на 0.01 — только там нет гостинга.
+                    float& cX = *(float*)(g_camPos+0x10);
+                    float& cZ = *(float*)(g_camPos+0x14); // высота
+                    float& cY = *(float*)(g_camPos+0x18);
+                    float tX = srcX;
+                    float tY = srcY;
+                    float tZ = srcZ + g_pawnCamHeight;
+                    if (!g_pawnCamInit) {
+                        cX = tX; cY = tY; cZ = tZ;
+                        g_pawnCamInit = true;
+                    } else {
+                        const float L = 0.01f; // хардкод: только здесь нет гостинга
+                        cX += (tX - cX) * L;
+                        cY += (tY - cY) * L;
+                        cZ += (tZ - cZ) * L;
+                    }
+                }
+                continue;
+            }
+
+            if (!g_freeFly || !g_freeCam) continue;
+            if (!g_camOrient) continue;
 
             // SEH-защита записи в память камеры
             float& X=*(float*)(g_camPos+0x10);
@@ -186,6 +262,22 @@ void RenderCameraUI()
 
     if (ImGui::Checkbox("Manual Fly (arrows/PgUp/PgDn)", &g_freeFly))
         config.setBool("camera","freeFly",g_freeFly);
+
+    ImGui::Separator();
+    // Build 68: Party Cam (Pawn Cam v2)
+    if (ImGui::Checkbox("Party Cam (pawn/pc camera)", &g_pawnCam)) {
+        config.setBool("camera", "pawnCam", g_pawnCam);
+        g_pawnCamInit = false; // при переключении — мгновенная постановка
+    }
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Camera positions between Arisen and pawn (your view direction). Hotkey: NumPad 1.");
+    if (g_pawnCam) {
+        if (ImGui::SliderFloat("Bias (0=Arisen, 0.5=mid, 1=pawn)", &g_pawnCamBias, 0.0f, 1.0f, "%.2f"))
+            config.setFloat("camera", "pawnCamBias", g_pawnCamBias);
+        if (ImGui::SliderFloat("Camera height", &g_pawnCamHeight, 0.0f, 400.0f, "%.0f cm"))
+            config.setFloat("camera", "pawnCamHeight", g_pawnCamHeight);
+        ImGui::TextDisabled("Smoothness fixed (0.01) — avoids ghosting.");
+    }
 
     ImGui::PushItemWidth(150);
     ImGui::SliderFloat("Speed XY", &g_flySpd, 0.5f, 30.0f, "%.1f");
@@ -232,12 +324,17 @@ void Hooks::CameraPlus()
     g_paused   = config.getBool("camera","pause",false);
     g_pauseSpd = config.getFloat("camera","pauseSpeed",0.0001f);
     g_noAutoCorrect = config.getBool("camera","noAutoCorrect",false);
+    g_pawnCam       = config.getBool("camera","pawnCam",false);
+    g_pawnCamHeight = config.getFloat("camera","pawnCamHeight",150.0f);
+    g_pawnCamLerp   = config.getFloat("camera","pawnCamLerp",0.15f);
+    g_pawnCamBias   = config.getFloat("camera","pawnCamBias",1.0f);
 
     // Кастомные хоткеи из .ini (camera_keys)
     g_hkFreeCam = config.getUInt("camera_keys","freeCam", VK_MBUTTON) & 0xFF;
     g_hkPause   = config.getUInt("camera_keys","pause",   VK_NUMPAD0) & 0xFF;
     g_hkSpeedUp = config.getUInt("camera_keys","speedUp", VK_ADD) & 0xFF;
     g_hkSpeedDn = config.getUInt("camera_keys","speedDn", VK_SUBTRACT) & 0xFF;
+    g_hkPawnCam = config.getUInt("camera_keys","pawnCam", VK_NUMPAD1) & 0xFF;
 
     BYTE s1[]={0xF3,0x0F,0x10,0x6E,0x14,0x0F,0xC6,0xED,0x00,0xF3,0x0F,0x11,0x84,0x24,0xCC,0x00,0x00,0x00};
     if (Hooks::FindSignature("Cam1",s1,&pHkCam1)) {
@@ -288,4 +385,5 @@ void Hooks::CameraPlusShutdown()
     if (g_flyThread) { CloseHandle(g_flyThread); g_flyThread = nullptr; }
     if (g_paused&&g_pSpeedObj)*(float*)(g_pSpeedObj+0x24)=1.0f;
     if (g_noAutoCorrect) ApplyAutoCorrect(false);
+    if (g_pawnCamAutoCorrectOff) { ApplyAutoCorrect(false); g_pawnCamAutoCorrectOff = false; }
 }

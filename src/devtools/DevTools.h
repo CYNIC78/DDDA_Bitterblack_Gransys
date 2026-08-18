@@ -64,6 +64,16 @@ namespace DevTools {
     // Build 61 — прицельная охота за code 4 / code 66 (read-only, всегда в фоне).
     // Возвращает компактный статус последнего пойманного кода (action/target/GOAP).
     const char* GuardianIntentHunt();
+
+    // Build 64 — разведка ПОВОДКА (follow-дистанции). Read-only, по кнопке.
+    // Дамп текущего действия пешки (cCmcFollow) + его float-поля + дистанция
+    // пешка→Аризен. Снимать «близко/далеко» → по diff найти поле дистанции.
+    const char* FollowProbe();
+
+    // Build 64.8 — A/B поводка: транзакционная правка порога [74] cCmcFollow.
+    void  LeashAbSet(bool armed);
+    bool  LeashAbIsApplied();
+    const char* LeashAbStatus();
     // Build 57.1 — динамический Guardian-фикс (code 54 rule 0, штраф -3 → 0).
     // Транзакционный apply/rollback ОДНОГО правила, управляется флагом armed.
     // Кортеж подтверждён дампом Build 57 (GuardianAudit):

@@ -85,6 +85,7 @@
  *     CollectInside(128) call it replaced. Do NOT re-add either subsystem.
  */
 #include "stdafx.h"
+#include <math.h>
 #include "BuildTag.h"
 #include "EnemyTuner.h"
 #include "TypeAtlas.Generated.h"
@@ -5015,6 +5016,268 @@ const char* DevTools::GuardianIntentHunt()
     return g_intentHuntStatus;
 }
 
+// ============ Build 64 — разведка ПОВОДКА (follow-дистанции) ============
+// Поводок не лежит в cmc.prt (там только штрафы) и не в Follow.gop (нет float).
+// Кандидаты — runtime action-объект cCmcFollow (672B) / cCmcDistance (656B) /
+// cFSMOrder::cFSMOrderParamCheckDistance (16B). Живёт в act-буфере (+0x2DC8),
+// когда пешка следует (priority code 1).
+//
+// Проbe read-only: по кнопке снимает текущее действие пешки + его float-поля,
+// плюс текущую дистанцию пешка→Аризен. Снимать «стой близко» и «стой далеко»
+// → по diff найти поле, которое меняется (= целевая дистанция поводка).
+static char g_followProbeStatus[512] = "Follow probe: not run";
+static bool g_followProbeRequested = false;
+static void FollowProbeProcess(); // определена ниже, вызывается из WorldScan_Tick
+
+static float FollowDistMeters()
+{
+    float dx = g_pawnPosX - g_arisenPosX;
+    float dy = g_pawnPosY - g_arisenPosY;
+    float dz = g_pawnPosZ - g_arisenPosZ;
+    return sqrtf(dx*dx + dy*dy + dz*dz) / 100.0f; // ~см → м
+}
+
+const char* DevTools::FollowProbe()
+{
+    // Build 64.5: кнопка НЕ делает работу (render-поток). Ставит флаг,
+    // а census + дамп выполняет FollowProbeProcess() на pawn-потоке
+    // (вызывается из WorldScan_Tick), где уже безопасно работает auto-discover.
+    // Иначе полный census на render-потоке блокировал D3D9 present → краш.
+    g_followProbeRequested = true;
+    lstrcpynA(g_followProbeStatus,
+        "Follow probe: requested — see log in ~1s (runs on pawn thread)",
+        sizeof(g_followProbeStatus));
+    return g_followProbeStatus;
+}
+
+// Выполняется на pawn-потоке (из WorldScan_Tick). Build 64.6 — БЕЗ полного
+// census. Полный проход памяти (PartyFindBodies) в активной игре принципиально
+// хрупок (гонка с аллокациями) — он и был источником крашей. Вместо этого идём
+// по ПОДТВЕРЖДЁННОЙ цепочке указателей (SOURCE_OF_TRUTH §4/§5, Build 50):
+//   uCmc+0x2E64 → cAICtrl+0x68 → planner
+//   planner+0x190+code*0x110 → PlanCtrl[code] → cGoalPlanningNode+0x04
+//   → ActionInterfaceParam+0x08 → cCmc action → +0x258..+0x26C (range floats)
+static void FollowProbeProcess()
+{
+    if (!g_followProbeRequested) return;
+    g_followProbeRequested = false;
+
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    if (!pawn || !pawn->ptr) {
+        lstrcpynA(g_followProbeStatus, "Follow probe: pawn not resolved", sizeof(g_followProbeStatus));
+        return;
+    }
+
+    // Build 67: наполнить g_pawnAi полным census, если пуст. Это НА PAWN-ПОТОКЕ
+    // и ВНЕ БОЯ (пользователь снимает вне боя) — безопасно. В бою полный census
+    // запрещён (гонка с аллокациями, см. FIX_RULES «уроки разведки»).
+    if (g_nPawnAi == 0) {
+        if (InterlockedCompareExchange(&g_partyBusy, 1, 0) == 0) {
+            PartyFindBodies();  // полный (не partyOnly) — собирает cCmc*
+            for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
+            PartyMarkPawnManagerRefs();
+            PartySelectWorkingPair();
+            PartyAssignRoles();
+            PartyReadPositions();
+            InterlockedExchange(&g_partyBusy, 0);
+        }
+    }
+
+    uintptr_t aiCtrl = 0, planner = 0, action = 0;
+    uint32_t code = 0xFFFFFFFFu;
+    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
+    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
+    if (planner) Rd((void*)(planner + 0x17C), &code, 4);
+    RdPtr((void*)(pawn->ptr + 0x2DC8), &action);
+    char actName[64] = {};
+    if (action) NameOfLiveObject(action, actName, sizeof(actName));
+    float dist = (g_arisenPosOk && g_pawnPosOk) ? FollowDistMeters() : -1.0f;
+
+    logFile << "FollowProbe: dist=" << dist << "m code=" << code
+            << " act=" << (actName[0] ? actName : "none") << std::endl;
+
+    if (!planner) {
+        lstrcpynA(g_followProbeStatus, "Follow probe: planner not resolved", sizeof(g_followProbeStatus));
+        return;
+    }
+
+    // Build 67: дампим ВСЕ cCmcFollow из census (g_pawnAi), а не через planner.
+    // Их несколько (главная пешка + слоты наёмных) — у каждого СВОЯ лестница
+    // [70..76] (поводок сзади / радиус спереди). Выводим компактно:
+    // лестницу + признак владельца (содержит ли pawn->ptr).
+    int followCount = 0;
+    for (int i = 0; i < g_nPawnAi; ++i) {
+        PawnAiCandidate& A = g_pawnAi[i];
+        char nm[64]; nm[0] = 0;
+        memcpy(nm, A.name, 63); nm[63] = 0;
+        if (strcmp(nm, "cCmcFollow")) continue;
+        BYTE raw[672] = {};
+        int n = A.typeSize ? (A.typeSize < 672 ? A.typeSize : 672) : 672;
+        if (!Rd((void*)A.ptr, raw, n)) continue;
+
+        // лестница [70..76] = offset 0x118..0x130
+        float ladder[7] = {};
+        for (int k = 0; k < 7; ++k)
+            memcpy(&ladder[k], raw + 0x118 + k * 4, 4);
+
+        // owner: есть ли pawn->ptr среди первых 512 байт
+        bool ownsPawn = false;
+        for (int off = 0; off + 4 <= 512 && !ownsPawn; off += 4)
+            if (*(uint32_t*)(raw + off) == (uint32_t)pawn->ptr) ownsPawn = true;
+
+        logFile << "  cCmcFollow[" << followCount << "] 0x" << std::hex
+                << A.ptr << std::dec << " owner=" << (ownsPawn ? "PAWN" : "?")
+                << " ladder[70..76]=";
+        for (int k = 0; k < 7; ++k)
+            logFile << ladder[k] << (k < 6 ? "," : "");
+        logFile << "  (m: " << ladder[0]/100 << "," << ladder[1]/100 << ","
+                << ladder[2]/100 << "," << ladder[3]/100 << "," << ladder[4]/100
+                << "," << ladder[5]/100 << "," << ladder[6]/100 << ")" << std::endl;
+        ++followCount;
+    }
+    if (followCount == 0)
+        logFile << "  (no cCmcFollow in census — run Find both / full census first)" << std::endl;
+
+    sprintf_s(g_followProbeStatus, sizeof(g_followProbeStatus),
+        "Follow probe: dist=%.1fm code=%u act=%s followCount=%d (see log)",
+        dist, code, actName[0] ? actName : "none", followCount);
+}
+
+// ============ Build 64.8 — A/B поводка (транзакционная правка порога) ============
+// Проверяем, что float-порог [74] в cCmcFollow (offset 0x128, vanilla 1500 = 15 м)
+// реально управляет дистанцией, с которой пешка начинает догонять.
+// Резолв по цепочке указателей (без census), validate → write → readback → rollback.
+static bool   g_leashAbArmed = false;
+static bool   g_leashAbApplied = false;
+static float  g_leashVanilla = 0.0f;
+static float  g_leashDesired = 2500.0f;   // тест: догонять с 25 м
+static char   g_leashAbStatus[192] = "Leash A/B: disabled";
+static uintptr_t g_leashCmc = 0;
+
+// Резолв cCmcFollow через planner (SOURCE_OF_TRUTH §4/§5, цепочка Build 50).
+// Build 64.9: среди кандидатов ищем тот, что содержит ОБРАТНУЮ ссылку на тело
+// главной пешки (pawn->ptr). Раньше брали первый «Follow» — а инстансов три
+// (гл.пешка + слоты), и значения у них разные (отсюда 1500 vs 2500).
+static uintptr_t ResolveCmcFollow(PartyBodyDump* pawn)
+{
+    if (!pawn || !pawn->ptr) return 0;
+    uintptr_t aiCtrl = 0, planner = 0;
+    RdPtr((void*)(pawn->ptr + 0x2E64), &aiCtrl);
+    if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
+    if (!planner) return 0;
+    uintptr_t links[8] = {};
+    int n = PartyCollectIntentLinks(planner, 1, links, 8); // code 1 = Follow
+    uintptr_t fallback = 0;
+    for (int i = 0; i < n; ++i) {
+        uintptr_t cmc = 0;
+        if (!RdPtr((void*)(links[i] + 0x08), &cmc) || !cmc) continue;
+        char nm[64] = {};
+        NameOfLiveObject(cmc, nm, sizeof(nm));
+        if (!strstr(nm, "Follow")) continue;
+        if (!fallback) fallback = cmc;
+        // owner back-ref: сканируем первые 512 байт на pawn->ptr (u32).
+        BYTE raw[512] = {};
+        if (Rd((void*)cmc, raw, sizeof(raw))) {
+            for (int off = 0; off + 4 <= (int)sizeof(raw); off += 4) {
+                if (*(uint32_t*)(raw + off) == (uint32_t)pawn->ptr) {
+                    logFile << "ResolveCmcFollow: owner match at +0x" << std::hex
+                            << off << " cmc=0x" << cmc << std::dec << std::endl;
+                    return cmc;
+                }
+            }
+        }
+    }
+    return fallback;
+}
+
+void DevTools::LeashAbSet(bool armed)
+{
+    g_leashAbArmed = armed;
+    if (!armed) g_leashAbApplied = false;
+}
+
+bool DevTools::LeashAbIsApplied() { return g_leashAbApplied; }
+const char* DevTools::LeashAbStatus() { return g_leashAbStatus; }
+
+static void LeashAbTick()
+{
+    static bool init = false;
+    if (!init) {
+        init = true;
+        g_leashDesired = config.getFloat("pawnAI", "leashAbDesired", 2500.0f);
+    }
+
+    PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
+    if (!pawn || !pawn->ptr) {
+        lstrcpynA(g_leashAbStatus, "Leash A/B: pawn not resolved", sizeof(g_leashAbStatus));
+        return;
+    }
+    uintptr_t cmc = ResolveCmcFollow(pawn);
+    if (!cmc) {
+        lstrcpynA(g_leashAbStatus, "Leash A/B: cCmcFollow not resolved", sizeof(g_leashAbStatus));
+        return;
+    }
+    g_leashCmc = cmc;
+
+    // offset [74] = float idx 74 * 4 = 0x128
+    float cur = 0;
+    if (!Rd((void*)(cmc + 0x128), &cur, 4)) {
+        lstrcpynA(g_leashAbStatus, "Leash A/B: read FAILED", sizeof(g_leashAbStatus));
+        return;
+    }
+
+    if (!g_leashAbArmed) {
+        // Откат к vanilla (если применили и значение == desired).
+        if (g_leashAbApplied && g_leashVanilla > 0.0f) {
+            float target = g_leashVanilla;
+            if (!WrSafe((void*)(cmc + 0x128), &target, 4)) return;
+            float v = 0;
+            if (!Rd((void*)(cmc + 0x128), &v, 4) || v != target) return;
+            g_leashAbApplied = false;
+            sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
+                "Leash A/B: rolled back to %.0f", g_leashVanilla);
+        } else {
+            sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
+                "Leash A/B: vanilla (cur=%.0f)", cur);
+        }
+        return;
+    }
+
+    // Armed: запомнить vanilla один раз, применить desired = vanilla + 1200
+    // (гарантированно другой порог — пешка должна догонять с ~на 12 м дальше).
+    if (!g_leashAbApplied) {
+        g_leashVanilla = cur;
+        g_leashDesired = g_leashVanilla + 1200.0f;
+        float target = g_leashDesired;
+        if (!WrSafe((void*)(cmc + 0x128), &target, 4)) {
+            lstrcpynA(g_leashAbStatus, "Leash A/B: write FAILED", sizeof(g_leashAbStatus));
+            return;
+        }
+        float v = 0;
+        if (!Rd((void*)(cmc + 0x128), &v, 4) || v != target) {
+            WrSafe((void*)(cmc + 0x128), &g_leashVanilla, 4); // откат
+            lstrcpynA(g_leashAbStatus, "Leash A/B: readback FAILED (rolled back)", sizeof(g_leashAbStatus));
+            return;
+        }
+        g_leashAbApplied = true;
+        logFile << "LeashAb: applied [74] " << g_leashVanilla << " -> " << g_leashDesired << std::endl;
+
+        // Дамп лестницы [70..76] — для сверки в этой же сессии.
+        float ladder[7] = {};
+        for (int k = 0; k < 7; ++k) Rd((void*)(cmc + 0x118 + k * 4), &ladder[k], 4);
+        logFile << "LeashAb ladder[70..76]: "
+                << ladder[0] << "," << ladder[1] << "," << ladder[2] << ","
+                << ladder[3] << "," << ladder[4] << "," << ladder[5] << ","
+                << ladder[6] << std::endl;
+    }
+
+    float now = 0;
+    Rd((void*)(cmc + 0x128), &now, 4);
+    sprintf_s(g_leashAbStatus, sizeof(g_leashAbStatus),
+        "Leash A/B: APPLIED [74]=%.0f (vanilla %.0f, desired %.0f)",
+        now, g_leashVanilla, g_leashDesired);
+}
+
 static void GuardianIntentHuntTick()
 {
     PartyBodyDump* pawn = PartyRoleBody("Main Pawn");
@@ -5032,12 +5295,12 @@ static void GuardianIntentHuntTick()
     if (aiCtrl) RdPtr((void*)(aiCtrl + 0x68), &planner);
     if (planner) Rd((void*)(planner + 0x17C), &code, 4);
 
-    if (code != 4u && code != 66u) return;
-
-    // Логируем только на смене action/target (не спамим каждый тик).
-    if (code == g_huntLastCode && actionVt == g_huntLastActionVt
-        && target == g_huntLastTarget)
-        return;
+    // Build 66: ловим СМЕНУ ИНТЕНТА (code), а не только 4/66. Это вскрывает:
+    //  - Pioneer-обгон: что за intent (DashFollow/StandOff/Goto/...) когда пешка
+    //    вырывается вперёд по камере;
+    //  - Guardian-прилипание: что за intent удерживает у игрока (Follow?).
+    // Логируем только при смене code (не спамим каждый тик на одном интенте).
+    if (code == g_huntLastCode) return;
     g_huntLastCode = code;
     g_huntLastActionVt = actionVt;
     g_huntLastTarget = target;
@@ -5070,8 +5333,9 @@ static void GuardianIntentHuntTick()
             << " links=" << (nLinks ? linkDesc : "none") << std::endl;
 
     sprintf_s(g_intentHuntStatus, sizeof(g_intentHuntStatus),
-        "code %u: action=%s target=%s iface=%s",
-        code, actionName[0] ? actionName : "none",
+        "code %u (%s): action=%s target=%s iface=%s",
+        code, PawnPriorityIntentName(code),
+        actionName[0] ? actionName : "none",
         targetName[0] ? targetName : "none",
         nLinks ? linkDesc : "none");
 }
@@ -5521,17 +5785,25 @@ bool DevTools::GetMainPawnWorldPos(float* x, float* y, float* z)
 // +0x0C BreakAfterApply, +0x10..+0x20 checks cArray (+0x14 count, +0x20 mpArray).
 static char g_guardianAuditStatus[640] = "Guardian audit: not run";
 
+// Имя склонности по id (совпадает с InclIdx, SOURCE_OF_TRUTH §3.5.2).
+static const char* InclNameById(uint32_t id)
+{
+    static const char* n[] = {"Scather","Medicant","Mitigator","Challenger",
+                              "Utilitarian","Guardian","Nexus","Pioneer","Acquisitor"};
+    return (id < 9) ? n[id] : "?";
+}
+
 const char* DevTools::GuardianPenaltyAudit()
 {
-    // Build 63: Guardian-SCOPED аудит. Сканируем ВСЕ priority-строки и находим
-    // все правила, чей check ссылается на Guardian (id склонности == 5). Это
-    // автоматом вскрывает не только кинжалы (54), но и меч/двуручник, когда
-    // пешка станет Fighter/Warrior — без угадывания кодов.
-    static const uint32_t kGuardianInclinationId = 5u;
-
-    int totalRows = 0, guardianRows = 0;
+    // Build 65: ПОЛНАЯ карта модификаторов всех склонностей. Для каждой
+    // priority-строки (cPrioParam) выводим code + каждое правило с AddS32 и
+    // checks (inclId + ранг). Это вскрывает точные параметры ПОВОДКА:
+    // какие коды и насколько двигает Pioneer(7)/Guardian(5)/Nexus(6).
+    int totalRows = 0;
     char tail[512] = {};
     size_t tailLen = 0;
+
+    logFile << "=== InclinationModifierAudit (all 9 inclinations) ===" << std::endl;
 
     for (int i = 0; i < g_nPawnAi; ++i) {
         PawnAiCandidate& A = g_pawnAi[i];
@@ -5556,85 +5828,97 @@ const char* DevTools::GuardianPenaltyAudit()
         uintptr_t pPtrs[16] = {};
         const bool pOk = pCount == 0u
             || (LooksHeap(pArray) && Rd((void*)pArray, pPtrs, pCount * 4));
-        if (!pOk || pCount == 0u) continue;
 
-        // Есть ли у этой строки хоть одно правило, чей check = Guardian?
-        bool rowHasGuardian = false;
-        for (uint32_t n = 0; n < pCount; ++n) {
+        // Build 65.1: читаем и ORDER-массив (cOrderValue**) — команды
+        // «отойди на N / держи дистанцию». Pioneer(7) не найден в personality,
+        // значит его пинок — скорее всего здесь.
+        uint32_t oCount = *(uint32_t*)(prioRaw + 0x30);
+        if (oCount > 16u) oCount = 0;
+        uintptr_t oArray = *(uint32_t*)(prioRaw + 0x3C);
+        uintptr_t oPtrs[16] = {};
+        const bool oOk = oCount == 0u
+            || (LooksHeap(oArray) && Rd((void*)oArray, oPtrs, oCount * 4));
+
+        if ((!pOk || pCount == 0u) && (!oOk || oCount == 0u)) continue;
+
+        // Собрать описание каждого правила: AddS32 + (склонность, ранг).
+        bool interesting = false;
+        char rules[512] = "";
+        int rUsed = 0;
+        if (pOk) for (uint32_t n = 0; n < pCount; ++n) {
             BYTE cp[0x24] = {};
             if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
             const int32_t addS32 = *(int32_t*)(cp + 0x04);
             const uint32_t chkCnt = *(uint32_t*)(cp + 0x14);
             const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
-            if (!chkCnt || chkCnt > 8u || !LooksHeap(chkArr)) continue;
-            uintptr_t ckPtrs[8] = {};
-            if (!Rd((void*)chkArr, ckPtrs, chkCnt * 4)) continue;
-            for (uint32_t c = 0; c < chkCnt; ++c) {
-                BYTE ck[0x10] = {};
-                if (!Rd((void*)ckPtrs[c], ck, sizeof(ck))) continue;
-                // check +0x04 = id склонности, +0x08 = ранг (SOURCE_OF_TRUTH §3.5.2).
-                const uint32_t inclId = *(uint32_t*)(ck + 0x04);
-                const uint32_t rank   = *(uint32_t*)(ck + 0x08);
-                if (inclId == kGuardianInclinationId) {
-                    rowHasGuardian = true;
-                    if (tailLen + 96 < sizeof(tail)) {
-                        tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
-                            " c%d.r%d=%d", code, n, addS32);
-                    }
-                }
-            }
-        }
 
-        if (rowHasGuardian) {
-            ++guardianRows;
-            logFile << "GuardianAudit code=" << code
-                    << " tuple{s=" << sensor << ",cat=" << category
-                    << ",obj=" << objectId << ",extra=" << extra
-                    << "} personality=" << pCount << std::endl;
-            // Подробно: каждая rule + её Guardian-ранг.
-            for (uint32_t n = 0; n < pCount; ++n) {
-                BYTE cp[0x24] = {};
-                if (!Rd((void*)pPtrs[n], cp, sizeof(cp))) continue;
-                const int32_t addS32 = *(int32_t*)(cp + 0x04);
-                const uint32_t brk   = *(uint32_t*)(cp + 0x0C);
-                const uint32_t chkCnt = *(uint32_t*)(cp + 0x14);
-                const uintptr_t chkArr = *(uint32_t*)(cp + 0x20);
-                char gdesc[64] = "";
-                if (chkCnt && chkCnt <= 8u && LooksHeap(chkArr)) {
-                    uintptr_t ckPtrs[8] = {};
-                    if (Rd((void*)chkArr, ckPtrs, chkCnt * 4)) {
-                        for (uint32_t c = 0; c < chkCnt; ++c) {
-                            BYTE ck[0x10] = {};
-                            if (Rd((void*)ckPtrs[c], ck, sizeof(ck))) {
-                                uint32_t inclId = *(uint32_t*)(ck + 0x04);
-                                uint32_t rank   = *(uint32_t*)(ck + 0x08);
-                                char tmp[24];
-                                sprintf_s(tmp, sizeof(tmp), "%sincl%d/rank%u",
-                                    gdesc[0] ? "," : "", inclId, rank);
-                                if (strlen(gdesc) + strlen(tmp) < sizeof(gdesc))
-                                    strcat_s(gdesc, sizeof(gdesc), tmp);
-                            }
+            char checks[96] = "";
+            if (chkCnt && chkCnt <= 8u && LooksHeap(chkArr)) {
+                uintptr_t ckPtrs[8] = {};
+                if (Rd((void*)chkArr, ckPtrs, chkCnt * 4)) {
+                    for (uint32_t c = 0; c < chkCnt; ++c) {
+                        BYTE ck[0x10] = {};
+                        if (Rd((void*)ckPtrs[c], ck, sizeof(ck))) {
+                            uint32_t inclId = *(uint32_t*)(ck + 0x04);
+                            uint32_t rank   = *(uint32_t*)(ck + 0x08);
+                            char tmp[48];
+                            sprintf_s(tmp, sizeof(tmp), "%s%s/r%u",
+                                checks[0] ? "," : "", InclNameById(inclId), rank);
+                            if (strlen(checks) + strlen(tmp) < sizeof(checks))
+                                strcat_s(checks, sizeof(checks), tmp);
+                            if (inclId == 5 || inclId == 6 || inclId == 7)
+                                interesting = true;
                         }
                     }
                 }
-                logFile << "  rule[" << n << "] AddS32=" << addS32
-                        << " break=" << brk
-                        << " checks=[" << gdesc << "]" << std::endl;
+            }
+            char tmp[96];
+            sprintf_s(tmp, sizeof(tmp), "%sp[%d]=%d(%s)",
+                rUsed ? " " : "", n, addS32, checks[0] ? checks : "no-check");
+            if (rUsed + (int)strlen(tmp) < (int)sizeof(rules)) {
+                strcat_s(rules, sizeof(rules), tmp);
+                rUsed += (int)strlen(tmp);
+            }
+        }
+        // order rules: cOrderValue { +0x04 Value (int32), +0x08 Type (uint32) }
+        if (oOk) for (uint32_t n = 0; n < oCount; ++n) {
+            BYTE ov[12] = {};
+            if (!Rd((void*)oPtrs[n], ov, sizeof(ov))) continue;
+            const int32_t val  = *(int32_t*)(ov + 0x04);
+            const uint32_t typ = *(uint32_t*)(ov + 0x08);
+            interesting = true; // order-команды всегда интересны (поводок)
+            char tmp[80];
+            sprintf_s(tmp, sizeof(tmp), "%so[%d]=val%d/type%u",
+                rUsed ? " " : "", n, val, typ);
+            if (rUsed + (int)strlen(tmp) < (int)sizeof(rules)) {
+                strcat_s(rules, sizeof(rules), tmp);
+                rUsed += (int)strlen(tmp);
+            }
+        }
+
+        if (interesting) {
+            logFile << "code=" << code
+                    << " (" << PawnPriorityIntentName(code) << ")"
+                    << " tuple{s=" << sensor << ",cat=" << category
+                    << ",obj=" << objectId << ",extra=" << extra << "}"
+                    << " : " << rules << std::endl;
+            if (tailLen + 96 < sizeof(tail)) {
+                tailLen += sprintf_s(tail + tailLen, sizeof(tail) - tailLen,
+                    " c%d", code);
             }
         }
     }
 
-    if (guardianRows == 0) {
+    if (tailLen == 0) {
         lstrcpynA(g_guardianAuditStatus,
-            "Guardian audit: NO Guardian rules found (census not ready?)",
+            "Incl audit: no Guardian/Nexus/Pioneer rules (census not ready?)",
             sizeof(g_guardianAuditStatus));
     } else {
         sprintf_s(g_guardianAuditStatus, sizeof(g_guardianAuditStatus),
-            "Guardian audit: %d rows with Guardian rules:%s",
-            guardianRows, tailLen ? tail : " (see log)");
+            "Incl audit: %d rows, leash codes:%s (see log)",
+            totalRows, tail);
     }
-    logFile << "GuardianAudit: totalRows=" << totalRows
-            << " guardianRows=" << guardianRows << std::endl;
+    logFile << "=== InclAudit: totalRows=" << totalRows << " ===" << std::endl;
     return g_guardianAuditStatus;
 }
 
@@ -5970,6 +6254,8 @@ void DevTools::WorldScan_Tick()
     // intentionally checked before the WorldScan throttle so a deliberate
     // key press is not lost while the Arisen or pawn is sprinting.
     PartyHotkeyTick();
+    FollowProbeProcess(); // Build 64.5: поводок-разведка по требованию (pawn-поток)
+    LeashAbTick();        // Build 64.8: A/B поводка (транзакционно)
 
     static DWORD last = 0;
     DWORD now = MsNow();
