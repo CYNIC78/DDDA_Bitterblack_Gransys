@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "73.12-readme"
+#define MOD_BUILD_TAG "73.27-goal-codes"

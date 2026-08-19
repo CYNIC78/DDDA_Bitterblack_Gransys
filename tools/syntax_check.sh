@@ -7,6 +7,7 @@
 #
 # ЧТО ПРОВЕРЯЕТСЯ:
 #   1. src/devtools/AnimProbe.cpp целиком (со шимом windows.h);
+#   1g. src/pawnai/GuardianDoctrine.cpp (SEH подменён на try/catch);
 #   2. src/monsterai/MonsterDirector.cpp (шим ini/лога);
 #   3. UI-блок пробы из DevTools.cpp на настоящем imgui.h;
 #   4. не-ASCII в строках, попадающих в ImGui (рисуются как '?').
@@ -17,16 +18,30 @@ ROOT=$(pwd)
 T="$ROOT/tools/tcomp"
 GPP="g++ -std=c++11 -fsyntax-only -I$T -I$T/shim -I$ROOT"
 
-echo "== 1/5 AnimProbe.cpp =="
+echo "== 1/9 AnimProbe.cpp =="
 $GPP "$T/animprobe_t.cpp"
 
-echo "== 1b/5 MonsterDirector.cpp =="
+echo "== 1b/9 MonsterDirector.cpp =="
 $GPP "$T/director_t.cpp"
 
-echo "== 1c/5 PawnHaste.cpp =="
+echo "== 1c/9 PawnHaste.cpp =="
 $GPP "$T/pawnhaste_t.cpp"
 
-echo "== 2/5 UI block =="
+echo "== 1d/9 VocationCordon.cpp =="
+$GPP "$T/cordon_t.cpp"
+
+echo "== 1e/9 DashWatch.cpp =="
+$GPP "$T/dashwatch_t.cpp"
+
+echo "== 1f/9 GoapProbe.cpp =="
+$GPP "$T/goap_t.cpp"
+
+echo "== 1g/9 GuardianDoctrine.cpp =="
+# SEH под g++ нет: __try/__except подменяем на try/catch. Проверяется не
+# поведение обработчика, а синтаксис тела — этого и хотим.
+$GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/guard_t.cpp"
+
+echo "== 2/9 UI block =="
 python3 - <<'PY'
 p = 'src/devtools/DevTools.cpp'
 s = open(p, encoding='utf-8').read()
@@ -36,7 +51,7 @@ open('tools/tcomp/ui_block.inc', 'w', encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_t.cpp"
 
-echo "== 5/5 ASCII in UI strings =="
+echo "== 9/9 ASCII in UI strings =="
 python3 - <<'PY'
 import re, glob, sys
 pat = re.compile(r'ImGui::(?:Text|Button|TextColored|TextWrapped|TextDisabled'

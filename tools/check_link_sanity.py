@@ -133,10 +133,150 @@ GLOBAL_NAME_RE = re.compile(r"\b(g_\w+)\b")
 GLOBAL_USE_RE = re.compile(r"\b(g_\w+)\b")
 
 
+
+
+def _strip_comments_only(text: str) -> str:
+    """Убрать // и /* */, сохранив содержимое строковых литералов."""
+    out, i, n, state = [], 0, len(text), "code"
+    while i < n:
+        c = text[i]
+        nx = text[i + 1] if i + 1 < n else ""
+        if state == "code":
+            if c == "/" and nx == "/":
+                state, i = "line", i + 2
+                continue
+            if c == "/" and nx == "*":
+                state, i = "block", i + 2
+                continue
+            if c == '"':
+                state = "str"
+            out.append(c)
+            i += 1
+        elif state == "str":
+            out.append(c)
+            if c == "\\":
+                if i + 1 < n:
+                    out.append(text[i + 1])
+                i += 2
+                continue
+            if c == '"':
+                state = "code"
+            i += 1
+        elif state == "line":
+            if c == "\n":
+                state = "code"
+                out.append(c)
+            i += 1
+        else:  # block
+            if c == "*" and nx == "/":
+                state, i = "code", i + 2
+                continue
+            if c == "\n":
+                out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def _includes_of(path):
+    """Прямые включения файла, только внутрипроектные."""
+    import re as _re, os
+    try:
+        txt = open(path, encoding='utf-8', errors='replace').read()
+    except Exception:
+        return []
+    # Комментарии убираем, СТРОКИ ОСТАВЛЯЕМ.
+    #
+    # Здесь проверка дважды обманула сама себя: сперва не убирала
+    # комментарии (и закомментированный include считался включённым),
+    # потом взяла общий strip_noise — а тот затирает и строковые
+    # литералы, то есть съедает сам путь из #include "...".
+    txt = _strip_comments_only(txt)
+    out = []
+    base = os.path.dirname(str(path))
+    for m in _re.finditer(r'#\s*include\s+"([^"]+)"', txt):
+        rel = m.group(1)
+        # Пути ищем так же, как их видит компилятор: рядом с файлом,
+        # от корня репозитория и от src (он в путях включения проекта).
+        for cand in (os.path.normpath(os.path.join(base, rel)),
+                     os.path.normpath(os.path.join(str(ROOT), rel)),
+                     os.path.normpath(os.path.join(str(ROOT), 'src', rel))):
+            if os.path.isfile(cand):
+                out.append(cand)
+                break
+    return out
+
+
+def _transitive_includes(path, seen=None):
+    """Все заголовки, которые файл видит — прямо или через цепочку."""
+    if seen is None:
+        seen = set()
+    for inc in _includes_of(path):
+        if inc in seen:
+            continue
+        seen.add(inc)
+        _transitive_includes(inc, seen)
+    return seen
+
+
+def check_runtime_symbols(files):
+    """Вызов Runtime::Foo() должен быть ВИДЕН из этого файла.
+
+    Добавлено после ошибки сборки «CrtInvalidParamCount не является членом
+    Runtime». Функция была объявлена в публичном заголовке рантайма, а
+    модуль включал только внутренний — и заметил это MSVC, а не мы.
+
+    Проверка идёт по графу включений: собираем имена, объявленные в
+    каждом заголовке src/runtime/, и требуем, чтобы нужный заголовок был
+    достижим из файла хотя бы по цепочке.
+    """
+    import re as _re, os
+    hdr_names = {}
+    for h in (ROOT / 'src' / 'runtime').glob('*.h'):
+        txt = h.read_text(encoding='utf-8', errors='replace')
+        names = set(_re.findall(r'([A-Za-z_]\w*)\s*\(', txt))
+        names |= set(_re.findall(r'\b(?:struct|class|enum)\s+([A-Za-z_]\w*)', txt))
+        hdr_names[os.path.normpath(str(h))] = names
+
+    errs = []
+    for path in files:
+        path = str(path)
+        if not path.endswith('.cpp'):
+            continue
+        if os.path.normpath(path).startswith(os.path.normpath(str(ROOT / 'src' / 'runtime'))):
+            continue                      # рантайм проверяет себя сам
+        try:
+            txt = open(path, encoding='utf-8', errors='replace').read()
+        except Exception:
+            continue
+        calls = set(_re.findall(r'\bRuntime::(?:\w+::)*([A-Za-z_]\w*)\s*\(', txt))
+        if not calls:
+            continue
+
+        visible = set()
+        for inc in _transitive_includes(path):
+            visible |= hdr_names.get(os.path.normpath(inc), set())
+
+        for name in sorted(calls):
+            if name in visible:
+                continue
+            where = [os.path.basename(h) for h, n in hdr_names.items() if name in n]
+            if where:
+                errs.append('[сборка] %s: Runtime::%s() объявлена в %s, но этот '
+                            'заголовок отсюда не виден' %
+                            (os.path.relpath(path, str(ROOT)), name, ', '.join(where)))
+            else:
+                errs.append('[сборка] %s: Runtime::%s() нет ни в одном заголовке '
+                            'src/runtime/' % (os.path.relpath(path, str(ROOT)), name))
+    return errs
+
+
 def main() -> int:
     errors, warnings = [], []
     proj_text = (ROOT / "ddda-ai-overhaul.vcxproj").read_text(encoding="utf-8", errors="replace")
     texts = {}
+
+    # --- 0. кто зовёт Runtime::, тот включает его заголовок ---
+    errors.extend(check_runtime_symbols([str(f) for f in sorted(sources())]))
 
     # --- 1. скобки ---
     for f in sorted(sources()):

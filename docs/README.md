@@ -9,6 +9,7 @@
 | [`VISION.md`](VISION.md) | **замысел: три слоя, философия, куда идём.** Живой документ |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | устройство платформы, слои AI и правила проектирования |
 | [`ROADMAP.md`](ROADMAP.md) | текущее состояние и порядок дальнейшей работы |
+| [`NEXT_MILESTONE_OPTIONS.md`](NEXT_MILESTONE_OPTIONS.md) | **три трека после Build 73**: честный спринт пешек / память места / дышащий мир — цена, риск, первый шаг |
 | [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) | только подтверждённые runtime-контракты и источники |
 | [`FIELD_MAP.md`](FIELD_MAP.md) | компактные таблицы подтверждённых полей и оффсетов |
 | [`ASSET_FORMATS.md`](ASSET_FORMATS.md) | глубокая спецификация XFS и игровых AI-ресурсов |
@@ -26,7 +27,8 @@
 | [`TEMPO_SYSTEM.md`](TEMPO_SYSTEM.md) | **система темпа**: примитив, две ручки, связка, пресеты, замеренная цена |
 | [`MONSTER_AI_ARCHITECTURE.md`](MONSTER_AI_ARCHITECTURE.md) | **две стороны и одна шина**: контракт режиссёра монстров, правила политик |
 | [`SPECIES_ROLLOUT.md`](SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак по `ActMap` |
-| [`PAWN_SPRINT_RECON.md`](PAWN_SPRINT_RECON.md) | почему пешки не спринтят в бою и три способа это залатать |
+| [`PAWN_SPRINT_RECON.md`](PAWN_SPRINT_RECON.md) | почему пешки не спринтят в бою: разведка GOAP, приборы, план правки |
+| [`generated/PAWN_GOAL_SET.md`](generated/PAWN_GOAL_SET.md) | 69 загруженных целей планировщика пешки со смещениями (живой дамп) |
 | [`STATUS_EFFECTS_RECON.md`](STATUS_EFFECTS_RECON.md) | статусы и торпор (のろま), карта `cCharParamEnemy` из 72 полей |
 | [`TEMPO_HUNT_PROTOCOL_RU.md`](TEMPO_HUNT_PROTOCOL_RU.md) | протокол исследования темпа: что вводить и когда жать |
 | [`MONSTER_TEMPO_RECON.md`](MONSTER_TEMPO_RECON.md) | история охоты за темпом: что исключили, где ошиблись и как нашли |

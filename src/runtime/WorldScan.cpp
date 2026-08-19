@@ -165,6 +165,38 @@ void PublishWorldFromActors()
 // ReadLiveAct и тут же выбрасывал, оставляя имя. Для разбора таймингов
 // нужен сам объект: у действий вроде cEmActWalk всего ~116 байт, и это
 // перебираемо, в отличие от 29 КБ тела.
+bool ReadSafe(uintptr_t addr, void* out, uint32_t bytes)
+{
+    if (!addr || !out || !bytes) return false;
+    return Rd((void*)addr, out, bytes);
+}
+
+bool ReadPtrSafe(uintptr_t addr, uintptr_t* out)
+{
+    if (!addr || !out) return false;
+    return RdPtr((void*)addr, out);
+}
+
+uintptr_t FindChildByClass(uintptr_t body, uint32_t bodyBytes,
+                           const char* className, uint32_t* offOut)
+{
+    if (offOut) *offOut = 0;
+    if (!body || !className || !className[0]) return 0;
+    if (bodyBytes < 8 || bodyBytes > 0x20000) return 0;
+
+    for (uint32_t off = 0; off + 4 <= bodyBytes; off += 4) {
+        uintptr_t cand = 0;
+        if (!RdPtr((void*)(body + off), &cand)) continue;
+        if (!LooksHeap(cand) || cand == body) continue;
+        char nm[48] = {};
+        if (!NameOfLiveObject(cand, nm, sizeof(nm)) || !nm[0]) continue;
+        if (strcmp(nm, className) != 0) continue;
+        if (offOut) *offOut = off;
+        return cand;
+    }
+    return 0;
+}
+
 uintptr_t ActObjectOf(uintptr_t body)
 {
     if (!body) return 0;

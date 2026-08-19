@@ -13,11 +13,50 @@ int       g_nExec = 0;
 SecRange  g_rdata[8];
 int       g_nRdata = 0;
 
+// ВНИМАНИЕ: здесь БОЛЬШЕ НЕТ IsBadReadPtr, и это принципиально.
+//
+// Вылет 19.08 на глубоком обходе объектов пешки объяснился именно им.
+// IsBadReadPtr ЧИТАЕТ проверяемую страницу, а среди адресов, которые
+// проходят наш фильтр LooksHeap, попадаются страницы-сторожа стеков
+// чужих потоков (PAGE_GUARD). Обращение к такой странице «съедает»
+// сторожа: исключение перехватывается, но страница остаётся без флага,
+// и поток, чей это был стек, падает позже — например, на загрузке
+// сохранения. Ровно эта картина и наблюдалась.
+//
+// MSDN прямо называет функцию устаревшей и указывает на ту же проблему.
+// SEH ловит недоступную память сам, без предварительного чтения.
 bool Rd(const void* p, void* out, size_t n)
 {
-    if (!p || IsBadReadPtr(p, (UINT_PTR)n)) return false;
+    if (!p || !out || !n) return false;
     __try { memcpy(out, p, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// Можно ли вообще трогать этот участок.
+//
+// VirtualQuery смотрит на таблицы страниц и САМУ ПАМЯТЬ НЕ ЧИТАЕТ,
+// поэтому сторожевые страницы остаются целы. Для точечного чтения
+// достаточно SEH, но для СПЛОШНОГО обхода мегабайтов проверка
+// обязательна: иначе мы гарантированно наступим на чей-нибудь стек.
+bool RegionOk(uintptr_t addr, size_t bytes)
+{
+    if (!addr || !bytes) return false;
+    MEMORY_BASIC_INFORMATION mbi;
+    memset(&mbi, 0, sizeof(mbi));
+    if (!VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi))) return false;
+    if (mbi.State != MEM_COMMIT) return false;
+
+    const DWORD bad = PAGE_NOACCESS | PAGE_GUARD;
+    if (mbi.Protect & bad) return false;
+    const DWORD ok = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY
+                   | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE
+                   | PAGE_EXECUTE_WRITECOPY;
+    if (!(mbi.Protect & ok)) return false;
+
+    // Участок должен целиком лежать в одном регионе: иначе следующая
+    // страница может оказаться сторожевой.
+    const uintptr_t regEnd = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+    return (addr + bytes) <= regEnd;
 }
 
 bool RdPtr(const void* p, uintptr_t* out)

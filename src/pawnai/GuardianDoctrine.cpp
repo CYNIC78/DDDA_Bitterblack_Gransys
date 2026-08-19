@@ -18,6 +18,21 @@ namespace PawnAI {
 // КАЖДАЯ строка помечена статусом доверия:
 //   CONFIRMED  — runtime evidence (Build 45/46/51..53) + cmc.prt;
 //   HYPOTHESIS — структура совпадает с соседом, но имя намерения не доказано.
+//
+// BUILD 73.27 — ИМЕНА БОЛЬШЕ НЕ ГАДАЕМ.
+//
+// Дамп загруженных целей планировщика дал полную таблицу «код -> имя цели»:
+// массив ресурсов идёт от planner+0x08 с шагом 4, и номер слота И ЕСТЬ код
+// (обоснование — GoapProbe.h). Проверка на наших же данных: 15 -> Air и
+// 60 -> Em0600Cover совпали с тем, что уже стояло CONFIRMED, а 54 ->
+// WpnDaggerAtk — с главным рычагом. Три попадания из трёх.
+//
+// Что это закрыло:
+//   - код 13 был «party relation (HYPOTHESIS)», на деле Recovery;
+//   - коды 4 и 66 в наборе тестовой пешки ПУСТЫ (слот нулевой) — имя им
+//     даст только пешка другой вокации, гадать смысла нет;
+//   - появились коды меча и двуручника, которых не хватало для дыры
+//     «главный рычаг работает только для кинжалов» — см. kWeaponIntents.
 struct GuardianModifier {
     uint32_t     code;
     int32_t      addS32;         // штатное смещение (штраф/бонус) от Capcom
@@ -26,14 +41,35 @@ struct GuardianModifier {
     const char*  note;
 };
 static const GuardianModifier kGuardianModifiers[] = {
-    {  4, +3, nullptr, "HYPOTHESIS", "Guardian wait/follow response (semantic TBD)" },
-    { 13, -2, nullptr, "HYPOTHESIS", "party relation (shared Guardian/Nexus)"       },
+    {  4, +3, nullptr, "HYPOTHESIS", "slot empty on the test pawn - name unknown"   },
+    { 13, -2, "Recovery", "CONFIRMED", "named by the goal-code table (was a guess)" },
     { 15, -2, "Air",  "CONFIRMED",  "Air - shared Guardian/Nexus"                  },
     { 54, -3, "WpnDaggerAtk", "CONFIRMED", "offensive dagger attack - MAIN A/B lever" },
     { 60, -3, "Em0600Cover",  "CONFIRMED",  "enemy-specific cover (not touched yet)" },
-    { 66, -4, nullptr, "HYPOTHESIS", "battle response (semantic TBD)"              },
+    { 66, -4, nullptr, "HYPOTHESIS", "slot empty on the test pawn - name unknown"   },
 };
 static const int kGuardianModifierCount = sizeof(kGuardianModifiers) / sizeof(kGuardianModifiers[0]);
+
+// ПАРАЛЛЕЛИ ГЛАВНОГО РЫЧАГА ПО ОРУЖИЮ.
+//
+// Рычаг Guardian трогает код 54 (кинжалы), поэтому у Файтера и Воина он не
+// даёт ничего — это записанная в докладе дыра. Соседние слоты того же
+// семейства теперь известны по именам целей.
+//
+// ЧЕГО ЗДЕСЬ НЕТ: штатного смещения (addS32). Таблицу правил Guardian мы
+// читали только для кинжалов, для остальных кодов её никто не снимал.
+// Поэтому это КАРТА, а не рецепт: сначала дамп правил на пешке-Файтере,
+// и только потом запись.
+struct WeaponIntent { uint32_t code; const char* goal; const char* vocations; };
+static const WeaponIntent kWeaponIntents[] = {
+    { 52, "WpnSwordAtk",  "Fighter / Mystic Knight / Assassin (sword)" },
+    { 53, "WpnGSwordAtk", "Warrior / Fighter (greatsword, longsword)"  },
+    { 54, "WpnDaggerAtk", "Strider / Ranger / Assassin (daggers)"      },
+    { 55, "WpnWandAtk",   "Mage / Sorcerer (staff, archistaff)"        },
+    { 56, "WpnShieldAtk", "Fighter / Mystic Knight (shield)"           },
+    { 57, "WpnBowAtk2",   "Strider / Ranger (bow, longbow) - from tu2" },
+};
+static const int kWeaponIntentCount = sizeof(kWeaponIntents) / sizeof(kWeaponIntents[0]);
 
 // ================= Вспомогательные =================
 
@@ -60,6 +96,22 @@ static bool SitRepIsEnemy(const char* kind)
 void GuardianDoctrine::Init()
 {
     ResetState();
+
+    // Карта оружейных намерений — в лог одной таблицей. Иначе она
+    // осталась бы мёртвым кодом, а нужна она ровно тогда, когда тестер
+    // сядет за пешку-Файтера: список говорит, какой код искать.
+    logFile << "GuardianDoctrine: weapon intent codes (from the goal-code table)"
+            << std::endl;
+    for (int i = 0; i < kWeaponIntentCount; ++i) {
+        char l[200];
+        sprintf_s(l, "  code %2u  %-14s %s%s",
+                  kWeaponIntents[i].code, kWeaponIntents[i].goal,
+                  kWeaponIntents[i].vocations,
+                  kWeaponIntents[i].code == 54 ? "   <-- current lever" : "");
+        logFile << l << std::endl;
+    }
+    logFile << "  offsets (addS32) measured for code 54 only - audit the rest "
+               "with a Fighter pawn before writing." << std::endl;
 }
 
 void GuardianDoctrine::Shutdown()

@@ -21,6 +21,7 @@
  * GetDelta в Tick. Контракт уже готов.
  */
 #include "PresetManager.h"
+#include "VocationCordon.h"
 #include "AcquisitorManager.h"
 #include "SmartUtilitarian.h"
 #include "TacticalSwitch.h"
@@ -40,6 +41,7 @@ namespace PawnAI {
 struct Orchestrator {
     PresetManager      presets;
     AcquisitorManager  acquisitor;   // бывший SanitaryCordon: только Acquisitor
+    VocationCordon     cordon;       // Guardian по вокации: мили — да, дальний — нет
     SmartUtilitarian   smartUtil;
     TacticalSwitch     tactical;
 
@@ -55,6 +57,7 @@ struct Orchestrator {
     void Init(){
         presets.Init();
         acquisitor.Init();
+        cordon.Init();
         smartUtil.Init();
         tactical.Init();
     }
@@ -81,6 +84,9 @@ struct Orchestrator {
         SAFE_MODULE(smartUtil, GetDelta(target, delta));
         SAFE_MODULE(tactical,  GetDelta(target, delta));
         SAFE_MODULE(acquisitor, GetDelta(target, delta)); // бывший кордон: только Acquisitor
+        // Вокационный кордон идёт ПОСЛЕДНИМ: он ставит потолок Guardian,
+        // и его слово должно быть поверх ситуативных надбавок.
+        SAFE_MODULE(cordon,    GetDelta(target, delta));
 
         // 4) finalTarget = base + delta
         for (int i = 0; i < I_COUNT; i++) {

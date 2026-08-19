@@ -23,7 +23,10 @@ import re, sys, collections
 CATEGORIES = [
     ('taunt',  ('Howl', 'Threat', 'PartyDance', 'Horn', 'JumpJoy', 'Appeal')),
     ('death',  ('Die', 'DeadBody', 'Dead')),
-    ('damage', ('ActDmg',)),
+    # 'Dmg', а не 'ActDmg': категория считается по КОРОТКОМУ имени
+    # (DmgPoison, DmgCollapse), где префикса Act уже нет. Из-за этого
+    # весь класс «получаю урон» много версий подряд падал в 'other'.
+    ('damage', ('Dmg',)),
     ('guard',  ('Grd', 'Guard', 'Sld')),
     ('attack', ('Atck', 'Attack', 'Atk', 'Kick', 'Throw', 'Thrust', 'Swing',
                 'Assassin', 'Bite', 'Claw', 'Trample', 'Stomp', 'Breath',
@@ -52,13 +55,20 @@ def main(atlas='src/TypeAtlas.Generated.h', out='src/ActMap.Generated.h'):
     src = open(atlas, encoding='utf-8').read()
     # cEm0100ActDie  и  cEm5101_00ActDie  (подтипы через _NN)
     entries = []
-    pat = (r'\{ "(cEm(\d{4})(?:_\d+)?Act([A-Za-z0-9_]*))", '
+    # ВИДОАГНОСТИЧНЫЕ ДЕЙСТВИЯ.
+    #
+    # Прежний шаблон требовал четырёх цифр вида: cEm0100ActWait. Но в игре
+    # есть и общие для всех существ классы — cEmActFall, cEmActDmgCollapse,
+    # cEmActMotionLanding, всего 56 штук. Они не попадали в таблицу, и
+    # рантайм честно писал «NOT IN ActMap» — то есть считал их не атаками
+    # вслепую. Теперь берём и их, с emId = 0.
+    pat = (r'\{ "(cEm(\d{4})?(?:_\d+)?Act([A-Za-z0-9_]*))", '
            r'(0x[0-9A-F]+), (0x[0-9A-F]+), (\d+), (\d+) \}')
     for m in re.finditer(pat, src):
         full, emid, act, fr, vt, size, tid = m.groups()
         if not act:
             continue
-        entries.append((full, emid, act, vt, int(size)))
+        entries.append((full, emid or '0000', act, vt, int(size)))
     entries.sort(key=lambda e: (e[1], e[2]))
 
     by_em = collections.Counter(e[1] for e in entries)

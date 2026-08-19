@@ -6,3 +6,4 @@
 #include <string>
 #include <math.h>
 extern std::ofstream logFile;
+inline DWORD MsNow() { return 0; }

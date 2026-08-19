@@ -21,6 +21,7 @@
 #include "pawnai/GuardianDoctrine.h"
 #include "monsterai/MonsterDirector.h"
 #include "pawnai/PawnHaste.h"
+#include "pawnai/DashWatch.h"
 
 using namespace PawnAI;
 
@@ -57,6 +58,10 @@ void UpdatePawnAI(){
     // Рывок пешки: латаем дыру с отсутствующим спринтом множителем
     // передвижения (docs/PAWN_SPRINT_RECON.md).
     __try { PawnAI::Haste::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Наблюдатель за рывками: приёмочный тест для будущей правки GOAP.
+    __try { PawnAI::DashWatch::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
@@ -119,6 +124,67 @@ void RenderPawnAIUI(){
                                          : ImVec4(0.6f, 0.6f, 0.6f, 1),
                 "%s | nearest enemy %.1f m | bursts %d",
                 hs.why, hs.distM, hs.applied);
+        }
+
+        // Прибор для трека «честный спринт»: считает переходы пешки в
+        // состояния cPlActDash*. До правки GOAP в бою обязан быть ноль.
+        PawnAI::DashWatch::Stats ds = PawnAI::DashWatch::Get();
+        ImGui::TextColored(ds.inCombat ? ImVec4(0.4f, 1.0f, 0.6f, 1)
+                                       : ImVec4(1.0f, 0.7f, 0.4f, 1),
+            "dash states: in combat %u | out of combat %u",
+            ds.inCombat, ds.outOfCombat);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("reset##dash")) PawnAI::DashWatch::Reset();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Counts transitions into cPlActDash* on the main pawn. "
+                              "Zero in combat plus non-zero out of combat is the "
+                              "baseline that proves the GOAP gap. After the planner "
+                              "patch this must become non-zero in combat.");
+        ImGui::TextDisabled("  now: %s | last dash at %.1f m",
+                            ds.lastAct[0] ? ds.lastAct : "?", ds.lastDistM);
+        {
+            // Сигналы боя рядом со счётчиком: если метка снова соврёт,
+            // будет видно, какой именно сигнал виноват.
+            const ::CombatReport rr = CombatBus::Instance().LastReport();
+            const ::WorldReport  ww = CombatBus::Instance().LastWorld();
+            ImGui::TextDisabled("  combat signals: detector %d | enemy acts %d | pawn target %d",
+                                rr.inCombat ? 1 : 0, ww.enemyCombatCount,
+                                ww.pawnEngaged ? 1 : 0);
+        }
+        ImGui::Separator();
+    }
+
+    // 1c. Вокационный кордон Guardian
+    {
+        ImGui::TextColored(ImVec4(0.5f, 0.6f, 1, 1), "Guardian vocation cordon");
+        if (ImGui::Checkbox("Enable##cordon", &g_orch.cordon.enabled))
+            config.setBool("pawnAI", "vocationCordon", g_orch.cordon.enabled);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Guardian only makes sense for melee. A ranged or caster "
+                              "pawn with active Guardian hugs the Arisen and shoots over "
+                              "his shoulder - it drags aggro straight onto him. The "
+                              "cordon caps Guardian and raises Pioneer so the pawn stops "
+                              "sticking to the anchor.");
+        if (g_orch.cordon.enabled) {
+            ImGui::Text("pawn: %s | %s", g_orch.cordon.lastClassName, g_orch.cordon.lastAction);
+            if (g_orch.cordon.lastGuardianCap > 0.0f) {
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "| cap %.0f",
+                                   g_orch.cordon.lastGuardianCap);
+            }
+            bool ch = false;
+            if (ImGui::SliderFloat("ranged: guardian cap", &g_orch.cordon.guardianCapRanged, 0.0f, 1000.0f, "%.0f")) ch = true;
+            if (ImGui::SliderFloat("ranged: pioneer floor", &g_orch.cordon.pioneerFloorRanged, 0.0f, 1000.0f, "%.0f")) ch = true;
+            if (ImGui::SliderFloat("hybrid: guardian cap", &g_orch.cordon.guardianCapHybrid, 0.0f, 1000.0f, "%.0f")) ch = true;
+            if (ImGui::SliderFloat("hybrid: pioneer floor", &g_orch.cordon.pioneerFloorHybrid, 0.0f, 1000.0f, "%.0f")) ch = true;
+            if (ch) {
+                config.setFloat("pawnAI", "cordonGuardianCapRanged", g_orch.cordon.guardianCapRanged);
+                config.setFloat("pawnAI", "cordonPioneerFloorRanged", g_orch.cordon.pioneerFloorRanged);
+                config.setFloat("pawnAI", "cordonGuardianCapHybrid", g_orch.cordon.guardianCapHybrid);
+                config.setFloat("pawnAI", "cordonPioneerFloorHybrid", g_orch.cordon.pioneerFloorHybrid);
+            }
+            ImGui::TextDisabled("Pioneer is a blunt 'stop hugging the anchor' lever. "
+                                "Real flanking needs the Follow goal reversed.");
         }
         ImGui::Separator();
     }
@@ -399,6 +465,7 @@ void Hooks::PawnAI(){
     g_orch.acquisitor.returnMs      = (DWORD)config.getInt("pawnAI", "acquisitorReturnMs", 4000);
     g_orch.Init();
     PawnAI::Haste::Init();
+    PawnAI::DashWatch::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;

@@ -6,9 +6,8 @@
 #include <vector>
 #include <functional>
 #include <math.h>
+#include "probe_stdafx.h"   // logFile, MsNow
 
-extern std::ofstream logFile;
-inline DWORD MsNow() { return 0; }
 
 // Минимальный двойник iniConfig: нужен только набор геттеров/сеттеров,
 // которыми пользуются модули.

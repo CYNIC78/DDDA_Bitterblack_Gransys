@@ -719,8 +719,30 @@ bool GetArisenWorldPos(float* x, float* y, float* z)
     return true;
 }
 
+// СНАЧАЛА ПО DTI, ПОТОМ ПО РОЛИ.
+//
+// Роль присваивается позже самого разбора, и в логе тестера видно окно,
+// где тела уже найдены, а роли ещё пустые:
+//
+//     [0] role='' dti='uPlayer' body=0x10d60060
+//     [1] role='' dti='uCmc'    body=0x10d65ac0
+//
+// Поиск по роли в этот момент возвращал ноль, панель писала «pawn
+// unresolved», а следующее нажатие приходилось уже на другое состояние.
+// Имя класса от игры доступно сразу и не зависит от нашего этапа разбора.
+uintptr_t ArisenBody()
+{
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].dti, "uPlayer")) return g_party[i].ptr;
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].role, "Arisen")) return g_party[i].ptr;
+    return 0;
+}
+
 uintptr_t MainPawnBody()
 {
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].dti, "uCmc")) return g_party[i].ptr;
     for (int i = 0; i < g_nParty; ++i)
         if (!strcmp(g_party[i].role, "Main Pawn")) return g_party[i].ptr;
     return 0;

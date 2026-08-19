@@ -1,6 +1,7 @@
 // Runtime — сборка продуктового слоя. См. Runtime.h.
 
 #include "stdafx.h"
+#include <stdlib.h>   // _set_invalid_parameter_handler
 #include "Runtime.h"
 #include "MemProbe.h"
 #include "MonsterTempo.h"
@@ -8,8 +9,35 @@
 
 namespace Runtime {
 
+// ---------------------------------------------------------------------------
+// ЗАЩИТА ОТ САМОУБИЙСТВА CRT.
+//
+// Вылет 19.08 на глубоком обходе объектов пешки дал два урока. Второй
+// такой: `sprintf_s` при переполнении буфера НЕ обрезает строку — он
+// вызывает обработчик неверного параметра, а тот по умолчанию завершает
+// процесс. То есть форматирование строки для лога способно уронить игру.
+//
+// В моде сотни вызовов sprintf_s с буферами фиксированного размера.
+// Проверить глазами каждый нельзя, а цена промаха — вылет у игрока.
+// Ставим свой обработчик: он считает случаи и молча возвращается, и
+// тогда неудачное форматирование стоит испорченной строки в логе, а не
+// закрытой игры.
+static volatile LONG g_crtInvalidParams = 0;
+
+static void __cdecl OnInvalidParameter(const wchar_t*, const wchar_t*,
+                                       const wchar_t*, unsigned int, uintptr_t)
+{
+    InterlockedIncrement(&g_crtInvalidParams);
+}
+
+uint32_t CrtInvalidParamCount() { return (uint32_t)g_crtInvalidParams; }
+
 void Init()
 {
+    // Первым делом — обработчик CRT: он должен стоять раньше любого
+    // нашего форматирования строк.
+    _set_invalid_parameter_handler(OnInvalidParameter);
+
     // Фундамент: база образа + границы секций. Всё остальное в рантайме
     // и в DevTools опирается на эти значения, поэтому строго первым.
     Mem::Init();

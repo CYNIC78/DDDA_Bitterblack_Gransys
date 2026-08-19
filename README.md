@@ -185,6 +185,7 @@ Sensors / target selection
 | Документ | Назначение |
 |---|---|
 | [`docs/VISION.md`](docs/VISION.md) | замысел: три слоя и философия проекта |
+| [`docs/NEXT_MILESTONE_OPTIONS.md`](docs/NEXT_MILESTONE_OPTIONS.md) | три трека после Build 73: спринт пешек, память места, дышащий мир |
 | [`docs/TEMPO_SYSTEM.md`](docs/TEMPO_SYSTEM.md) | система темпа: примитив, две ручки, связка, пресеты, замеры |
 | [`docs/MONSTER_AI_ARCHITECTURE.md`](docs/MONSTER_AI_ARCHITECTURE.md) | две стороны и одна шина; контракт режиссёра; замыслы политик |
 | [`docs/SPECIES_ROLLOUT.md`](docs/SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак |

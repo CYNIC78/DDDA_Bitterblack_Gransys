@@ -39,6 +39,14 @@ bool InImage(uintptr_t a);
 
 bool LooksHeap(uintptr_t a);
 
+// Безопасен ли участок для СПЛОШНОГО обхода: committed, читаемый, без
+// PAGE_GUARD, и целиком внутри одного региона. Использует VirtualQuery,
+// то есть саму память не трогает и сторожевые страницы не «съедает».
+//
+// Точечному чтению это не нужно — там хватает SEH. Нужно тому, кто
+// перебирает мегабайты подряд.
+bool RegionOk(uintptr_t addr, size_t bytes);
+
 // Save-layer check. Same idea as CombatIntel::IsInActiveGameplay.
 // HUNT must not run on the title screen or mid-load.
 bool InWorld();
