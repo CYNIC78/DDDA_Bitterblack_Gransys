@@ -398,9 +398,9 @@ void RenderCameraUI()
             g_dbgHaveArisen ? "ok" : "--",
             g_pawnCamAutoCorrectOff ? "patched off" : "vanilla");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Если камера висит, а тут написано 'engine owns camera' — "
-                              "значит её держит не наш код. Если 'DRIVING' без тел — "
-                              "это наш баг.");
+            ImGui::SetTooltip("If the camera hangs and this says 'engine owns camera', "
+                              "something other than our code holds it. If it says "
+                              "'DRIVING' with no bodies, that is our bug.");
         if (ImGui::SliderFloat("Follow weight (vs engine)", &g_pawnCamFollow,
                                0.002f, 0.05f, "%.3f"))
             config.setFloat("camera", "pawnCamFollow", g_pawnCamFollow);

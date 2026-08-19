@@ -5,6 +5,7 @@
  */
 
 #include "stdafx.h"
+#include "monsterai/MonsterDirector.h"
 #include "MinHook/MinHook.h"
 #include "D3D9Hook.h"
 #include "PawnAI.h"
@@ -44,6 +45,10 @@ void InitHooks()
     // Раньше вся инициализация висела внутри if (Hooks::InGameUI()) — то есть
     // при отвале оверлея молча умирал и продукт.
     Runtime::Init();
+
+    // Режиссёр стороны монстров — продуктовый слой, поднимается вместе с
+    // рантаймом и до UI: он должен работать и без оверлея.
+    MonsterAI::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();

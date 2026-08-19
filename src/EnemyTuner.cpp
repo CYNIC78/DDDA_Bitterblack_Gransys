@@ -89,11 +89,11 @@ static uintptr_t TargetBody(const char* what, const char** kindOut)
     if (!body) {
         body = Runtime::EnemyBodyAt(0, &kind);
         if (body)
-            logFile << "EnemyTuner: " << what << ": гоблина нет, беру "
+            logFile << "EnemyTuner: " << what << ": no goblin, using "
                     << (kind ? kind : "?") << std::endl;
     }
     if (body)
-        logFile << "EnemyTuner: " << what << ": цель " << (kind ? kind : "?")
+        logFile << "EnemyTuner: " << what << ": target " << (kind ? kind : "?")
                 << " 0x" << std::hex << body << std::dec << std::endl;
     if (kindOut) *kindOut = kind;
     return body;
@@ -477,12 +477,12 @@ void ForceScale(float v)
 
     // Проверяем все три множителя: держится ли запись.
     if (!NearlyEq(aw, v) || !NearlyEq(ah, v) || !NearlyEq(ad, v)) {
-        logFile << "  -> значение НЕ удержалось сразу: движок откатывает поле"
+        logFile << "  -> value did NOT hold: the engine reverts this field"
                 << std::endl;
     } else {
-        logFile << "  -> записано и удержано. Тик это тело больше не трогает"
-                << " (HOLD), поэтому дальнейшие изменения — только от движка."
-                << " Жми CHECK hold через пару секунд."
+        logFile << "  -> written and held. The tick no longer touches this body"
+                << " (HOLD), so any further change comes from the engine."
+                << " Press CHECK hold in a couple of seconds."
                 << std::endl;
     }
 }
@@ -576,7 +576,7 @@ static void FieldScanTick()
     // проверок за кадр. Копируем блоком, дальше работаем с локальной копией.
     if (!SafeRead((const void*)s_scanBody, s_frameBuf, kBodyFloats * 4)) {
         s_scanning = false;
-        logFile << "EnemyTuner: FieldScan: тело стало нечитаемым, стоп"
+        logFile << "EnemyTuner: FieldScan: body became unreadable, stopped"
                 << std::endl;
         return;
     }
@@ -605,13 +605,13 @@ void StopFieldScan()
     }
 
     logFile << "EnemyTuner: --- FieldScan: " << s_scanFrames
-            << " кадров, тело 0x" << std::hex << s_scanBody << std::dec
+            << " frames, body 0x" << std::hex << s_scanBody << std::dec
             << " ---" << std::endl;
 
     // Интересуют поля, которые (а) менялись и (б) похожи на множитель:
     // диапазон 0.05..20. Координаты (тысячи) и таймеры отсеиваются.
     int shown = 0;
-    logFile << "  МНОЖИТЕЛЕПОДОБНЫЕ поля, менявшиеся за время замера:" << std::endl;
+    logFile << "  MULTIPLIER-LIKE fields that changed during the run:" << std::endl;
     for (uint32_t i = 0; i < kBodyFloats && shown < 60; ++i) {
         if (!s_changeCnt[i]) continue;
         float lo = s_minSnap[i], hi = s_maxSnap[i];
@@ -619,20 +619,20 @@ void StopFieldScan()
         if (NearlyEq(lo, hi)) continue;              // размах нулевой
 
         char cl[190];
-        sprintf_s(cl, "    +0x%04X  %.4f .. %.4f  (размах %.4f, смен %u)",
+        sprintf_s(cl, "    +0x%04X  %.4f .. %.4f  (span %.4f, changes %u)",
                   (unsigned)(i * 4), lo, hi, hi - lo, (unsigned)s_changeCnt[i]);
         logFile << cl;
-        if (i * 4 == kScaleW) logFile << "   <- НАШ W";
-        if (i * 4 == kScaleH) logFile << "   <- НАШ H";
-        if (i * 4 == kScaleD) logFile << "   <- НАШ D";
+        if (i * 4 == kScaleW) logFile << "   <- OUR W";
+        if (i * 4 == kScaleH) logFile << "   <- OUR H";
+        if (i * 4 == kScaleD) logFile << "   <- OUR D";
         logFile << std::endl;
         ++shown;
     }
-    if (!shown) logFile << "    (ни одного — масштаб в теле статичен)" << std::endl;
+    if (!shown) logFile << "    (none - body scale is static)" << std::endl;
 
     // Отдельно: троек подряд (X,Y,Z), которые меняются — кандидаты на
     // рабочий масштаб или на матрицу трансформации.
-    logFile << "  ТРОЙКИ подряд меняющихся множителей (кандидаты W/H/D):"
+    logFile << "  TRIPLES of adjacent changing multipliers (W/H/D candidates):"
             << std::endl;
     int triples = 0;
     for (uint32_t i = 0; i + 2 < kBodyFloats && triples < 20; ++i) {
@@ -653,7 +653,7 @@ void StopFieldScan()
         ++triples;
         i += 2;
     }
-    if (!triples) logFile << "    (нет)" << std::endl;
+    if (!triples) logFile << "    (none)" << std::endl;
 
     char line[160];
     sprintf_s(line, "FieldScan: %d frames, %d fields changing - see log",
@@ -696,13 +696,13 @@ void CheckHold()
     logFile << "EnemyTuner: " << line << std::endl;
 
     if (held) {
-        logFile << "  -> движок НЕ трогает +0x60/64/68. Если модель при этом"
-                << " не изменилась, значит эти байты не влияют на отрисовку"
-                << " у этого существа: искать реальный множитель в другом месте."
+        logFile << "  -> the engine does NOT touch +0x60/64/68. If the model also"
+                << " did not change, these bytes do not affect rendering"
+                << " for this creature: look for the real multiplier elsewhere."
                 << std::endl;
     } else {
-        logFile << "  -> движок перезаписывает поле сам. Значит поле живое,"
-                << " но им управляет код игры: нужен хук, а не запись в тике."
+        logFile << "  -> the engine rewrites the field itself. The field is live,"
+                << " but the game code drives it: needs a hook, not a tick write."
                 << std::endl;
     }
 }
@@ -733,7 +733,7 @@ void DumpHead()
         return;
     }
 
-    logFile << "EnemyTuner: голова тела " << (kind ? kind : "?")
+    logFile << "EnemyTuner: body head " << (kind ? kind : "?")
             << " 0x" << std::hex << body << std::dec
             << " (0x00..0x100)" << std::endl;
 
@@ -756,7 +756,7 @@ void DumpHead()
 
     // Ищем в голове указатели на объекты — вдруг настоящая location-структура
     // лежит отдельно, а тело только ссылается на неё.
-    logFile << "  -- указатели в голове (кандидаты на uCoord) --" << std::endl;
+    logFile << "  -- pointers in the head (uCoord candidates) --" << std::endl;
     int nptr = 0;
     for (uint32_t off = 0; off < 0x100; off += 4) {
         uint32_t v = 0;
@@ -766,11 +766,11 @@ void DumpHead()
         const char* n = Runtime::Mem::NameOfLiveObjectSafe((const void*)(uintptr_t)v,
                                                        nm, sizeof(nm));
         char cl[160];
-        sprintf_s(cl, "    +0x%02X -> 0x%08X  %s", off, v, n ? n : "(имя не определено)");
+        sprintf_s(cl, "    +0x%02X -> 0x%08X  %s", off, v, n ? n : "(name not resolved)");
         logFile << cl << std::endl;
         ++nptr;
     }
-    if (!nptr) logFile << "    (нет)" << std::endl;
+    if (!nptr) logFile << "    (none)" << std::endl;
 
     char line[160];
     sprintf_s(line, "DumpHead: %s 0x%08X - see log", kind ? kind : "?", (unsigned)body);
@@ -781,8 +781,8 @@ void DumpHead()
 void ReleaseHold()
 {
     if (s_holdBody) {
-        logFile << "EnemyTuner: удержание 0x" << std::hex << s_holdBody
-                << std::dec << " снято" << std::endl;
+        logFile << "EnemyTuner: hold 0x" << std::hex << s_holdBody
+                << std::dec << " captured" << std::endl;
     }
     s_holdBody  = 0;
     s_holdValue = 0.0f;
@@ -999,9 +999,9 @@ static void TickOneBody(uintptr_t body, const char* kind)
         bool uniform = NearlyEq(cw, ch) && NearlyEq(ch, cd);
         if (!uniform) {
             logFile << "EnemyTuner: 0x" << std::hex << body << std::dec
-                    << " масштаб уже неуниформный (" << cw << "," << ch << ","
-                    << cd << ") — база не снята, беру 1.0"
-                    << " (перезагрузка мода на живой сессии?)" << std::endl;
+                    << " scale already non-uniform (" << cw << "," << ch << ","
+                    << cd << ") - base not captured, using 1.0"
+                    << " (mod reloaded mid-session?)" << std::endl;
             rec->baseW = rec->baseH = rec->baseD = 1.0f;
         } else {
             rec->baseW = cw;
@@ -1050,7 +1050,7 @@ static void TickOneBody(uintptr_t body, const char* kind)
 void ListEnemies()
 {
     int n = 0;
-    logFile << "EnemyTuner: --- список живых врагов ---" << std::endl;
+    logFile << "EnemyTuner: --- live enemy list ---" << std::endl;
     for (int i = 0; ; ++i) {
         const char* kind = nullptr;
         uintptr_t body = Runtime::EnemyBodyAt(i, &kind);
@@ -1060,11 +1060,11 @@ void ListEnemies()
         char cl[160];
         sprintf_s(cl, "  [%d] %-10s 0x%08X  scale=(%.3f, %.3f, %.3f)%s",
                   i, kind ? kind : "?", (unsigned)body, w, h, d,
-                  ok ? "" : "  <нечитаемо>");
+                  ok ? "" : "  <unreadable>");
         logFile << cl << std::endl;
         ++n;
     }
-    if (!n) logFile << "  (пусто — загрузи сейв и сделай HUNT)" << std::endl;
+    if (!n) logFile << "  (empty - load a save and run HUNT)" << std::endl;
 
     char line[128];
     sprintf_s(line, "ListEnemies: %d enemies, details in log", n);

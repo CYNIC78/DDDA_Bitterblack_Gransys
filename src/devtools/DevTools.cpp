@@ -94,6 +94,7 @@
 #include "EnemyTypes.Generated.h"
 #include "ActMap.Generated.h"
 #include "devtools/DevTools.h"
+#include "devtools/AnimProbe.h"
 #include "devtools/TypeCallers.Generated.h"
 #include "devtools/generated/PawnPrioritySemantics.inl"
 #include "devtools/generated/GoapInterfaceMap.inl"
@@ -4252,6 +4253,7 @@ static void RenderDevToolsUI()
     // прекращается, стоит свернуть панель, а мерить надо как раз тогда,
     // когда игрок дерётся с гоблином и не смотрит в UI.
     EnemyTuner::SampleTick();
+    AnimProbe::Tick();   // покадровый сэмпл поиска часов анимации
 
     if (!ImGui::CollapsingHeader("DevTools - Type Atlas")) return;
     ImGui::PushID("DT");
@@ -4278,9 +4280,204 @@ static void RenderDevToolsUI()
         ImGui::SameLine();
         if (ImGui::Button("Reset scan stats")) Runtime::ScanResetStats();
     }
-    ImGui::TextWrapped(
-        "Factory slots = dead TSV column, always empty. "
-        "DUMP is safe anatomy. HUNT (in-world only) derives instance vts and censuses the heap.");
+
+    // --- охота за множителем темпа анимации --------------------------------
+    //
+    // Панель ведёт тестера по шагам и не даёт нажать то, что сейчас не имеет
+    // смысла. Прошлая версия этого не делала — и первый же тест кончился
+    // записью в нулевое смещение и вылетом игры.
+    {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "Anim probe (attack tempo hunt)");
+
+        // ---------- ШАГ 1: замер --------------------------------------------
+        if (!AnimProbe::Active()) {
+            ImGui::TextWrapped("STEP 1. Stand next to the goblin and press Start. "
+                               "The status line must show a small distance - that is "
+                               "how you know it locked on the one you are fighting.");
+            if (ImGui::Button("1. Start on goblin")) AnimProbe::Start("uEm0100");
+            ImGui::SameLine();
+            if (ImGui::Button("Start on any enemy")) AnimProbe::Start(nullptr);
+            ImGui::SameLine();
+            if (ImGui::Button("List child objects")) AnimProbe::ScanChildren();
+
+            // Дополнительно можно следить за подобъектом: часов в теле нет,
+            // поэтому кандидаты второго уровня всё ещё в игре.
+            const int nch = AnimProbe::CandidateCount();
+            if (nch) {
+                ImGui::Text("also watch:");
+                for (int i = 0; i < nch; ++i) {
+                    char btn[64];
+                    sprintf_s(btn, "%s##wc%d", AnimProbe::CandidateName(i), i);
+                    const bool on = AnimProbe::WatchedOffset() == AnimProbe::CandidateOffset(i)
+                                 && AnimProbe::WatchedOffset() != 0;
+                    if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
+                    if (ImGui::SmallButton(btn))
+                        AnimProbe::WatchChild(AnimProbe::CandidateOffset(i));
+                    if (on) ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("body +0x%04X", AnimProbe::CandidateOffset(i));
+                    if ((i % 3) != 2 && i + 1 < nch) ImGui::SameLine();
+                }
+                if (ImGui::SmallButton("body only")) AnimProbe::WatchChild(0);
+            }
+        } else {
+            ImGui::TextWrapped("STEP 2. Let it swing at you three or four times, "
+                               "then press Stop. Two attacks minimum, otherwise the "
+                               "durations mean nothing.");
+            if (ImGui::Button("2. Stop and analyse")) AnimProbe::Stop();
+        }
+
+        ImGui::TextWrapped("%s", AnimProbe::Status());
+        ImGui::TextColored(ImVec4(0.6f, 1.0f, 0.6f, 1), "%s", AnimProbe::Verdict());
+
+        // ---------- ГЛАВНЫЙ ПОДОЗРЕВАЕМЫЙ ------------------------------------
+        //
+        // Диф по торпору дал два поля тела, стоявшие ровно на 0.5 и ставшие
+        // ровно 0.25. Это в точности похоже на шаг проигрывания анимации:
+        // игра анимирует 30 к/с при рендере 60, то есть 0.5 кадра за кадр.
+        // Проверяется одной кнопкой, без всякого перебора.
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1), "PLAYBACK RATE (confirmed)");
+        ImGui::TextWrapped("body +0x0EE4 .. +0x0EF4 - five playback rates in a row, "
+                           "1.0 each. Writing 0.5 into any of them halves the monster; "
+                           "this was confirmed by hand. 0.5 = half speed, 1.5 = faster. "
+                           "The product version of this knob is in the Enemy AI panel "
+                           "(attack tempo variation).");
+        static float suspectVal = 1.50f;
+        ImGui::PushItemWidth(110);
+        ImGui::InputFloat("value##susp", &suspectVal, 0.05f, 0.25f, 3);
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (!AnimProbe::Active()) {
+            ImGui::TextDisabled("press '1. Start on goblin' first");
+        } else {
+            if (ImGui::Button("WRITE to both suspects")) AnimProbe::SuspectsApply(suspectVal);
+            ImGui::SameLine();
+            if (ImGui::Button("undo##susp")) AnimProbe::TestRevert();
+        }
+
+        // ---------- ШАГ 3: деление пополам ----------------------------------
+        const int nc = AnimProbe::ConstCount();
+        static float testVal = 1.5f;
+
+        ImGui::Separator();
+        if (!nc) {
+            ImGui::TextDisabled("No candidates yet - run one capture (Start / Stop) "
+                                "or an A/B diff first.");
+        } else {
+            ImGui::TextWrapped("STEP 3 (fast path). %d candidates. Do NOT test them "
+                               "one by one - write into ALL of them at once. If the "
+                               "attacks change speed, the multiplier is in the list; "
+                               "the tool then halves the set every round. Five fights "
+                               "instead of %d.", nc, nc);
+
+            ImGui::PushItemWidth(110);
+            ImGui::InputFloat("multiplier", &testVal, 0.1f, 0.5f, 2);
+            ImGui::PopItemWidth();
+            ImGui::SameLine();
+            ImGui::TextDisabled("1.5 = look for shorter attacks; 0.5 = longer");
+
+            if (!AnimProbe::BisectActive()) {
+                if (!AnimProbe::Active())
+                    ImGui::TextDisabled("press '1. Start on goblin' first, then start the bisect");
+                else if (ImGui::Button("3. Write to ALL candidates (start bisect)"))
+                    AnimProbe::BisectBegin(testVal);
+            } else {
+                ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "%s", AnimProbe::BisectStatus());
+                ImGui::TextWrapped("Fight, press Stop, read the verdict line above, "
+                                   "then answer here. The next set is written "
+                                   "automatically when you press Start again.");
+                if (AnimProbe::Active()) {
+                    ImGui::TextDisabled("stop the capture before answering");
+                } else {
+                    if (ImGui::Button("FASTER - keep this half")) AnimProbe::BisectReport(true);
+                    ImGui::SameLine();
+                    if (ImGui::Button("no change - drop this half")) AnimProbe::BisectReport(false);
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("cancel bisect")) AnimProbe::BisectReset();
+            }
+
+            // ---------- ручной выбор одного поля ----------------------------
+            ImGui::TextDisabled("or pick one field by hand:");
+            static int sel = -1;
+            if (sel >= nc) sel = -1;
+            for (int i = 0; i < nc; ++i) {
+                char btn[80];
+                sprintf_s(btn, "%s +0x%04X = %.2f##cc%d",
+                          AnimProbe::ConstZone(i), AnimProbe::ConstOffset(i),
+                          AnimProbe::ConstValue(i), i);
+                const bool on = (sel == i);
+                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
+                if (ImGui::SmallButton(btn)) sel = i;
+                if (on) ImGui::PopStyleColor();
+                if ((i % 2) == 0 && i + 1 < nc) ImGui::SameLine();
+            }
+            const bool canApply = (sel >= 0) && AnimProbe::Active();
+            if (!canApply)
+                ImGui::TextDisabled(sel < 0 ? "pick a candidate above"
+                                            : "press Start first, then Apply");
+            else if (ImGui::Button("Apply to selected"))
+                AnimProbe::TestApplyIndex(sel, testVal);
+            ImGui::SameLine();
+            if (ImGui::Button("revert writes")) AnimProbe::TestRevert();
+            ImGui::TextColored(AnimProbe::TestActive() ? ImVec4(1, 0.8f, 0.3f, 1)
+                                                       : ImVec4(0.6f, 0.6f, 0.6f, 1),
+                               "%s", AnimProbe::TestStatus());
+        }
+
+        // ---------- ШАГ 4: A/B по торпору -----------------------------------
+        //
+        // Порядок кнопок = порядок действий. Первый живой прогон показал,
+        // что без контрольного слепка отчёт забивается позой существа,
+        // поэтому A2 стоит в середине и подписан как обязательный.
+        ImGui::Separator();
+        ImGui::TextWrapped("STEP 4 (effect diff). Find the knob the engine itself "
+                           "turns. Order: A -> A2 -> apply torpor -> B -> Compare. "
+                           "Keep the target in the SAME state for A and A2: same "
+                           "pose, same act, no walking. Each capture takes ~1 s.");
+
+        // Состояние слепков видно всегда - иначе непонятно, что уже снято.
+        ImGui::Text("captures:");
+        ImGui::SameLine();
+        for (int w = 0; w < 3; ++w) {
+            const char* nm = (w == 0) ? "A" : (w == 1 ? "B" : "A2");
+            const bool have = AnimProbe::AbHave(w);
+            ImGui::TextColored(have ? ImVec4(0.4f, 1.0f, 0.4f, 1)
+                                    : ImVec4(0.6f, 0.6f, 0.6f, 1),
+                               have ? "%s yes" : "%s no", nm);
+            if (w < 2) ImGui::SameLine();
+        }
+
+        if (AnimProbe::AbBusy()) {
+            ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "capturing... hold still");
+        } else {
+            if (ImGui::Button("1. A: normal")) AnimProbe::AbCapture(0);
+            ImGui::SameLine();
+            if (ImGui::Button("2. A2: normal again (noise control)")) AnimProbe::AbCapture(2);
+            ImGui::SameLine();
+            if (ImGui::Button("3. B: under the effect")) AnimProbe::AbCapture(1);
+
+            if (AnimProbe::AbHave(0) && AnimProbe::AbHave(1)) {
+                if (ImGui::Button("4. Compare")) AnimProbe::AbCompare();
+                if (!AnimProbe::AbHave(2)) {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(1, 0.6f, 0.3f, 1),
+                                       "no A2: expect pose noise");
+                }
+            } else {
+                ImGui::TextDisabled("Compare needs A and B");
+            }
+
+            if (ImGui::Button("Dump named char params")) AnimProbe::DumpCharParams();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("cCharParamEnemy = em0100_cmn.prp loaded into the "
+                                  "body, twice. 72 named fields incl. res_TORPOR and "
+                                  "RESTRAINT_SLOW_LV1/LV2/EX. Goes to the log.");
+        }
+        ImGui::TextWrapped("%s", AnimProbe::AbStatus());
+    }
 
     ImGui::Spacing();
 
@@ -4306,7 +4503,7 @@ static void RenderDevToolsUI()
             if (!g_researchDump && g_intentTrace) PartyIntentTraceStop("dump disabled");
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("When ON, capture writes ddda_party_recon / ddda_pawn_ai_bridge / ddda_pawn_intent_trace. Off by default — not needed for Guardian doctrine.");
+            ImGui::SetTooltip("When ON, capture writes ddda_party_recon / ddda_pawn_ai_bridge / ddda_pawn_intent_trace. Off by default - not needed for Guardian doctrine.");
 
         ImVec4 pcol = g_nParty >= 2
             ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f)
@@ -4855,7 +5052,7 @@ void Hooks::DevTools()
     Runtime::SetResearchHooks(hooks);
 
     if (!g_enabled) {
-        logFile << "DevTools: disabled (продукт работает независимо)" << std::endl;
+        logFile << "DevTools: disabled (product layer runs independently)" << std::endl;
         return;
     }
 

@@ -19,6 +19,8 @@
 #include "pawnai/PawnAI_Common.h"
 #include "pawnai/PawnAI_BusOrchestrator.h"
 #include "pawnai/GuardianDoctrine.h"
+#include "monsterai/MonsterDirector.h"
+#include "pawnai/PawnHaste.h"
 
 using namespace PawnAI;
 
@@ -44,6 +46,17 @@ void UpdatePawnAI(){
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     __try { EnemyTuner::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Режиссёр стороны монстров. Симметричен оркестратору пешек: читает ту
+    // же шину, управляет своими примитивами. Свой SEH — чтобы его ошибка
+    // не уронила соседей.
+    __try { MonsterAI::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Рывок пешки: латаем дыру с отсутствующим спринтом множителем
+    // передвижения (docs/PAWN_SPRINT_RECON.md).
+    __try { PawnAI::Haste::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
@@ -81,6 +94,34 @@ void RenderPawnAIUI(){
     ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Acquisitor Manager");
     if(ImGui::Checkbox("Enable##acq", &g_orch.acquisitor.enabled)) config.setBool("pawnAI", "acquisitor", g_orch.acquisitor.enabled);
     if(ImGui::IsItemHovered()) ImGui::SetTooltip("Soft manager for Acquisitor only: suppressed in combat, temporarily boosted out of combat (loot vacuum). Guardian/Nexus are now doctrines and are NOT capped.");
+
+    // 1b. Рывок в бою: у пешек нет даша на боевых целях вообще
+    {
+        PawnAI::Haste::Status hs = PawnAI::Haste::Get();
+        ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Combat haste (no sprint in GOAP)");
+        bool on = hs.enabled;
+        if (ImGui::Checkbox("Enable##haste", &on)) {
+            PawnAI::Haste::SetEnabled(on);
+            config.setBool("pawnHaste", "enabled", on);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pawns have no dash action on combat goals - it is bound "
+                              "to the Follow goal only. This does not fix the planner: "
+                              "it raises the movement multiplier while the pawn is "
+                              "closing distance. The animation stays a jog.");
+        if (on) {
+            float f = hs.factor;
+            if (ImGui::SliderFloat("haste factor", &f, 1.00f, 1.30f, "%.2f")) {
+                PawnAI::Haste::SetFactor(f);
+                config.setFloat("pawnHaste", "factor", f);
+            }
+            ImGui::TextColored(hs.active ? ImVec4(1, 0.8f, 0.3f, 1)
+                                         : ImVec4(0.6f, 0.6f, 0.6f, 1),
+                "%s | nearest enemy %.1f m | bursts %d",
+                hs.why, hs.distM, hs.applied);
+        }
+        ImGui::Separator();
+    }
 
     // 2. Smart Utilitarian
     ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Smart Utilitarian");
@@ -264,7 +305,7 @@ void RenderPawnAIUI(){
             (incl[I_GUARDIAN] > incl[I_NEXUS] + 1.0f) ? "Guardian (anchor = Arisen)" :
             (incl[I_NEXUS] > incl[I_GUARDIAN] + 1.0f) ? "Nexus (anchor = selected pawn)" :
                                                         "Tie (primary inclination decides)";
-        ImGui::Text("Guardian %.0f / Nexus %.0f — %s", incl[I_GUARDIAN], incl[I_NEXUS], owner);
+        ImGui::Text("Guardian %.0f / Nexus %.0f - %s", incl[I_GUARDIAN], incl[I_NEXUS], owner);
         ImGui::TextDisabled("Observe-only: decides, writes NOTHING to game memory.");
 
         ImGui::Separator();
@@ -310,7 +351,7 @@ void RenderPawnAIUI(){
                     a.code, a.intentKey ? a.intentKey : "(none)", a.deltaS32);
             }
         } else {
-            ImGui::TextDisabled("No advice (vanilla) — no threat in zone, or zone unresolved.");
+            ImGui::TextDisabled("No advice (vanilla) - no threat in zone, or zone unresolved.");
         }
         ImGui::TreePop();
     }
@@ -357,6 +398,7 @@ void Hooks::PawnAI(){
     g_orch.acquisitor.boostWindowMs = (DWORD)config.getInt("pawnAI", "acquisitorBoostWindowMs", 8000);
     g_orch.acquisitor.returnMs      = (DWORD)config.getInt("pawnAI", "acquisitorReturnMs", 4000);
     g_orch.Init();
+    PawnAI::Haste::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;

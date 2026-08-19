@@ -10,17 +10,39 @@ This is the map that turns "some FSM state" into "the goblin is taunting".
 """
 import re, sys, collections
 
+# Порядок важен: возвращается ПЕРВАЯ совпавшая категория.
+#
+# 'guard' поднят выше 'attack' намеренно: у гоблина есть щитовые действия
+# вида cEm0100ActCSldBPress — по слову Press это выглядит как атака, но
+# на деле это давление щитом, то есть защита.
+#
+# Список 'attack' пополнен по разбору всех 812 действий 35 видов
+# (19.08.2026): прежний вариант терял Atk (без 'c'), Bite, Claw, Trample,
+# Stomp и Breath — то есть почти все атаки крупных монстров, у которых
+# нет слова Attack в имени вовсе.
 CATEGORIES = [
     ('taunt',  ('Howl', 'Threat', 'PartyDance', 'Horn', 'JumpJoy', 'Appeal')),
     ('death',  ('Die', 'DeadBody', 'Dead')),
     ('damage', ('ActDmg',)),
-    ('attack', ('Atck', 'Attack', 'Kick', 'Throw', 'Thrust', 'Swing', 'Assassin')),
+    ('guard',  ('Grd', 'Guard', 'Sld')),
+    ('attack', ('Atck', 'Attack', 'Atk', 'Kick', 'Throw', 'Thrust', 'Swing',
+                'Assassin', 'Bite', 'Claw', 'Trample', 'Stomp', 'Breath',
+                'Tail', 'Punch', 'Slash', 'Shot', 'Beam', 'Fire', 'Spit',
+                'Charge',
+                # маги и бесплотные: слова Attack в именах нет вовсе
+                'Magic', 'Mgc', 'Missile', 'Combo', 'DeathTouch', 'Absorb')),
     ('wait',   ('Wait',)),
     ('move',   ('Walk', 'Dash', 'Run', 'Jump', 'Tumble', 'Move', 'Turn')),
-    ('guard',  ('Grd', 'Guard', 'Sld')),
 ]
 
+# Имена «получаю удар», которые по глаголу похожи на атаку. Проверяются
+# ПЕРВЫМИ: cEm0100ActChargeKicked — это когда пинают тебя, а не ты.
+RECEIVING = ('Kicked', 'Guarded', 'Catched', 'Caught', 'Grabbed', 'Thrown',
+             'Pressed', 'Bitten', 'Damaged')
+
 def categorize(name):
+    if any(k in name for k in RECEIVING):
+        return 'damage'
     for cat, keys in CATEGORIES:
         if any(k in name for k in keys):
             return cat
@@ -69,6 +91,31 @@ def main(atlas='src/TypeAtlas.Generated.h', out='src/ActMap.Generated.h'):
     L.append('    for (int i = 0; i < kCount; ++i)')
     L.append('        if (kActs[i].vtRVA == rva) return &kActs[i];')
     L.append('    return nullptr;')
+    L.append('}')
+    L.append('')
+    L.append('// Поиск по ИМЕНИ класса. Именно он нужен в рантайме: vtRVA в этой')
+    L.append('// таблице — factory vtable и для сравнения с живым объектом')
+    L.append('// непригодна (см. шапку файла). Имя живого действия берётся')
+    L.append('// у самой игры через DTI.')
+    L.append('inline const Act* FindByName(const char* fullName) {')
+    L.append('    if (!fullName) return nullptr;')
+    L.append('    for (int i = 0; i < kCount; ++i) {')
+    L.append('        const char* a = kActs[i].fullName;')
+    L.append('        int k = 0;')
+    L.append('        while (a[k] && a[k] == fullName[k]) ++k;')
+    L.append('        if (!a[k] && !fullName[k]) return &kActs[i];')
+    L.append('    }')
+    L.append('    return nullptr;')
+    L.append('}')
+    L.append('')
+    L.append('// Атака ли это действие. Неизвестное имя — НЕ атака: лучше')
+    L.append('// пропустить правку, чем ускорить существу падение или смерть.')
+    L.append('inline bool NameIsAttack(const char* fullName) {')
+    L.append('    const Act* a = FindByName(fullName);')
+    L.append('    if (!a) return false;')
+    L.append("    const char* c = a->category;")
+    L.append("    return c[0]=='a' && c[1]=='t' && c[2]=='t' && c[3]=='a'")
+    L.append("        && c[4]=='c' && c[5]=='k' && c[6]==0;")
     L.append('}')
     L.append('')
     L.append('inline bool IsCategory(uint32_t rva, const char* cat) {')

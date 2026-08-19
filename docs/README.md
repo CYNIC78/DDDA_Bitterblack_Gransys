@@ -21,6 +21,15 @@
 | [`GUARDIAN_VOCATION_MATRIX.md`](GUARDIAN_VOCATION_MATRIX.md) | ролевая матрица Guardian (вокация пешки × вокация игрока) |
 | [`GUARDIAN_LEASH_MATRIX.md`](GUARDIAN_LEASH_MATRIX.md) | состояние вопроса по поводку (follow-дистанции) |
 | [`INCLINATION_DRIFT_INTEL.md`](INCLINATION_DRIFT_INTEL.md) | верифицированная модель дрифта инклинаций |
+| [`ENCOUNTER_MEMORY_DESIGN.md`](ENCOUNTER_MEMORY_DESIGN.md) | телеметрия боёв, память мест и поправка мутаций — связка слоёв 2 и 3 |
+| [`ANATOMY_EM0100.md`](ANATOMY_EM0100.md) | анатомия гоблина: поля тела, подобъекты, анимации, характеристики — справочник для модеров |
+| [`TEMPO_SYSTEM.md`](TEMPO_SYSTEM.md) | **система темпа**: примитив, две ручки, связка, пресеты, замеренная цена |
+| [`MONSTER_AI_ARCHITECTURE.md`](MONSTER_AI_ARCHITECTURE.md) | **две стороны и одна шина**: контракт режиссёра монстров, правила политик |
+| [`SPECIES_ROLLOUT.md`](SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак по `ActMap` |
+| [`PAWN_SPRINT_RECON.md`](PAWN_SPRINT_RECON.md) | почему пешки не спринтят в бою и три способа это залатать |
+| [`STATUS_EFFECTS_RECON.md`](STATUS_EFFECTS_RECON.md) | статусы и торпор (のろま), карта `cCharParamEnemy` из 72 полей |
+| [`TEMPO_HUNT_PROTOCOL_RU.md`](TEMPO_HUNT_PROTOCOL_RU.md) | протокол исследования темпа: что вводить и когда жать |
+| [`MONSTER_TEMPO_RECON.md`](MONSTER_TEMPO_RECON.md) | история охоты за темпом: что исключили, где ошиблись и как нашли |
 | [`SPAWN_SYSTEM_RECON.md`](SPAWN_SYSTEM_RECON.md) | карта классов расстановки врагов — вход в слой среды |
 | [`RELEASE_CHECKLIST.md`](RELEASE_CHECKLIST.md) | готовность к публичному релизу: что закрыто, что требует решения |
 | [`REFACTOR_TASK.md`](REFACTOR_TASK.md) | рефакторинг слоёв Build 69: что сделано и что проверить |

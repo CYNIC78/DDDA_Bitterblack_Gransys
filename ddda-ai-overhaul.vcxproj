@@ -127,6 +127,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\dinput8.cpp" />
     <ClCompile Include="src\runtime\Runtime.cpp" />
     <ClCompile Include="src\runtime\MemProbe.cpp" />
+    <ClCompile Include="src\runtime\MonsterTempo.cpp" />
     <ClCompile Include="src\runtime\RuntimeState.cpp" />
     <ClCompile Include="src\runtime\WorldScan.cpp" />
     <ClCompile Include="src\runtime\PartyRecon.cpp" />
@@ -145,6 +146,9 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\CameraPlus.cpp" />
     <ClCompile Include="src\TargetLock.cpp" />
     <ClCompile Include="src\devtools\DevTools.cpp" />
+    <ClCompile Include="src\devtools\AnimProbe.cpp" />
+    <ClCompile Include="src\monsterai\MonsterDirector.cpp" />
+    <ClCompile Include="src\pawnai\PawnHaste.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -185,17 +189,22 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\CameraPlus.h" />
     <ClInclude Include="src\TargetLock.h" />
     <ClInclude Include="src\devtools\DevTools.h" />
+    <ClInclude Include="src\devtools\AnimProbe.h" />
+    <ClInclude Include="src\monsterai\MonsterDirector.h" />
+    <ClInclude Include="src\pawnai\PawnHaste.h" />
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\devtools\generated\GoapInterfaceMap.inl" />
     <ClInclude Include="src\devtools\generated\PawnPrioritySemantics.inl" />
     <ClInclude Include="src\TypeAtlas.Generated.h" />
     <ClInclude Include="src\ActMap.Generated.h" />
+    <ClInclude Include="src\CharParamEnemy.Generated.h" />
     <ClInclude Include="src\EntityConfig.h" />
     <ClInclude Include="src\EnemyTuner.h" />
     <ClInclude Include="src\DefaultEntitiesIni.h" />
     <ClInclude Include="src\ModPaths.h" />
     <ClInclude Include="src\runtime\Runtime.h" />
     <ClInclude Include="src\runtime\MemProbe.h" />
+    <ClInclude Include="src\runtime\MonsterTempo.h" />
     <ClInclude Include="src\runtime\RuntimeInternal.h" />
     <ClInclude Include="src\BuildTag.h" />
     <!-- dinput8 -->

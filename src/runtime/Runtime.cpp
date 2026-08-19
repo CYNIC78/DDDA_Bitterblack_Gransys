@@ -3,6 +3,7 @@
 #include "stdafx.h"
 #include "Runtime.h"
 #include "MemProbe.h"
+#include "MonsterTempo.h"
 #include "RuntimeInternal.h"
 
 namespace Runtime {
@@ -19,6 +20,10 @@ void Init()
     PartyPriorityProfileEnsureFile();
     PartyPriorityProfileLoadIfChanged();
 
+    // Темп монстров: хуки движения. Ставятся только при однозначной
+    // сигнатуре, иначе модуль остаётся выключенным.
+    Tempo::Init();
+
     logFile << "Runtime: image base 0x" << std::hex << Mem::g_base
             << " size 0x" << Mem::g_imageSize << std::dec
             << "  exec sections " << Mem::g_nExec
@@ -29,6 +34,7 @@ void Shutdown()
 {
     // Откат всех транзакционных правок правил. Только guarded rollback,
     // без ожиданий и join'ов — мы в DllMain.
+    Tempo::Shutdown();
     PartyPriorityProfileRestoreAll("DLL detach");
 }
 

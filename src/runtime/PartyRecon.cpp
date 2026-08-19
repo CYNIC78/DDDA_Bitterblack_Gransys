@@ -719,6 +719,13 @@ bool GetArisenWorldPos(float* x, float* y, float* z)
     return true;
 }
 
+uintptr_t MainPawnBody()
+{
+    for (int i = 0; i < g_nParty; ++i)
+        if (!strcmp(g_party[i].role, "Main Pawn")) return g_party[i].ptr;
+    return 0;
+}
+
 bool GetMainPawnWorldPos(float* x, float* y, float* z)
 {
     if (!g_pawnPosOk) return false;

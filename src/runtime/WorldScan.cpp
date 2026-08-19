@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 #include "RuntimeInternal.h"
+#include "MonsterTempo.h"
 #include "../ActMap.Generated.h"
 #include "../CombatBus.h"
 
@@ -96,7 +97,11 @@ int KindCategory(const char* kind)
 {
     // Tactical category from LIVE kind, not gid. 0x61 must never become boss.
     if (!kind) return -1;
-    if (!strcmp(kind, "uEm0100") || !strcmp(kind, "uEm0101")) return 0;
+    // ВАРИАНТЫ ВИДА. Скан 19.08 показал в одной стае три разных класса:
+    // uEm0100, uEm0100_0, uEm0100_3. Точное сравнение имени пропускало
+    // две трети стаи, и категория для пешек (TacticalSwitch) считалась
+    // по неполному составу. Сравниваем по префиксу.
+    if (!strncmp(kind, "uEm0100", 7) || !strncmp(kind, "uEm0101", 7)) return 0;
     return -1;
 }
 
@@ -127,14 +132,16 @@ void PublishWorldFromActors()
         // Build 62: боевое действие врага (по live Act, не по урону).
         p.inCombatAction = KindIsEnemy(g_act[i].kind)
             && EnemyActNameIsCombat(g_act[i].liveAct);
+        lstrcpynA(p.actName, g_act[i].liveAct[0] ? g_act[i].liveAct : "",
+                  sizeof(p.actName));
         if (KindIsEnemy(g_act[i].kind)) {
             w.enemyCount++;
             if (p.inCombatAction) w.enemyCombatCount++;
         }
         else if (KindIsHarmless(g_act[i].kind)) w.critterCount++;
-        if (g_act[i].kind && (!strcmp(g_act[i].kind, "uEm0100")
-            || !strcmp(g_act[i].kind, "uEm0101")))
-            w.goblinCount++;
+        if (g_act[i].kind && (!strncmp(g_act[i].kind, "uEm0100", 7)
+            || !strncmp(g_act[i].kind, "uEm0101", 7)))
+            w.goblinCount++;   // вместе с вариантами uEm0100_0 / uEm0100_3
         int cat = KindCategory(g_act[i].kind);
         if (cat > best) best = cat;
         w.count++;
@@ -154,6 +161,18 @@ void PublishWorldFromActors()
 // способом, каким опознаём uEm0100.
 //
 // Возвращает true, если имя прочитано.
+// Указатель на объект текущего действия. Раньше его читал только
+// ReadLiveAct и тут же выбрасывал, оставляя имя. Для разбора таймингов
+// нужен сам объект: у действий вроде cEmActWalk всего ~116 байт, и это
+// перебираемо, в отличие от 29 КБ тела.
+uintptr_t ActObjectOf(uintptr_t body)
+{
+    if (!body) return 0;
+    uintptr_t act = 0;
+    if (!RdPtr((void*)(body + kActSlot), &act)) return 0;
+    return LooksHeap(act) ? act : 0;
+}
+
 bool ReadLiveAct(uintptr_t body, char* out, int cap)
 {
     if (!out || cap < 2) return false;
@@ -407,9 +426,30 @@ void RewalkActors()
     int ns = 0;
     for (int i = 0; i < g_nAct && ns < 32; ++i)
         if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
+
+    // ТЕЛА ПАРТИИ КАК СЕМЕНА ОБХОДА.
+    //
+    // Живой тест темпа анимации показал задержку в несколько секунд:
+    // подходишь к лагерю, гоблины уже дерутся — и только потом получают
+    // свой множитель. Причина не в записи, а в ОБНАРУЖЕНИИ: пока в списке
+    // нет ни одного актёра из этого связного списка, найти его может
+    // только поллинг памяти, а он идёт порциями по 0.5-4 МБ за тик.
+    //
+    // Аризен и главная пешка известны всегда и лежат в том же списке
+    // живых объектов. Добавляем их семенами: тогда новый лагерь виден
+    // на первом же тике после загрузки, без ожидания поллинга.
+    for (int i = 0; i < g_nParty && ns < 32; ++i) {
+        const uintptr_t p = g_party[i].ptr;
+        if (!p) continue;
+        bool dup = false;
+        for (int k = 0; k < ns; ++k) if (seed[k] == p) { dup = true; break; }
+        if (!dup) seed[ns++] = p;
+    }
+
     if (!ns) return;
     DumpActorsFrom(seed, ns);
     PublishWorldFromActors();
+    Tempo::RefreshTable();   // список изменился — пересобрать множители
 }
 
 // Известные vtable — быстрый путь без чтения DTI.
@@ -568,7 +608,8 @@ uintptr_t FirstBodyOfKind(const char* kind)
         if (!g_act[i].ptr) continue;
         if (g_act[i].isDead) continue;          // труп — не цель
         const char* k = g_act[i].kind;
-        if (k && !strcmp(k, kind)) return g_act[i].ptr;
+        // Префикс, а не точное имя: uEm0100_0 и uEm0100_3 — тоже гоблины.
+        if (k && !strncmp(k, kind, strlen(kind))) return g_act[i].ptr;
     }
     return 0;
 }
@@ -613,6 +654,11 @@ void WorldScan_Tick()
         return;
     }
     g_wasInWorld = true;
+
+    // Темп анимации монстров удерживается ПОКАДРОВО: движок переписывает
+    // эти поля сам, редкая запись жила бы один кадр из девяти.
+    Tempo::AnimTick();
+    Tempo::SprintWatchTick();   // кто вообще спринтует: игрок, пешка, монстр
 
     // Build 56.2: Guardian doctrine anchor/pawn positions (throttled discover + cheap read).
     PartyPositionsTick();
@@ -661,6 +707,7 @@ void WorldScan_Tick()
         if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
     DumpActorsFrom(seed, ns);
     PublishWorldFromActors();
+    Tempo::RefreshTable();   // список изменился — пересобрать множители
 }
 
 } // namespace Runtime

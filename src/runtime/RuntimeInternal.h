@@ -312,6 +312,9 @@ void PublishWorldFromActors();
 // способом, каким опознаём uEm0100.
 //
 // Возвращает true, если имя прочитано.
+// Объект текущего действия существа (+0x2DC8), 0 если не резолвится.
+uintptr_t ActObjectOf(uintptr_t body);
+
 bool ReadLiveAct(uintptr_t body, char* out, int cap);
 
 // Смерть определяется СОСТОЯНИЕМ, а не флагом.

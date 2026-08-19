@@ -52,11 +52,16 @@ uintptr_t EnemyBodyAt(int idx, const char** kindOut);
 uintptr_t FirstBodyOfKind(const char* kind);
 // Враг ли объект этого вида (не заяц, не NPC).
 bool      KindIsEnemy(const char* kind);
+// Объект текущего действия существа. 0, если не резолвится.
+uintptr_t ActObjectOf(uintptr_t body);
 
 // --- Позиции партии ------------------------------------------------------
 // +0x40/+0x44/+0x48 (SOURCE_OF_TRUTH §2). false, если тела не резолвлены.
 bool GetArisenWorldPos(float* x, float* y, float* z);
 bool GetMainPawnWorldPos(float* x, float* y, float* z);
+// Тело главной пешки. 0, если партия ещё не разрешена. Нужно слою пешек,
+// чтобы адресовать примитивы (например, множитель передвижения).
+uintptr_t MainPawnBody();
 
 // --- Guardian-фикс (транзакционная правка правила code 54) ---------------
 // Кортеж подтверждён дампом Build 57:

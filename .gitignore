@@ -35,3 +35,6 @@ desktop.ini
 # Python
 __pycache__/
 *.pyc
+
+# Сгенерированное синтаксическим харнессом
+tools/tcomp/ui_block.inc

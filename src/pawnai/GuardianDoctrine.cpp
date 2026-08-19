@@ -27,10 +27,10 @@ struct GuardianModifier {
 };
 static const GuardianModifier kGuardianModifiers[] = {
     {  4, +3, nullptr, "HYPOTHESIS", "Guardian wait/follow response (semantic TBD)" },
-    { 13, -2, nullptr, "HYPOTHESIS", "party relation (общий Guardian/Nexus)"       },
-    { 15, -2, "Air",  "CONFIRMED",  "Air — Guardian/Nexus общий"                  },
-    { 54, -3, "WpnDaggerAtk", "CONFIRMED", "offensive dagger attack — ГЛАВНЫЙ рычаг A/B" },
-    { 60, -3, "Em0600Cover",  "CONFIRMED",  "enemy-specific cover (не трогаем пока)" },
+    { 13, -2, nullptr, "HYPOTHESIS", "party relation (shared Guardian/Nexus)"       },
+    { 15, -2, "Air",  "CONFIRMED",  "Air - shared Guardian/Nexus"                  },
+    { 54, -3, "WpnDaggerAtk", "CONFIRMED", "offensive dagger attack - MAIN A/B lever" },
+    { 60, -3, "Em0600Cover",  "CONFIRMED",  "enemy-specific cover (not touched yet)" },
     { 66, -4, nullptr, "HYPOTHESIS", "battle response (semantic TBD)"              },
 };
 static const int kGuardianModifierCount = sizeof(kGuardianModifiers) / sizeof(kGuardianModifiers[0]);

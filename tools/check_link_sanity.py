@@ -261,23 +261,54 @@ def main() -> int:
                     break
         return res
 
+    # Проверяем ВСЕ .cpp, а не только runtime/.
+    #
+    # Раньше проверка ограничивалась каталогом runtime — и пропустила
+    # обращение к Runtime::g_act без квалификации из devtools/AnimProbe.cpp.
+    # Заодно теперь учитывается пространство имён: глобал, объявленный
+    # внутри `namespace Runtime`, виден без квалификации только если
+    # файл открыл это пространство через using или свой блок namespace.
     for f, clean in texts.items():
-        if f.suffix != ".cpp" or "runtime" not in f.parts:
+        if f.suffix != ".cpp":
             continue
         visible = set()
-        own = set(m.group(1) for m in GLOBAL_NAME_RE.finditer(clean)
-                  if re.search(rf"^\s*(?!extern)[A-Za-z_][\w:<>,\s\*&]*?\b{re.escape(m.group(1))}\b\s*(?:=|\[|;)",
-                               clean, re.M))
+        # Многодеклараторные строки (`static int a = 0, b = 0;`) раньше давали
+        # ложные срабатывания: видели только первое имя. Берём ВСЕ имена из
+        # операторов объявления, не пересекая границу тела функции.
+        own = set()
+        for stmt in re.finditer(r"^[ \t]*(?:static|extern)?[ \t]*[A-Za-z_][\w:<>,\s\*&]*?;",
+                                clean, re.M):
+            body = stmt.group(0)
+            if "(" in body.split("=")[0]:
+                continue
+            own |= {g.group(1) for g in GLOBAL_NAME_RE.finditer(body)}
+        own |= {m.group(1) for m in re.finditer(
+            r"\b(g_\w+)\s*(?:=|(?:\[[^\]]*\])+\s*[=;])", clean)}
         visible |= own
+        # какие пространства имён открыты в этом .cpp
+        opened_ns = {m.group(1) for m in re.finditer(r"using\s+namespace\s+([\w:]+)\s*;", clean)}
+        opened_ns |= {m.group(1) for m in re.finditer(r"^namespace\s+([A-Za-z_]\w*)\s*\{", clean, re.M)}
+        # вложенные: using namespace Runtime::Mem открывает и Mem
+        for ns in list(opened_ns):
+            for part in ns.split("::"):
+                opened_ns.add(part)
+
         for inc in includes_of(f):
             itext = strip_noise(inc.read_text(encoding="utf-8", errors="replace"))
-            visible |= {m.group(1) for m in re.finditer(r"extern\s[^;]*?\b(g_\w+)", itext)}
-            visible |= {m.group(1) for m in GLOBAL_NAME_RE.finditer(itext)}
+            for m in re.finditer(r"\b(g_\w+)\b", itext):
+                ns = namespace_at(itext, m.start())
+                if not ns or ns.split("::")[0] in opened_ns:
+                    visible.add(m.group(1))
         for m in GLOBAL_NAME_RE.finditer(clean):
-            if m.group(1) not in visible:
-                line = clean[:m.start()].count("\n") + 1
-                errors.append(f"[видимость] {f.relative_to(ROOT)}:{line} -> {m.group(1)} "
-                              f"не определён в этом .cpp и не объявлен extern во включённых .h")
+            if m.group(1) in visible:
+                continue
+            # Обращение уже квалифицировано (Runtime::g_act) — вопрос снят.
+            if clean[max(0, m.start() - 2):m.start()] == "::":
+                continue
+            line = clean[:m.start()].count("\n") + 1
+            errors.append(f"[видимость] {f.relative_to(ROOT)}:{line} -> {m.group(1)} "
+                          f"не виден без квалификации: он объявлен в чужом "
+                          f"пространстве имён или не объявлен вовсе")
 
     # --- 5c. самодостаточность заголовков рантайма ---
     # Ловит ошибку Build 69: константа размера осталась в .cpp, а структура,
@@ -356,6 +387,80 @@ def main() -> int:
         if i_proj < i_sdk:
             errors.append("[пути] в .vcxproj $(ProjectDir) стоит раньше каталога DirectX SDK — "
                           "системные <d3d9.h>/<dinput8.h> будут перехвачены заголовками проекта")
+
+    # --- 5e. вложенные пространства имён без квалификации ---
+    # Ловит ошибку Build 70.3: AnimProbe объявлен как DevTools::AnimProbe,
+    # а вызывался из DevTools.cpp просто как AnimProbe:: — файл не находится
+    # внутри namespace DevTools, поэтому имя не разрешается (C2653).
+    nested = {}           # короткое имя -> полное
+    for hf in sorted(sources()):
+        if hf.suffix != ".h":
+            continue
+        htext = strip_noise(hf.read_text(encoding="utf-8", errors="replace"))
+        stack = []
+        for m in re.finditer(r"namespace\s+([A-Za-z_]\w*)\s*\{|\{|\}", htext):
+            tok = m.group(0)
+            if tok.startswith("namespace"):
+                stack.append(m.group(1))
+                if len(stack) > 1:
+                    nested.setdefault(stack[-1], "::".join(stack))
+            elif tok == "{":
+                stack.append(None)
+            else:
+                if stack:
+                    stack.pop()
+
+    for f, clean in texts.items():
+        if f.suffix != ".cpp":
+            continue
+        rel = f.relative_to(ROOT)
+        # какие пространства имён открыты через using в этом файле
+        opened = {m.group(1) for m in re.finditer(r"using\s+namespace\s+([\w:]+)\s*;", clean)}
+        # и внутри каких namespace-блоков объявлен сам файл
+        own_ns = {m.group(1) for m in re.finditer(r"^namespace\s+([A-Za-z_]\w*)\s*\{", clean, re.M)}
+        for m in re.finditer(r"(?<![:\w])([A-Za-z_]\w*)\s*::", clean):
+            name = m.group(1)
+            full = nested.get(name)
+            if not full or full.endswith("::" + name) is False:
+                continue
+            outer = full.rsplit("::", 1)[0]
+            if outer in opened or outer in own_ns or full in opened:
+                continue
+            # уже написано полным путём?
+            start = max(0, m.start() - len(outer) - 2)
+            if clean[start:m.start()].endswith(outer + "::"):
+                continue
+            line = clean[:m.start()].count("\n") + 1
+            errors.append(f"[namespace] {rel}:{line} -> {name}:: объявлен как {full}, "
+                          f"но {outer} здесь не открыт (C2653). Пиши {full}::")
+
+    # --- 5f. кириллица в строковых литералах ---
+    # ImGui 1.48 с дефолтным шрифтом рисует только ASCII: любая кириллица
+    # в UI превращается в «???». Логи тоже держим на английском — в проекте
+    # так было с самого начала, и это снимает вопрос кодировки при чтении
+    # лога чужим редактором. Комментарии и документация остаются русскими.
+    #
+    # Исключение: DefaultEntitiesIni.h — это содержимое ini-файла, который
+    # читает человек в текстовом редакторе, там кириллица уместна.
+    CYRILLIC_OK = {"DefaultEntitiesIni.h"}
+    cyr = re.compile(r"[\u0400-\u04FF]")
+    for f in sorted(sources()):
+        if f.suffix not in (".cpp", ".h") or f.name in CYRILLIC_OK:
+            continue
+        raw = f.read_text(encoding="utf-8", errors="replace")
+        clean = strip_noise(raw)          # тут строки уже стёрты
+        # ищем литералы: берём из сырого текста те позиции, где в clean пробелы
+        for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"', raw):
+            if not cyr.search(m.group(1)):
+                continue
+            # комментарий? в clean на этом месте тоже пробелы, отличаем по строке
+            line_start = raw.rfind("\n", 0, m.start()) + 1
+            prefix = raw[line_start:m.start()]
+            if "//" in prefix or "*" == prefix.strip()[:1]:
+                continue
+            line = raw[:m.start()].count("\n") + 1
+            errors.append(f"[кириллица] {f.relative_to(ROOT)}:{line} -> строковый литерал "
+                          f"с кириллицей: в ImGui станет «???». Вывод — только ASCII")
 
     # --- 6. файлы мимо .vcxproj ---
     listed = {m.group(1).replace("\\", "/") for m in re.finditer(r'Include="([^"]+)"', proj_text)}
