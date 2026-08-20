@@ -4,6 +4,7 @@
 #include "DashWatch.h"
 #include "../CombatBus.h"
 #include "../runtime/Runtime.h"
+#include "../runtime/MonsterTempo.h"   // счётчик хука спринта — второй прибор
 
 namespace PawnAI {
 namespace DashWatch {
@@ -12,14 +13,11 @@ static Stats s_st = {};
 static char  s_prevAct[48] = {};
 static int   s_logged = 0;
 
-// Стамина пешки: объект cPlStamina (16 B) ищется в теле по ИМЕНИ класса
-// один раз и запоминается смещением. Повод — догадка тестера: рывок в
-// данных бывает в двух вариантах, обычный и `St500`, то есть у него есть
-// порог выносливости. Если пешка почти не дашит даже вне боя, стоит
-// посмотреть, что у неё с этим числом.
-static uintptr_t s_pawnForStamina = 0;
-static uint32_t  s_staminaOff = 0;
-static bool      s_staminaSearched = false;
+// ПРОБА ВЫНОСЛИВОСТИ УБРАНА (вопрос закрыт, см. DashWatch.h).
+// Живого cPlStamina в теле пешки нет и не будет: счётчик лежит в записи
+// персонажа. Проба печатала «not found» каждый сеанс и заставляла заново
+// обсуждать решённое. Правило проекта: вопрос -> ответ -> документ ->
+// удалить инструмент.
 
 // Рывок ли это состояние. Имена подтверждены атласом типов:
 // cPlActDash (116 B), cPlActDashBegin (120 B), cPlActDashJump,
@@ -42,41 +40,6 @@ void Reset()
     memset(&s_st, 0, sizeof(s_st));
     s_prevAct[0] = 0;
     s_logged = 0;
-}
-
-// Первые 16 байт cPlStamina как четыре числа. Что там именно — пока
-// неизвестно, поэтому печатаем и float, и int: одно из них окажется
-// текущей выносливостью.
-static void StaminaText(uintptr_t pawn, char* out, int cap)
-{
-    out[0] = 0;
-    if (!pawn) return;
-    if (pawn != s_pawnForStamina) {   // тело сменилось — искать заново
-        s_pawnForStamina = pawn;
-        s_staminaSearched = false;
-        s_staminaOff = 0;
-    }
-    if (!s_staminaSearched) {
-        s_staminaSearched = true;
-        uintptr_t obj = Runtime::FindChildByClass(pawn, 0x5A10, "cPlStamina", &s_staminaOff);
-        if (obj) {
-            char l[120];
-            sprintf_s(l, "DashWatch: cPlStamina found at pawn +0x%04X", (unsigned)s_staminaOff);
-            logFile << l << std::endl;
-        } else {
-            logFile << "DashWatch: cPlStamina not found in the pawn body" << std::endl;
-        }
-    }
-    if (!s_staminaOff) return;
-
-    uintptr_t obj = 0;
-    if (!Runtime::ReadPtrSafe(pawn + s_staminaOff, &obj) || !obj) return;
-    float f[4] = {};
-    if (!Runtime::ReadSafe(obj, f, sizeof(f))) return;
-    int32_t iv[4];
-    memcpy(iv, f, sizeof(iv));
-    sprintf_s(out, cap, " | stamina obj: %.1f %.1f %.1f %.1f (ints %d %d %d %d)",
-              f[0], f[1], f[2], f[3], iv[0], iv[1], iv[2], iv[3]);
 }
 
 Stats Get() { return s_st; }
@@ -136,17 +99,48 @@ void Tick()
     s_st.lastDistM = best;
     lstrcpynA(s_st.lastDash, act, sizeof(s_st.lastDash));
 
+    // СШИВКА ПРИБОРОВ. Замер 73.27 показал ноль выборов кода 84/85 и при
+    // этом живые рывки, в том числе в бою. Пока код приоритета и состояние
+    // FSM снимались разными кнопками в разное время, это оставалось
+    // загадкой. Теперь оба числа берутся в ОДИН момент — момент рывка.
+    int32_t code = -1;
+    const bool codeOk = Runtime::PawnPriorityCode(&code);
+    char goal[32] = {};
+    if (codeOk && code >= 0) Runtime::PawnGoalName(code, goal, sizeof(goal));
+
+    s_st.lastCode = codeOk ? code : -1;
+    lstrcpynA(s_st.lastGoal, goal[0] ? goal : "?", sizeof(s_st.lastGoal));
+    if (!codeOk || code < 0)            ++s_st.dashCodeUnknown;
+    else if (code == 84 || code == 85)  ++s_st.dashUnderDash;
+    else if (code == 1)                 ++s_st.dashUnderFollow;
+    else                                ++s_st.dashUnderOther;
+
+    // ЧТО ИМЕННО ВШИТО В ПЛАН В ЭТУ СЕКУНДУ. Раз все рывки приходят под
+    // кодом 1, интересна не цель (она известна), а моторный интерфейс
+    // внутри неё: cCmcFollow или cCmcDashFollow. Это и есть искомая
+    // развилка, и снимать её надо ровно в момент рывка.
+    char ifaces[96] = {};
+    if (codeOk && code >= 0) Runtime::PawnPlanInterfaces(code, ifaces, sizeof(ifaces));
+
+    // Третий прибор рядом: сколько тел прошло через хук спринтового
+    // перемещения. Если состояние рывка входит, а счётчик пешек стоит —
+    // значит движение ускоряет не он, и копать надо в другом месте.
+    const Runtime::Tempo::SprintStats sp = Runtime::Tempo::GetSprintStats();
+
     // Первые события — в лог с контекстом. Дальше только счётчики:
     // рывков за вечер могут быть сотни, лог не резиновый.
     if (s_logged < 20) {
         ++s_logged;
-        char st[160] = {};
-        StaminaText(pawn, st, sizeof(st));
-        char l[400];
-        sprintf_s(l, "DashWatch: %s | %s | nearest enemy %.1f m | signals: detector %d,"
-                     " enemyActs %d, pawnTarget %d%s",
+        char l[420];
+        sprintf_s(l, "DashWatch: %s | %s | nearest enemy %.1f m | priority code %d \"%s\""
+                     " | plan interfaces: %s"
+                     " | signals: detector %d, enemyActs %d, pawnTarget %d"
+                     " | sprint hook: player %u pawn %u enemy %u",
                   act, inCombat ? "IN COMBAT" : "out of combat", best,
-                  r.inCombat ? 1 : 0, w.enemyCombatCount, w.pawnEngaged ? 1 : 0, st);
+                  codeOk ? code : -1, goal[0] ? goal : "?",
+                  ifaces[0] ? ifaces : "(none found)",
+                  r.inCombat ? 1 : 0, w.enemyCombatCount, w.pawnEngaged ? 1 : 0,
+                  sp.player, sp.pawn, sp.enemy);
         logFile << l << std::endl;
     }
 }

@@ -2,11 +2,17 @@
 
 ## Текущий milestone
 
-**Build 63:** `guardian-role-matrix`
+**Build 74.9:** `haste-done` (мобильность пешек под ускоренных монстров)
 
 **Ветка разработки:** `work/player-main-pawn-recon`
 
-Главный результат: Guardian Doctrine — ролевая матрица (вокация пешки × вокация
+Главный результат трека: рывок пешки приходит под кодом приоритета
+1 (`Follow`), а у кодов рывка `84/85` нет ни одной строки приоритета.
+Переключатель «бежать/рвануть» — внутри цели Follow, между моторными
+командами `cCmcFollow` / `cCmcDashFollow`.
+Подробно: `docs/PAWN_SPRINT_RECON.md` §26-27.
+
+Предыдущий milestone (Build 63, `guardian-role-matrix`): Guardian Doctrine — ролевая матрица (вокация пешки × вокация
 игрока), градиентная зона телохранителя со снятием Guardian-штрафа на кинжалы
 (code 54) транзакционно, трёхсигнальный детектор боя. Поверх verified priority
 platform (persistent generalized profiles, transaction, convergence, rollback).

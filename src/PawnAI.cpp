@@ -14,6 +14,7 @@
 #include "EntityConfig.h"
 #include "EnemyTuner.h"
 #include "PawnAI.h"
+#include "runtime/MonsterTempo.h"
 #include "CombatIntel.h"
 #include "CombatBus.h"
 #include "pawnai/PawnAI_Common.h"
@@ -122,8 +123,75 @@ void RenderPawnAIUI(){
             }
             ImGui::TextColored(hs.active ? ImVec4(1, 0.8f, 0.3f, 1)
                                          : ImVec4(0.6f, 0.6f, 0.6f, 1),
-                "%s | nearest enemy %.1f m | bursts %d",
-                hs.why, hs.distM, hs.applied);
+                "%s | nearest enemy %.1f m | bursts %d | applied x%.2f",
+                hs.why, hs.distM, hs.applied, hs.used);
+            ImGui::TextDisabled("  factor source: %s",
+                hs.matchTempo ? "matched to the fastest monster nearby"
+                              : "fixed number above");
+            bool needWpn = hs.requireWeapon;
+            if (ImGui::Checkbox("require the pawn's weapon drawn", &needWpn)) {
+                PawnAI::Haste::SetRequireWeapon(needWpn);
+                config.setBool("pawnHaste", "requireWeaponDrawn", needWpn);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("'An enemy is within radius' is a coarse label - "
+                                  "enemies behind a wall that nobody can see used to "
+                                  "trigger it. The pawn has its own tell: acts with "
+                                  "the weapon drawn (cPlActHoldWeaponMv while moving, "
+                                  "the cPlActWpn* family while striking). Gate: "
+                                  "weapon drawn OR the combat detector agrees.");
+            ImGui::TextDisabled("  last burst act: %s  |  confirmed by weapon %d / "
+                                "by detector %d",
+                                hs.act[0] ? hs.act : "-",
+                                hs.burstsWeapon, hs.burstsDetector);
+            {
+                const Runtime::Tempo::Status ts = Runtime::Tempo::GetStatus();
+                ImGui::TextDisabled("  anim writes %u | engine rewrites %u | "
+                                    "track restores %u",
+                                    ts.animOurWrites, ts.animEngineWrites,
+                                    ts.animRestores);
+            }
+            // Замер 74.5 прошёл со связкой в положении «выкл», и это
+            // выяснилось только из первой строки лога. Теперь состояние
+            // видно там, где на него смотрят.
+            if (!hs.animCouple)
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1),
+                    "  coupling is OFF: the body moves faster under the vanilla "
+                    "animation - wide steps, sliding feet");
+
+            // Связка анимации. Пока вердикт пробы не прочитан в логе,
+            // флажок держать выключенным: он разрешает ЗАПИСЬ в тело
+            // пешки по смещению, подтверждённому только на монстрах.
+            bool couple = Runtime::Tempo::GetAnimForOverrides();
+            if (ImGui::Checkbox("couple run animation", &couple)) {
+                Runtime::Tempo::SetAnimForOverrides(couple);
+                config.setBool("pawnHaste", "animCouple", couple);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Monsters already scale BOTH movement and "
+                                  "animation playback (the rate row at +0x0EE4). "
+                                  "If the pawn body has the same row, the sliding "
+                                  "feet go away and this stops being a fake. The "
+                                  "first haste burst READS that row and prints the "
+                                  "verdict to the log without writing anything; "
+                                  "writing needs this box AND all five fields at "
+                                  "exactly 1.0. Original values are restored when "
+                                  "the burst ends.");
+            ImGui::TextDisabled("  see log: 'Tempo: anim row probe uCmc ...'");
+            // Первое поле ряда живое: у стоящей пешки 1.000, у бегущей
+            // 1.060. Какое поле за что отвечает — вопрос к наблюдению.
+            const bool rw = Runtime::Tempo::AnimRowWatchActive();
+            if (rw) ImGui::TextDisabled("  watching the row...");
+            else if (ImGui::SmallButton("watch anim row 15 s")) {
+                const uintptr_t pb = Runtime::MainPawnBody();
+                if (pb) Runtime::Tempo::AnimRowWatchStart(pb, 15000);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Logs the five rate fields next to the pawn's "
+                                  "current act, on change, for fifteen seconds. "
+                                  "Walk, run and dash during that window: the field "
+                                  "that moves with locomotion is the one that "
+                                  "carries the run animation. Read-only.");
         }
 
         // Прибор для трека «честный спринт»: считает переходы пешки в
@@ -142,6 +210,20 @@ void RenderPawnAIUI(){
                               "patch this must become non-zero in combat.");
         ImGui::TextDisabled("  now: %s | last dash at %.1f m",
                             ds.lastAct[0] ? ds.lastAct : "?", ds.lastDistM);
+        // Сшивка с планировщиком. Замер 73.27 дал ноль выборов кода 84/85
+        // и при этом живые рывки: значит рывок приходит НЕ через код
+        // рывка. Эта строка отвечает, через какой именно код он приходит.
+        ImGui::TextDisabled("  dash under code: DashFollow 84/85 %u | Follow 1 %u | other %u | unknown %u",
+                            ds.dashUnderDash, ds.dashUnderFollow,
+                            ds.dashUnderOther, ds.dashCodeUnknown);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Which priority code was active at the exact moment "
+                              "the pawn entered a dash state. The histogram says "
+                              "code 84 is never selected, yet dashes happen - so "
+                              "the dash comes from somewhere else, and this line "
+                              "names it.");
+        ImGui::TextDisabled("  last dash under code %d \"%s\"",
+                            ds.lastCode, ds.lastGoal[0] ? ds.lastGoal : "?");
         {
             // Сигналы боя рядом со счётчиком: если метка снова соврёт,
             // будет видно, какой именно сигнал виноват.

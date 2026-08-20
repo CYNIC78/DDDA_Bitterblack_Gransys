@@ -20,83 +20,6 @@ static int       s_logged = 0;
 static const uint32_t kPawnBodyBytes = 0x5A10;
 static const uint32_t kPlannerBytes  = 25264;   // sizeof cAIGoalPlanning
 
-// Идентификаторы из файлов .gop: обычное следование и три варианта рывка.
-struct DashId { uint32_t id; const char* name; };
-static const DashId kDashIds[] = {
-    { 0x01, "Follow (walk/jog)" },
-    { 0xAD, "DashFollow" },
-    { 0xB0, "DashFollowSt500" },
-    { 0xB5, "PlEscape" },
-    { 0xA6, "EscapeNotice1" },
-    { 0xA7, "EscapeNotice2" },
-};
-static const int kNDashIds = (int)(sizeof(kDashIds) / sizeof(kDashIds[0]));
-
-// Интересен ли класс для нашей задачи.
-static bool Interesting(const char* nm)
-{
-    return strstr(nm, "Goal") || strstr(nm, "Plan") || strstr(nm, "Cmc")
-        || strstr(nm, "Action") || strstr(nm, "Stamina") || strstr(nm, "AI")
-        || strstr(nm, "Think");
-}
-
-// Перечислить живые подобъекты области памяти по именам классов.
-// Возвращает, сколько нашли. Дедупликация обязательна: один и тот же
-// объект попадается десятками ссылок.
-static int MapChildren(uintptr_t base, uint32_t bytes, const char* title,
-                       int maxLines)
-{
-    logFile << "  " << title << ":" << std::endl;
-    static uintptr_t seen[256];
-    int nSeen = 0, shown = 0;
-
-    for (uint32_t off = 0; off + 4 <= bytes && shown < maxLines; off += 4) {
-        uintptr_t cand = 0;
-        if (!Runtime::Mem::RdPtr((void*)(base + off), &cand)) continue;
-        if (!Runtime::Mem::LooksHeap(cand) || cand == base) continue;
-
-        bool dup = false;
-        for (int i = 0; i < nSeen; ++i) if (seen[i] == cand) { dup = true; break; }
-        if (dup) continue;
-        if (nSeen < 256) seen[nSeen++] = cand;
-
-        char nm[48] = {};
-        if (!Runtime::Mem::NameOfLiveObject(cand, nm, sizeof(nm)) || !nm[0]) continue;
-        if (!Interesting(nm)) continue;
-
-        char l[180];
-        sprintf_s(l, "    +0x%04X -> 0x%08X  %s", (unsigned)off, (unsigned)cand, nm);
-        logFile << l << std::endl;
-        ++shown;
-    }
-    if (!shown) logFile << "    (nothing interesting)" << std::endl;
-    return shown;
-}
-
-// Поиск идентификаторов рывка в области памяти.
-static void FindDashIds(uintptr_t base, uint32_t bytes, const char* title)
-{
-    logFile << "  " << title << ":" << std::endl;
-    int hits = 0;
-    for (uint32_t off = 0; off + 4 <= bytes && hits < 40; off += 4) {
-        uint32_t v = 0;
-        if (!Runtime::Mem::Rd((void*)(base + off), &v, 4)) continue;
-        for (int k = 0; k < kNDashIds; ++k) {
-            if (v != kDashIds[k].id) continue;
-            // Единица встречается повсюду, поэтому её показываем только
-            // рядом с другими идентификаторами — иначе утонем в шуме.
-            if (kDashIds[k].id == 0x01) break;
-            char l[180];
-            sprintf_s(l, "    +0x%04X = 0x%02X  %s",
-                      (unsigned)off, v, kDashIds[k].name);
-            logFile << l << std::endl;
-            ++hits;
-            break;
-        }
-    }
-    if (!hits) logFile << "    (no dash ids here)" << std::endl;
-}
-
 // --- обход вглубь -----------------------------------------------------------
 //
 // Планировщик не висит прямым указателем в теле — первый дамп это
@@ -133,6 +56,14 @@ static void PathCat(char* dst, int cap, const char* parent,
     if (n < cap - 1) dst[n++] = ' ';
     for (const char* p = name; *p && n < cap - 1; ++p) dst[n++] = *p;
     dst[n] = 0;
+}
+
+// Интересен ли класс для нашей задачи: обход печатает только то, что
+// относится к планированию, иначе лог тонет в служебных объектах.
+static bool Interesting(const char* nm)
+{
+    return strstr(nm, "Goal") || strstr(nm, "Plan") || strstr(nm, "Cmc")
+        || strstr(nm, "Action") || strstr(nm, "AI") || strstr(nm, "Think");
 }
 
 // Сосед по связному списку живых объектов — не потомок.
@@ -335,26 +266,6 @@ static bool FloatLooksReal(uint32_t bits, float* out)
     return true;
 }
 
-// Перечислить все ресурсы заданного класса с их путями.
-static void DumpResourcePaths(uintptr_t body, uint32_t bytes, const char* cls)
-{
-    logFile << "  " << cls << " resources by path:" << std::endl;
-    int shown = 0;
-    for (uint32_t off = 0; off + 4 <= bytes && shown < 40; off += 4) {
-        uintptr_t cand = 0;
-        if (!Runtime::Mem::RdPtr((void*)(body + off), &cand)) continue;
-        if (!Runtime::Mem::LooksHeap(cand)) continue;
-        char nm[48] = {};
-        if (!Runtime::Mem::NameOfLiveObject(cand, nm, sizeof(nm)) || strcmp(nm, cls) != 0) continue;
-        char path[80] = {};
-        if (!ResourcePath(cand, path, sizeof(path))) continue;
-        logFile << "    body +0x" << std::hex << off << std::dec
-                << "  " << path << std::endl;
-        ++shown;
-    }
-    if (!shown) logFile << "    (none readable)" << std::endl;
-}
-
 // Тело живо и это действительно тело? Устаревший указатель после смены
 // карты выглядит как обычное число, и обход по нему — путь к вылету.
 static bool BodyAlive(uintptr_t body)
@@ -365,250 +276,6 @@ static bool BodyAlive(uintptr_t body)
     if (!Runtime::Mem::NameOfLiveObject(body, nm, sizeof(nm)) || !nm[0]) return false;
     return (strncmp(nm, "uPl", 3) == 0) || (strncmp(nm, "uCmc", 4) == 0)
         || (strncmp(nm, "uCharacter", 10) == 0);
-}
-
-void DumpPawnPlanner()
-{
-    // Первое нажатие сказало «пешка не найдена», второе уронило игру:
-    // между ними разбор партии успел подставить устаревший указатель.
-    // Теперь проверяем и мир, и тело.
-    if (!Runtime::Mem::InWorld()) {
-        lstrcpynA(s_status, "goap: not in an active save", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-    const uintptr_t pawn = Runtime::MainPawnBody();
-    if (!pawn) {
-        lstrcpynA(s_status, "goap: main pawn not resolved", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-    if (!BodyAlive(pawn)) {
-        sprintf_s(s_status, "goap: pawn body 0x%08X is stale - reopen the panel later",
-                  (unsigned)pawn);
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-
-    logFile << "GoapProbe: === pawn 0x" << std::hex << pawn << std::dec
-            << " ===" << std::endl;
-
-    // 1) Карта подобъектов тела. Заодно ответ на вопрос, куда делась
-    //    выносливость: cPlStamina прямым указателем не нашлась.
-    MapChildren(pawn, kPawnBodyBytes, "pawn body children", 40);
-
-    // 2) Планировщик — обходом вглубь: прямым указателем его в теле нет.
-    logFile << "  deep walk (depth 3, class sizes from TypeAtlas):" << std::endl;
-    uintptr_t planner = Walk(pawn, kPawnBodyBytes, "cAIGoalPlanning", 3, 60);
-    if (!planner) {
-        logFile << "  cAIGoalPlanning NOT reachable from the body within depth 3"
-                << std::endl;
-        // Не тупик: команды могут жить в cCmcInfo, он рядом и большой.
-        uint32_t cmcOff = 0;
-        const uintptr_t cmc = Runtime::FindChildByClass(pawn, kPawnBodyBytes,
-                                                        "cCmcInfo", &cmcOff);
-        if (cmc) {
-            char l2[160];
-            sprintf_s(l2, "  cCmcInfo at body +0x%04X -> 0x%08X (5728 B)",
-                      (unsigned)cmcOff, (unsigned)cmc);
-            logFile << l2 << std::endl;
-            FindDashIds(cmc, 5728, "dash ids inside cCmcInfo");
-        }
-        // И заодно — что такое rPlStamina, которых в теле два десятка.
-        uint32_t stOff = 0;
-        const uintptr_t st = Runtime::FindChildByClass(pawn, kPawnBodyBytes,
-                                                       "rPlStamina", &stOff);
-        if (st) DumpResourcePaths(pawn, kPawnBodyBytes, "rPlStamina");
-        FindDashIds(pawn, kPawnBodyBytes, "dash ids inside the pawn body");
-        lstrcpynA(s_status, "goap: planner not reachable - see log for cCmcInfo",
-                  sizeof(s_status));
-        return;
-    }
-    s_planner = planner;
-
-    char l[200];
-
-    int32_t code = -1;
-    if (Runtime::Mem::Rd((void*)(planner + 0x17C), &code, 4)) {
-        sprintf_s(l, "  current priority code (+0x17C) = %d", code);
-        logFile << l << std::endl;
-
-        // Слот плана этого кода — по формуле из Build 40.
-        if (code >= 0 && code < 90) {
-            const uintptr_t ctrl = planner + 0x190 + (uint32_t)code * 0x110;
-            char nm[48] = {};
-            Runtime::Mem::NameOfLiveObject(ctrl, nm, sizeof(nm));
-            sprintf_s(l, "  PlanCtrl(%d) = 0x%08X  %s",
-                      code, (unsigned)ctrl, nm[0] ? nm : "(no DTI name)");
-            logFile << l << std::endl;
-        }
-    }
-
-    // 3) Карта подобъектов планировщика и поиск идентификаторов рывка.
-    MapChildren(planner, kPlannerBytes, "planner children", 40);
-    FindDashIds(planner, kPlannerBytes, "dash ids inside the planner");
-    FindDashIds(pawn, kPawnBodyBytes, "dash ids inside the pawn body");
-
-    logFile << "  Read-only. Nothing was written." << std::endl;
-    sprintf_s(s_status, "goap: dumped planner 0x%08X (code %d) - see log",
-              (unsigned)planner, code);
-}
-
-// Сравнение с Аризеном.
-//
-// В теле пешки нашлись два десятка rPlStamina (правила, 120 B) и НИ ОДНОГО
-// cPlStamina (живое значение, 16 B). Если у Аризена всё наоборот или есть
-// и то и другое — это прямое подтверждение наблюдения тестера: «пешки не
-// тратят выносливость». Тогда порог St500 у рывка не проходится не
-// потому, что стамины мало, а потому, что её у пешки попросту нет.
-void DumpArisenCompare()
-{
-    const uintptr_t pl = Runtime::ArisenBody();
-    if (pl && !BodyAlive(pl)) {
-        lstrcpynA(s_status, "goap: Arisen body is stale", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-    if (!pl) {
-        lstrcpynA(s_status, "goap: Arisen not resolved", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-    logFile << "GoapProbe: === Arisen 0x" << std::hex << pl << std::dec
-            << " (compare with the pawn) ===" << std::endl;
-
-    int nStaminaRule = 0, nStaminaLive = 0;
-    for (uint32_t off = 0; off + 4 <= kPawnBodyBytes; off += 4) {
-        uintptr_t cand = 0;
-        if (!Runtime::Mem::RdPtr((void*)(pl + off), &cand)) continue;
-        if (!Runtime::Mem::LooksHeap(cand)) continue;
-        char nm[48] = {};
-        if (!Runtime::Mem::NameOfLiveObject(cand, nm, sizeof(nm)) || !nm[0]) continue;
-        if (!strcmp(nm, "rPlStamina")) ++nStaminaRule;
-        else if (!strcmp(nm, "cPlStamina")) {
-            ++nStaminaLive;
-            char l[160];
-            sprintf_s(l, "    cPlStamina at +0x%04X -> 0x%08X",
-                      (unsigned)off, (unsigned)cand);
-            logFile << l << std::endl;
-            float f[4] = {};
-            if (Runtime::Mem::Rd((void*)cand, f, sizeof(f))) {
-                sprintf_s(l, "      values: %.2f %.2f %.2f %.2f", f[0], f[1], f[2], f[3]);
-                logFile << l << std::endl;
-            }
-        }
-    }
-    char l[200];
-    sprintf_s(l, "  Arisen: rPlStamina x%d, cPlStamina x%d", nStaminaRule, nStaminaLive);
-    logFile << l << std::endl;
-    logFile << "  (pawn had rPlStamina x25+, cPlStamina x0)" << std::endl;
-    sprintf_s(s_status, "goap: Arisen has %d live stamina object(s)", nStaminaLive);
-}
-
-// --- ФОНОВЫЙ ОБХОД -----------------------------------------------------------
-//
-// Разовый обход упёрся в потолок: за один кадр глубже трёх уровней идти
-// нельзя, а планировщика там нет. Решение — тот же обход, но по кусочку
-// в кадр: игра не замечает, а глубина ограничена только терпением.
-//
-// Ровно так же устроен поллинг мира в продукте: бюджет на тик, состояние
-// между тиками. Приём проверенный.
-static bool     s_bgOn = false;
-static int      s_bgNext = 0;          // следующий узел очереди
-static uint32_t s_bgOff = 0;           // смещение внутри узла
-static int      s_bgFound = 0;
-static uintptr_t s_bgRoot = 0;
-static const int kBgDepth = 5;
-
-void StartBackgroundWalk()
-{
-    const uintptr_t pawn = Runtime::MainPawnBody();
-    if (!BodyAlive(pawn)) {
-        lstrcpynA(s_status, "goap: pawn body not ready", sizeof(s_status));
-        return;
-    }
-    s_nQ = 0;
-    s_qOverflow = 0;
-    QueuePush(pawn, kPawnBodyBytes, 0, "body");
-    s_bgNext = 0;
-    s_bgOff = 0;
-    s_bgFound = 0;
-    s_bgRoot = pawn;
-    s_bgOn = true;
-    logFile << "GoapProbe: background walk started (depth " << kBgDepth
-            << ", a slice per frame)" << std::endl;
-}
-
-void StopBackgroundWalk()
-{
-    s_bgOn = false;
-    lstrcpynA(s_status, "goap: background walk stopped", sizeof(s_status));
-}
-
-bool BackgroundWalkActive() { return s_bgOn; }
-
-static void BackgroundStep()
-{
-    if (!s_bgOn) return;
-    if (!Runtime::Mem::InWorld()) { s_bgOn = false; return; }
-
-    int budget = 3000;                  // ~0.1 мс на кадр, незаметно
-    while (budget > 0 && s_bgNext < s_nQ) {
-        Node& cur = s_q[s_bgNext];
-        const uint32_t lim = (cur.size && cur.size < 0x8000) ? cur.size : 0x1000;
-
-        if (cur.depth >= kBgDepth || !Runtime::Mem::RegionOk(cur.addr, lim)) {
-            ++s_bgNext; s_bgOff = 0; continue;
-        }
-        if (s_bgOff + 4 > lim) { ++s_bgNext; s_bgOff = 0; continue; }
-
-        const uint32_t off = s_bgOff;
-        s_bgOff += 4;
-        --budget;
-
-        uintptr_t cand = 0;
-        if (!Runtime::Mem::RdPtr((void*)(cur.addr + off), &cand)) continue;
-        if (!Runtime::Mem::LooksHeap(cand) || cand == cur.addr) continue;
-        char nm[48] = {};
-        if (!Runtime::Mem::NameOfLiveObject(cand, nm, sizeof(nm)) || !nm[0]) continue;
-        if (IsForeignActor(off, nm)) continue;
-
-        char path[160];
-        PathCat(path, sizeof(path), cur.path, off, nm);
-        if (!QueuePush(cand, SizeOfClass(nm), cur.depth + 1, path)) continue;
-
-        if (!strcmp(nm, "cAIGoalPlanning")) {
-            s_planner = cand;
-            ++s_bgFound;
-            logFile << "GoapProbe: FOUND cAIGoalPlanning at 0x" << std::hex
-                    << (unsigned)cand << std::dec << "  path: " << path << std::endl;
-            s_bgOn = false;
-            sprintf_s(s_status, "goap: planner found at 0x%08X", (unsigned)cand);
-            return;
-        }
-        // Всё, что пахнет планированием, тоже в лог: если планировщика
-        // нет, соседи подскажут, где искать.
-        if (strstr(nm, "Goal") || strstr(nm, "Plan") || strstr(nm, "Think")
-            || strstr(nm, "Goap")) {
-            logFile << "GoapProbe: " << nm << " at 0x" << std::hex
-                    << (unsigned)cand << std::dec << "  path: " << path << std::endl;
-        }
-    }
-
-    if (s_bgNext >= s_nQ) {
-        s_bgOn = false;
-        if (s_qOverflow) {
-            sprintf_s(s_status, "goap: walk INCOMPLETE - queue full (%d nodes, "
-                                "%d more were dropped)", s_nQ, s_qOverflow);
-        } else {
-            sprintf_s(s_status, "goap: walk finished, %d nodes, planner %s",
-                      s_nQ, s_planner ? "found" : "NOT found");
-        }
-        logFile << "GoapProbe: " << s_status << std::endl;
-    } else {
-        sprintf_s(s_status, "goap: walking... node %d/%d, depth %d",
-                  s_bgNext, s_nQ, s_q[s_bgNext].depth);
-    }
 }
 
 // --- ПОИСК ПЛАНИРОВЩИКА ПО ИМЕНИ, А НЕ ПО СМЕЩЕНИЮ ---------------------------
@@ -916,6 +583,258 @@ void DumpPlanCtrlAB()
               diffs, (unsigned)(kPlanCtrlStride / 4));
 }
 
+// --- КТО МОЖЕТ ВЫБРАТЬ КОД 84 -----------------------------------------------
+//
+// Замер закрыл развилку протокола: коды рывка 84/85 не выбираются НИКОГДА
+// (0 кадров, 0 входов за 118 с, из них 2618 сэмплов в бою). Дальше
+// вопрос переезжает на уровень выше — в приоритетное мышление.
+//
+// Раскладка подтверждена и записана в SOURCE_OF_TRUTH:
+//   cAIPriorityThink + 0x38 + slot*0x14 — дескриптор «ведра» (48 штук):
+//       +0x00 vtable cArray, +0x04 count, +0x08 capacity, +0x0C flags,
+//       +0x10 cPrioParam** — только первые count указателей действительны;
+//   cPrioParam: +0x04 Sensor, +0x08 Code, +0x0C Category, +0x10 ObjectID,
+//       +0x14 Extra, +0x18.. cArray правил личности (cCodeParam),
+//       +0x2C.. cArray правил порядка (cOrderValue).
+//
+// СВОЙ СЧЁТ У ПРИБОРА. Канон говорит: строк ровно 85. Дамп считает
+// найденные сам и печатает сравнение — если чисел не 85, врёт прибор,
+// а не игра. Это правило стоило нам трёх итераций, и оно теперь
+// обязательное.
+static void DumpOnePrioRow(uintptr_t row, int slot, int idx, int* dashRows)
+{
+    uint32_t V[16] = {};
+    if (!Runtime::Mem::Rd((void*)row, V, sizeof(V))) {
+        logFile << "      (row unreadable)" << std::endl;
+        return;
+    }
+    const uint32_t sensor   = V[1];         // +0x04
+    const uint32_t code     = V[2];         // +0x08
+    const uint32_t category = V[3];         // +0x0C
+    const uint32_t objectId = V[4];         // +0x10
+    const uint32_t extra    = V[5];         // +0x14
+    const uint32_t nPers    = V[7];         // +0x1C count правил личности
+    const uint32_t nOrder   = V[12];        // +0x30 count правил порядка
+
+    const bool isDash = (code == 84u || code == 85u);
+    if (isDash && dashRows) ++(*dashRows);
+
+    char l[240];
+    sprintf_s(l, "      slot %2d [%d] 0x%08X  code %3u  %-22s"
+                 " tuple{s=%u,cat=%u,obj=%u,extra=%u}  rules %u/%u%s",
+              slot, idx, (unsigned)row, code,
+              GoalOfCode((int)code), sensor, category, objectId, extra,
+              nPers, nOrder, isDash ? "   <<< DASH ROW" : "");
+    logFile << l << std::endl;
+}
+
+void DumpPriorityRows()
+{
+    if (!Runtime::Mem::InWorld()) {
+        lstrcpynA(s_status, "goap: not in an active save", sizeof(s_status));
+        return;
+    }
+    const uintptr_t pawn = Runtime::MainPawnBody();
+    if (!BodyAlive(pawn)) {
+        lstrcpynA(s_status, "goap: pawn body not ready", sizeof(s_status));
+        return;
+    }
+
+    // Таблица имён нужна, чтобы рядом с кодом стояла цель, а не голое
+    // число. Строится от планировщика — он же и проверка живости AI.
+    const uintptr_t planner = ResolvePlanner(pawn, 0, 0);
+    if (planner) BuildGoalTable(planner);
+
+    // cAICtrl -> cAIPriorityThink, оба по ИМЕНИ КЛАССА.
+    uintptr_t ctrl = 0;
+    if (Runtime::Mem::RdPtr((void*)(pawn + 0x2E64), &ctrl) && ctrl) {
+        char nm[48] = {};
+        if (!Runtime::Mem::NameOfLiveObject(ctrl, nm, sizeof(nm))
+            || strcmp(nm, "cAICtrl") != 0) ctrl = 0;
+    }
+    if (!ctrl) ctrl = Runtime::FindChildByClass(pawn, kPawnBodyBytes, "cAICtrl", 0);
+    const uintptr_t think = ctrl
+        ? Runtime::FindChildByClass(ctrl, 704, "cAIPriorityThink", 0) : 0;
+    if (!think) {
+        lstrcpynA(s_status, "goap: cAIPriorityThink not found", sizeof(s_status));
+        logFile << "GoapProbe: " << s_status << std::endl;
+        return;
+    }
+
+    logFile << "GoapProbe: === priority rows (who is allowed to pick a code) ==="
+            << std::endl;
+    {
+        char l[200];
+        sprintf_s(l, "  cAIPriorityThink 0x%08X, 48 buckets at +0x38 stride 0x14",
+                  (unsigned)think);
+        logFile << l << std::endl;
+    }
+
+    int rows = 0, dashRows = 0, badRows = 0, usedBuckets = 0;
+    bool codeSeen[kMaxCode];
+    memset(codeSeen, 0, sizeof(codeSeen));
+
+    for (int slot = 0; slot < 48; ++slot) {
+        const uint32_t descOff = 0x38u + (uint32_t)slot * 0x14u;
+        uint32_t D[5] = {};
+        if (!Runtime::Mem::Rd((void*)(think + descOff), D, sizeof(D))) continue;
+        const uint32_t count = D[1], capacity = D[2];
+        const uintptr_t arr  = D[4];
+        if (!count) continue;
+        // ГРАНИЦА БЫЛА СЛИШКОМ УЗКОЙ — И ПРИБОР СРАЗУ ЭТО ПОКАЗАЛ.
+        //
+        // Первый прогон: «rows found 76 (canon 85: MISMATCH), buckets 32 of
+        // 48, unreadable entries 1». Ровно одно отвергнутое ведро и ровно
+        // девять недостающих строк — то есть отвергли не мусор, а живое
+        // ведро с count > 8. Канон говорит «по 8 слотов» про типичное
+        // ведро, а ёмкость массива бывает 16 (SOURCE_OF_TRUTH §3.4
+        // фиксирует именно capacity).
+        //
+        // Пока строк не 85, вердикт про код 84 — предварительный: в
+        // отвергнутом ведре могло лежать что угодно. Поэтому граница
+        // поднята до 16, а отвергнутый дескриптор печатается целиком:
+        // «пропустил» обязано быть видно, а не подразумеваться.
+        if (count > 16u || capacity > 16u || count > capacity
+            || !Runtime::Mem::LooksHeap(arr)) {
+            ++badRows;
+            char b[200];
+            sprintf_s(b, "      slot %2d REJECTED descriptor:"
+                         " vt 0x%08X count %u cap %u flags %u array 0x%08X",
+                      slot, D[0], D[1], D[2], D[3], D[4]);
+            logFile << b << std::endl;
+            continue;
+        }
+        uintptr_t ptrs[16] = {};
+        if (!Runtime::Mem::Rd((void*)arr, ptrs, count * sizeof(uintptr_t))) {
+            ++badRows;
+            char b[160];
+            sprintf_s(b, "      slot %2d payload unreadable at 0x%08X (count %u)",
+                      slot, (unsigned)arr, count);
+            logFile << b << std::endl;
+            continue;
+        }
+        ++usedBuckets;
+
+        for (uint32_t n = 0; n < count; ++n) {
+            const uintptr_t row = ptrs[n];
+            if (!Runtime::Mem::LooksHeap(row)) { ++badRows; continue; }
+            char nm[64] = {};
+            if (!Runtime::Mem::NameOfLiveObject(row, nm, sizeof(nm))
+                || strcmp(nm, "rAIPriorityThink::cPrioParam") != 0) {
+                ++badRows;
+                continue;
+            }
+            uint32_t code = 0;
+            if (Runtime::Mem::Rd((void*)(row + 0x08), &code, 4)
+                && code < (uint32_t)kMaxCode)
+                codeSeen[code] = true;
+            DumpOnePrioRow(row, slot, (int)n, &dashRows);
+            ++rows;
+        }
+    }
+
+    // СОБСТВЕННЫЙ СЧЁТ ПРИБОРА. Канон: 85 строк, 48 вёдер.
+    char l[240];
+    sprintf_s(l, "  rows found %d (canon 85: %s), buckets with rows %d of 48,"
+                 " unreadable entries %d",
+              rows, (rows == 85) ? "MATCH" : "MISMATCH - suspect the probe first",
+              usedBuckets, badRows);
+    logFile << l << std::endl;
+
+    // Какие коды из таблицы целей не имеют НИ ОДНОЙ строки приоритета:
+    // такую цель приоритетное мышление выбрать не может в принципе.
+    int orphans = 0;
+    logFile << "  loaded goals with NO priority row (unreachable by cmc.prt):"
+            << std::endl;
+    for (int c = 0; c < kMaxCode; ++c) {
+        if (!s_goalName[c][0] || codeSeen[c]) continue;
+        ++orphans;
+        sprintf_s(l, "      code %3d  %s", c, s_goalName[c]);
+        logFile << l << std::endl;
+    }
+    if (!orphans) logFile << "      (none - every loaded goal has a row)" << std::endl;
+
+    // ГЛАВНАЯ СТРОКА. Ради неё всё и писалось.
+    //
+    // ФОРМУЛИРОВКА ИСПРАВЛЕНА ПОСЛЕ ПЕРВОГО ЖЕ ПРОГОНА. Сначала здесь
+    // стояло «нет строки -> cmc.prt не может выбрать рывок». Это оказалось
+    // сильнее, чем позволяют факты: в списке «целей без строки» стоит
+    // код 76 GotoOm, а гистограмма предыдущего замера дала ему 794 кадра,
+    // 398 из них в бою. Значит отсутствие строки приоритета НЕ означает,
+    // что код не может быть выбран, — существует второй путь номинации.
+    // Прибор обязан говорить то, что измерил, и не больше.
+    sprintf_s(l, "  DASH ROWS (code 84/85): %d -> %s", dashRows,
+              dashRows ? "rows EXIST - the priority layer nominates dash, so weights ARE the lever"
+                       : "no row: the priority layer does not nominate dash"
+                         " (NOTE: codes without a row still get selected - GotoOm 76 did)");
+    logFile << l << std::endl;
+    if (rows != 85)
+        logFile << "  VERDICT IS PROVISIONAL: rows != 85, some bucket was skipped"
+                   " - fix the probe and re-run before believing the line above."
+                << std::endl;
+
+    sprintf_s(s_status, "goap: %d prio rows, %d dash rows, %d orphan goals",
+              rows, dashRows, orphans);
+}
+
+// --- ИНТЕРФЕЙСЫ ПЛАНА --------------------------------------------------------
+//
+// Главный факт замера 74.0: все три пойманных рывка (включая боевой)
+// случились под кодом 1 «Follow», а строки приоритета у кодов 84/85 нет
+// ни одной. Рывок выбирает не приоритетный слой — его выбирает сама цель
+// Follow, переключая моторную команду внутри своего плана.
+//
+// Здесь мы просто СМОТРИМ на эти команды: у кого какие. Сравнение двух
+// нажатий (пешка бежит / пешка рвётся) и есть поиск переключателя.
+void DumpPlanInterfaces()
+{
+    if (!Runtime::Mem::InWorld()) {
+        lstrcpynA(s_status, "goap: not in an active save", sizeof(s_status));
+        return;
+    }
+    const uintptr_t pawn = Runtime::MainPawnBody();
+    if (!BodyAlive(pawn)) {
+        lstrcpynA(s_status, "goap: pawn body not ready", sizeof(s_status));
+        return;
+    }
+    const uintptr_t planner = ResolvePlanner(pawn, 0, 0);
+    if (!planner) {
+        lstrcpynA(s_status, "goap: planner not found", sizeof(s_status));
+        return;
+    }
+    BuildGoalTable(planner);
+
+    int32_t cur = -1;
+    Runtime::Mem::Rd((void*)(planner + 0x17C), &cur, 4);
+    char act[48] = {};
+    Runtime::ReadLiveAct(pawn, act, sizeof(act));
+
+    logFile << "GoapProbe: === plan interfaces (who moves the pawn) ===" << std::endl;
+    {
+        char l[200];
+        sprintf_s(l, "  current code %d \"%s\", current act %s",
+                  cur, GoalOfCode(cur), act[0] ? act : "?");
+        logFile << l << std::endl;
+    }
+
+    const int codes[4] = { 1, 84, 20, cur };
+    for (int i = 0; i < 4; ++i) {
+        const int c = codes[i];
+        if (c < 0 || c >= kMaxCode) continue;
+        if (i == 3 && (c == 1 || c == 84 || c == 20)) continue;  // уже показан
+        char ifaces[96] = {};
+        Runtime::PawnPlanInterfaces(c, ifaces, sizeof(ifaces));
+        char l[220];
+        sprintf_s(l, "    code %3d  %-18s -> %s", c, GoalOfCode(c),
+                  ifaces[0] ? ifaces : "(no cCmc* in this plan block)");
+        logFile << l << std::endl;
+    }
+    logFile << "  Press this twice: once while the pawn jogs, once while it dashes."
+               " A name that appears only in the dashing snapshot is the switch."
+            << std::endl;
+    sprintf_s(s_status, "goap: plan interfaces dumped (code %d)", cur);
+}
+
 // --- ГИСТОГРАММА КОДОВ -------------------------------------------------------
 //
 // Слежение за +0x17C логировало КАЖДУЮ смену кода. В бою это сотни строк
@@ -930,6 +849,19 @@ static uint32_t s_enter[kMaxCode];          // сколько раз ВОШЛИ 
 static uint32_t s_samples = 0, s_samplesCombat = 0;
 static DWORD    s_histStart = 0;
 
+// ЕЩЁ ОДНО ВРАНЬЁ ПРИБОРА, ПОЙМАННОЕ В ЛОГЕ 73.27.
+//
+// Между выборами планировщик держит в +0x17C значение -1 (0xFFFFFFFF).
+// В логе это видно парами: «code -1», «code 0 Wait», «code -1», «code 0».
+// Счётчик входов считал ВОЗВРАТ из -1 новым входом, и Wait получил 365
+// входов на 365 кадрах — то есть «пешка входила в ожидание каждый кадр».
+// Это артефакт, а не поведение.
+//
+// Теперь -1 не считается состоянием: последним кодом остаётся последний
+// ДЕЙСТВИТЕЛЬНЫЙ, а сами промежутки считаются отдельно и печатаются.
+static int32_t  s_lastValid = -1;
+static uint32_t s_gapSamples = 0;
+
 void ResetCodeHistogram()
 {
     memset(s_hist, 0, sizeof(s_hist));
@@ -937,6 +869,8 @@ void ResetCodeHistogram()
     memset(s_enter, 0, sizeof(s_enter));
     s_samples = 0;
     s_samplesCombat = 0;
+    s_lastValid = -1;
+    s_gapSamples = 0;
     s_histStart = MsNow();
     lstrcpynA(s_status, "goap: histogram reset", sizeof(s_status));
 }
@@ -953,8 +887,10 @@ void DumpCodeHistogram()
     }
     const DWORD secs = s_histStart ? (MsNow() - s_histStart) / 1000 : 0;
     char l[220];
-    sprintf_s(l, "  %u samples over %u s, of them %u in combat",
-              s_samples, (unsigned)secs, s_samplesCombat);
+    sprintf_s(l, "  %u samples over %u s, of them %u in combat"
+                 " (plus %u samples with code -1: the gap between selections,"
+                 " not a state)",
+              s_samples, (unsigned)secs, s_samplesCombat, s_gapSamples);
     logFile << l << std::endl;
     logFile << "  code  goal                      frames   in combat   entries"
             << std::endl;
@@ -985,251 +921,28 @@ void DumpCodeHistogram()
               dashFrames ? "the planner DOES pick dash sometimes"
                          : "the planner NEVER picks dash");
     logFile << l << std::endl;
+
+    // Оговорка о метке боя — рядом с числами, а не в документе.
+    // Детектор гаснет не мгновенно, поэтому «хвост» боя (например
+    // VictoryPose, которая играет уже после драки) подписывается боевым.
+    // Это смещение вверх у боевых столбцов, и его надо знать, читая
+    // таблицу.
+    logFile << "  NOTE: the combat label has a tail - states that play right"
+               " after a fight (VictoryPose) still count as combat."
+            << std::endl;
+    // И перекрёстная ссылка на второй прибор: ноль здесь не означает
+    // «пешка не рвётся». DashWatch считает сами состояния рывка и с
+    // 74.0 подписывает каждое кодом приоритета.
+    logFile << "  CROSS-CHECK: zero here means the planner never SELECTS dash."
+               " Whether the pawn dashes at all is DashWatch's number, and it"
+               " now records the priority code at the moment of the dash."
+            << std::endl;
+
     sprintf_s(s_status, "goap: hist %u samples, dash 84/85 = %u frames (%u in combat)",
               s_samples, dashFrames, dashCombat);
 }
 
 
-// --- ДИФФ ДВУХ ЦЕЛЕЙ (историческое) ------------------------------------------
-//
-// Ключ к правке. На диске `Follow.gop` и `DashFollow.gop` побайтово
-// одинаковы, кроме ОДНОГО числа — идентификатора моторной команды
-// (1 против 0xAD). Обе цели загружены в планировщик как ресурсы
-// rAIGoalPlanning (160 B каждый).
-//
-// Значит достаточно сравнить два загруженных ресурса и найти место, где
-// они расходятся. Это и будет поле, которым цель выбирает команду —
-// четыре байта, которые превращают «идти» в «рвануть».
-//
-// Только чтение. Ничего не пишем.
-static uintptr_t FindGoalByPath(uintptr_t planner, const char* want, char* pathOut, int cap)
-{
-    for (uint32_t off = 0; off + 4 <= 0x400; off += 4) {
-        uintptr_t res = 0;
-        if (!Runtime::Mem::RdPtr((void*)(planner + off), &res)) continue;
-        if (!Runtime::Mem::LooksHeap(res)) continue;
-        char nm[48] = {};
-        if (!Runtime::Mem::NameOfLiveObject(res, nm, sizeof(nm))) continue;
-        if (strcmp(nm, "rAIGoalPlanning") != 0) continue;
-        char path[96] = {};
-        if (!ResourcePath(res, path, sizeof(path))) continue;
-
-        // Сравниваем ХВОСТ пути: "Follow" не должен совпасть с "DashFollow".
-        const char* tail = path;
-        for (const char* p = path; *p; ++p) if (*p == '\\' || *p == '/') tail = p + 1;
-        if (strcmp(tail, want) != 0) continue;
-        if (pathOut && cap > 0) lstrcpynA(pathOut, path, cap);
-        return res;
-    }
-    return 0;
-}
-
-void DumpGoalDiff()
-{
-    if (!Runtime::Mem::InWorld()) return;
-    const uintptr_t pawn = Runtime::MainPawnBody();
-    if (!BodyAlive(pawn)) {
-        lstrcpynA(s_status, "goap: pawn body not ready", sizeof(s_status));
-        return;
-    }
-    const uintptr_t planner = ResolvePlanner(pawn, 0, 0);
-    if (!planner) {
-        lstrcpynA(s_status, "goap: planner not found inside cAICtrl", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-
-    char pa[96] = {}, pb[96] = {};
-    const uintptr_t a = FindGoalByPath(planner, "Follow", pa, sizeof(pa));
-    const uintptr_t b = FindGoalByPath(planner, "DashFollow", pb, sizeof(pb));
-    if (!a || !b) {
-        sprintf_s(s_status, "goap: Follow %s, DashFollow %s",
-                  a ? "ok" : "MISSING", b ? "ok" : "MISSING");
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-
-    logFile << "GoapProbe: === diff Follow vs DashFollow ===" << std::endl;
-    logFile << "  A 0x" << std::hex << a << " " << pa << std::endl;
-    logFile << "  B 0x" << b << " " << pb << std::dec << std::endl;
-
-    uint32_t A[40] = {}, B[40] = {};
-    const uint32_t bytes = 160;               // sizeof rAIGoalPlanning
-    if (!Runtime::Mem::Rd((void*)a, A, bytes) || !Runtime::Mem::Rd((void*)b, B, bytes)) {
-        lstrcpynA(s_status, "goap: resources unreadable", sizeof(s_status));
-        return;
-    }
-
-    int diffs = 0;
-    for (uint32_t i = 0; i < bytes / 4; ++i) {
-        if (A[i] == B[i]) continue;
-        ++diffs;
-        // Указатель или число? Если оба ведут на живые объекты — покажем
-        // их классы: расхождение может быть не в числе, а в структуре.
-        char na[48] = {}, nb[48] = {};
-        if (Runtime::Mem::LooksHeap(A[i])) Runtime::Mem::NameOfLiveObject((uintptr_t)A[i], na, sizeof(na));
-        if (Runtime::Mem::LooksHeap(B[i])) Runtime::Mem::NameOfLiveObject((uintptr_t)B[i], nb, sizeof(nb));
-        logFile << "    +0x" << std::hex << (i * 4) << "  A=0x" << A[i]
-                << "  B=0x" << B[i] << std::dec;
-        if (na[0] || nb[0]) logFile << "   (" << (na[0] ? na : "?") << " / "
-                                    << (nb[0] ? nb : "?") << ")";
-        logFile << std::endl;
-    }
-    if (!diffs) logFile << "    (identical - the difference lives deeper)" << std::endl;
-
-    // Ресурс маленький, содержимое целей наверняка за указателем. Если
-    // расхождение только в одном указателе — сравним и то, на что он
-    // показывает.
-    for (uint32_t i = 0; i < bytes / 4; ++i) {
-        if (A[i] == B[i]) continue;
-        if (!Runtime::Mem::LooksHeap(A[i]) || !Runtime::Mem::LooksHeap(B[i])) continue;
-        uint32_t sa[32] = {}, sb[32] = {};
-        if (!Runtime::Mem::Rd((void*)(uintptr_t)A[i], sa, sizeof(sa))) continue;
-        if (!Runtime::Mem::Rd((void*)(uintptr_t)B[i], sb, sizeof(sb))) continue;
-        logFile << "    -- inside the differing pointer at +0x" << std::hex
-                << (i * 4) << std::dec << ":" << std::endl;
-        for (int k = 0; k < 32; ++k) {
-            if (sa[k] == sb[k]) continue;
-            logFile << "       +0x" << std::hex << (k * 4) << "  A=0x" << sa[k]
-                    << "  B=0x" << sb[k] << std::dec;
-            if (sb[k] == 0xAD || sb[k] == 0xB0) logFile << "   <<< DASH COMMAND ID";
-            logFile << std::endl;
-        }
-    }
-
-    sprintf_s(s_status, "goap: %d differing dwords between Follow and DashFollow", diffs);
-    logFile << "  Read-only." << std::endl;
-}
-
-// --- РЕКУРСИВНЫЙ ДИФФ СТРУКТУР -----------------------------------------------
-//
-// Плоский дифф двух ресурсов показал главное: содержимое целей лежит НЕ
-// в самом ресурсе, а за указателями, и у каждой цели своя область
-// разбора (Follow в 0x0ED7xxxx, DashFollow в 0x0ED8xxxx). Смещения внутри
-// областей разные, поэтому «сравнить два блока подряд» бессмысленно.
-//
-// Зато роли полей совпадают: если у обоих в одном и том же месте лежит
-// указатель — это один и тот же по смыслу подобъект, и сравнивать надо
-// ИХ содержимое. Отсюда обход парами: идём по двум структурам синхронно,
-// расходящиеся ЧИСЛА показываем, расходящиеся УКАЗАТЕЛИ раскрываем.
-//
-// Файлы на диске различаются одним числом. Значит и здесь, спустившись
-// достаточно глубоко, мы обязаны увидеть ровно одно осмысленное
-// расхождение — идентификатор команды.
-struct DiffPair { uintptr_t a, b; int depth; char path[96]; };
-static DiffPair s_dp[64];
-static int      s_nDp = 0;
-
-static void DiffPush(uintptr_t a, uintptr_t b, int depth, const char* path)
-{
-    if (s_nDp >= 64) return;
-    for (int i = 0; i < s_nDp; ++i)
-        if (s_dp[i].a == a && s_dp[i].b == b) return;
-    s_dp[s_nDp].a = a; s_dp[s_nDp].b = b; s_dp[s_nDp].depth = depth;
-    lstrcpynA(s_dp[s_nDp].path, path, sizeof(s_dp[s_nDp].path));
-    ++s_nDp;
-}
-
-void DumpGoalDeepDiff()
-{
-    if (!Runtime::Mem::InWorld()) return;
-    const uintptr_t pawn = Runtime::MainPawnBody();
-    if (!BodyAlive(pawn)) { lstrcpynA(s_status, "goap: pawn not ready", sizeof(s_status)); return; }
-    const uintptr_t planner = ResolvePlanner(pawn, 0, 0);
-    if (!planner) {
-        lstrcpynA(s_status, "goap: planner not found inside cAICtrl", sizeof(s_status));
-        logFile << "GoapProbe: " << s_status << std::endl;
-        return;
-    }
-
-    const uintptr_t a = FindGoalByPath(planner, "Follow", 0, 0);
-    const uintptr_t b = FindGoalByPath(planner, "DashFollow", 0, 0);
-    if (!a || !b) { lstrcpynA(s_status, "goap: goals not found", sizeof(s_status)); return; }
-
-    logFile << "GoapProbe: === deep diff Follow vs DashFollow ===" << std::endl;
-    s_nDp = 0;
-    DiffPush(a, b, 0, "res");
-
-    const int kMaxDepth = 4;
-    const uint32_t kNodeBytes = 128;
-    int lines = 0, hits = 0, skipped = 0;
-
-    for (int i = 0; i < s_nDp && lines < 80; ++i) {
-        const DiffPair cur = s_dp[i];
-        if (cur.depth >= kMaxDepth) continue;
-        if (!Runtime::Mem::RegionOk(cur.a, kNodeBytes)) continue;
-        if (!Runtime::Mem::RegionOk(cur.b, kNodeBytes)) continue;
-
-        uint32_t A[kNodeBytes / 4], B[kNodeBytes / 4];
-        if (!Runtime::Mem::Rd((void*)cur.a, A, kNodeBytes)) continue;
-        if (!Runtime::Mem::Rd((void*)cur.b, B, kNodeBytes)) continue;
-
-        for (uint32_t k = 0; k < kNodeBytes / 4 && lines < 80; ++k) {
-            if (A[k] == B[k]) continue;
-            const bool pa = Runtime::Mem::LooksHeap((uintptr_t)A[k]);
-            const bool pb = Runtime::Mem::LooksHeap((uintptr_t)B[k]);
-
-            if (pa && pb) {
-                // ЗДЕСЬ БЫЛА ДЫРА, ИЗ-ЗА КОТОРОЙ ОБХОД ДАЛ 80 СТРОК МУСОРА.
-                //
-                // Раньше любая пара указателей раскрывалась. На первом же
-                // шаге обход попал в +0x70 — а там лежит не содержимое
-                // цели, а служебные блоки аллокатора: повторяющиеся с
-                // шагом 0x50 записи {ptr, 0x0EEA0000, ptr, ptr, ...,
-                // 0x5000000B, 0x46000002}, где 0x0EEA0000 — база
-                // 64-килобайтного сегмента кучи. Дальше обход честно
-                // сравнивал два РАЗНЫХ сегмента и печатал их различия.
-                //
-                // Правило: спускаемся в пару, только если обе стороны —
-                // объекты ОДНОГО класса по DTI. Безымянную пару пускаем
-                // ровно на один уровень от самого ресурса, дальше нет.
-                char ca[48] = {}, cb[48] = {};
-                const bool na = Runtime::Mem::NameOfLiveObject((uintptr_t)A[k], ca, sizeof(ca)) && ca[0];
-                const bool nb = Runtime::Mem::NameOfLiveObject((uintptr_t)B[k], cb, sizeof(cb)) && cb[0];
-                bool ok;
-                if (na && nb)       ok = (strcmp(ca, cb) == 0);
-                else if (!na && !nb) ok = (cur.depth == 0);
-                else                 ok = false;
-
-                if (!ok) {
-                    if (skipped < 12) {
-                        ++skipped;
-                        logFile << "    (skip " << cur.path << " +0x" << std::hex
-                                << (k * 4) << std::dec << ": classes "
-                                << (na ? ca : "(unnamed)") << " / "
-                                << (nb ? cb : "(unnamed)")
-                                << " - not a comparable pair)" << std::endl;
-                    }
-                    continue;
-                }
-                char np[96];
-                PathCat(np, sizeof(np), cur.path, k * 4, na ? ca : "->");
-                DiffPush((uintptr_t)A[k], (uintptr_t)B[k], cur.depth + 1, np);
-                continue;                       // адреса разные по природе
-            }
-            // Расхождение в ДАННЫХ — вот это интересно.
-            ++lines;
-            const bool isDash = (B[k] == 0xAD || B[k] == 0xB0 || A[k] == 0x01);
-            if (isDash) ++hits;
-            logFile << "    " << cur.path << " +0x" << std::hex << (k * 4)
-                    << "  A=0x" << A[k] << "  B=0x" << B[k] << std::dec;
-            if (B[k] == 0xAD) logFile << "   <<< DashFollow command id";
-            else if (B[k] == 0xB0) logFile << "   <<< DashFollowSt500 id";
-            else if (A[k] == 0x01 && B[k] > 0x80 && B[k] < 0x100)
-                logFile << "   <<< 1 -> command id, looks like THE field";
-            logFile << std::endl;
-        }
-    }
-
-    logFile << "  pairs walked: " << s_nDp << ", data differences: " << lines
-            << ", command-id candidates: " << hits
-            << ", pairs skipped as incomparable: " << skipped << std::endl;
-    logFile << "  NOTE: superseded by PlanCtrl A/B - the goal slot index is the"
-            << " priority code, so the .gop command id is no longer needed."
-            << std::endl;
-    sprintf_s(s_status, "goap: deep diff - %d data diffs, %d id candidates",
-              lines, hits);
-}
 
 void ToggleCodeWatch()
 {
@@ -1254,7 +967,6 @@ bool CodeWatchActive() { return s_watch; }
 
 void Tick()
 {
-    BackgroundStep();
     if (!s_watch) return;
     // Выгрузка мира делает все указатели недействительными.
     if (!Runtime::Mem::InWorld()) { s_planner = 0; s_tableReady = false; return; }
@@ -1288,7 +1000,12 @@ void Tick()
         ++s_samples;
         ++s_hist[code];
         if (fight) { ++s_samplesCombat; ++s_histCombat[code]; }
-        if (code != s_lastCode) ++s_enter[code];
+        // Вход считаем по последнему ДЕЙСТВИТЕЛЬНОМУ коду: возврат из
+        // промежуточного -1 в тот же код — не вход (см. комментарий выше).
+        if (code != s_lastValid) ++s_enter[code];
+        s_lastValid = code;
+    } else {
+        ++s_gapSamples;
     }
 
     if (code == s_lastCode) return;

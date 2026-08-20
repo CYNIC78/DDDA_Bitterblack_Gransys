@@ -2,7 +2,7 @@
 
 Канонические runtime-контракты DDDA AI Overhaul. Если поле/связь отсутствует здесь или в `FIELD_MAP.md`, использовать её в продуктовом коде нельзя без нового подтверждения.
 
-**Milestone:** Build 47 (`54e0573`)
+**Milestone:** Build 74.0 (`priority-rows`); последняя канонизация раскладки — Build 73.27
 
 **Платформа:** x86, Release/Win32, Steam/GOG через сигнатуры и DTI; transient heap addresses не канонизируются.
 
@@ -258,6 +258,40 @@ Selected runtime graphs могут одновременно нести transient
 
 Build 52 прошёл все 91 planner slots за один snapshot: 56 slots имеют direct GOAP links, из 70 codes, используемых `cmc.prt`, семантически mapped 42. Build 53 подтвердил стабильность карты 56/91 и впервые поймал live planner-only slots `74 = EscapeNotice2` и `76 = GotoOm`. Следовательно, selected runtime code использует весь диапазон `0..90`, даже если часть slots отсутствует в parsed `cmc.prt` rows. Не применять формулу `PlanCtrl` к `0xFFFFFFFF`.
 
+### 4.0 Код приоритета = слот загруженной цели (Build 73.27, CONFIRMED)
+
+Массив загруженных целей идёт от `planner + 0x08` с шагом 4; ресурс — `rAIGoalPlanning`, путь лежит строкой по `+0x08` самого ресурса.
+
+```text
+code = (slotOffset - 8) / 4
+PlanCtrl(code) = planner + 0x190 + code * 0x110
+```
+
+Пять сходящихся проверок: `1=Follow` (live, Build 40), `15=Air`, `54=WpnDaggerAtk`, `60=Em0600Cover` (все CONFIRMED по Guardian-таблице), плюс структурная — старший загруженный код `90` против ёмкости массива `PlanCtrl` `(25264-0x190)/0x110 = 91` слот (коды 0..90, хвост 112 B).
+
+Полная таблица — `docs/generated/PAWN_GOAL_CODES.md` (пересобирается `tools/goal_codes_from_log.py`, набор целей зависит от вокации пешки). Ключевые коды оружия: `52 WpnSwordAtk`, `53 WpnGSwordAtk`, `54 WpnDaggerAtk`, `55 WpnWandAtk`, `56 WpnShieldAtk`, `57 WpnBowAtk2`; рывок — `84 DashFollow`, `85 DashFollowSt500`.
+
+`planner + 0x17C` — текущий выбранный код. Значение `-1` (`0xFFFFFFFF`) — **промежуток между выборами, а не состояние**: считать его отдельным кодом или применять к нему формулу `PlanCtrl` нельзя.
+
+### 4.1 `cAIGoalPlanning::cPlanCtrl` — раскладка блока (Build 73.27, read-only)
+
+Построчный дифф `PlanCtrl(1)` против `PlanCtrl(84)` (элементы одного массива одного типа, поэтому смещения сопоставимы):
+
+| Offset | Field |
+|---:|---|
+| `+0x000` | vtable `cPlanCtrl` |
+| `+0x004` | cArray #1 (`count`, `capacity`, `flags`, `mpArray` по схеме §3.4) |
+| `+0x038` | cArray #2 |
+| `+0x04C` | cArray #3 |
+| `+0x060` | подобъект (vtable `0x015593F4`), внутри cArray по `+0x068` |
+| `+0x0A8..+0x0B4` | 4×`0xFFFFFFFF` — пустые слоты-сентинелы |
+| `+0x0C0/+0x0C4/+0x0C8` | float XYZ — **живая точка назначения плана** (меняется между снимками) |
+| `+0x0D0` | vtable `0x0155A4A8` |
+| `+0x0D4` | ptr на живое тело (кандидат: объект следования) |
+| `+0x0DC/+0x0E0` | флаги исполнения |
+
+Три cArray компилированной части присутствуют у ОБЕИХ целей (`count 1`), а всё, что заполняется при исполнении (`+0x060`-подобъект, XYZ, тело, флаги), у никогда не запускавшейся цели — нули. **`PlanCtrl` хранит состояние исполнения, а не условия выбора; править его для «разрешения» цели бессмысленно.**
+
 ### Current target
 
 `uCmc+0x2EB8` подтверждён как current combat target:
@@ -270,7 +304,7 @@ Build 52 прошёл все 91 planner slots за один snapshot: 56 slots �
 
 Итого: `+0x2EB8` — primary planning/combat target, но не гарантия активного execution: ссылка может сохраняться в planner-disabled damage/near-death states. `+0x4B28` — secondary/previous/lock candidate: может совпадать с current target или хранить предыдущего Wolf. `+0x14E0` появляется позднее/контекстно и похож на look-at/lock reference.
 
-### 4.1 Target-selection / lock-on слой (Build 59.x, read-only)
+### 4.2 Target-selection / lock-on слой (Build 59.x, read-only)
 
 Цель пешки (`uCmc+0x2EB8`) — это само **тело врага** (`uHumanEnemy`/`uEm*`), не отдельная карточка. Скоринг «кого бить» живёт в объектах, что ссылаются на тело. Вскрытые типы (все в TypeAtlas):
 

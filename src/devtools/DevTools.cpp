@@ -4291,86 +4291,56 @@ static void RenderDevToolsUI()
 
     // --- разведка планировщика пешки ---------------------------------------
     //
-    // Шаг 2 протокола «честный спринт»: понять, где в живом планировщике
-    // лежит набор действий. Только чтение.
-    {
-        ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1), "GOAP probe (pawn planner)");
-        if (ImGui::Button("Dump planner GOALS")) GoapProbe::DumpPlannerGoals();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The planner holds an array of rAIGoalPlanning "
-                              "resources - the loaded .gop files. The SLOT INDEX "
-                              "in that array is the priority code: code = (slot - 8) / 4. "
-                              "Confirmed by Follow=1, Air=15, WpnDaggerAtk=54, "
-                              "Em0600Cover=60 and by the PlanCtrl array holding "
-                              "exactly 91 slots for codes 0..90.");
-        ImGui::SameLine();
-        if (ImGui::Button("PlanCtrl A/B (Follow vs Dash)")) GoapProbe::DumpPlanCtrlAB();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Dumps and diffs PlanCtrl(1) against PlanCtrl(84). "
-                              "These are elements of ONE array of ONE type, so the "
-                              "same offset means the same field - unlike the two "
-                              "parsed goal resources, which live in separate heap "
-                              "areas with different layouts. Read-only.");
-        ImGui::SameLine();
-        if (ImGui::Button("Code histogram")) GoapProbe::DumpCodeHistogram();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How many frames the planner spent in each priority "
-                              "code, split by combat. Answers the whole question of "
-                              "this track with a number: does code 84 (DashFollow) "
-                              "ever get picked? Enable 'code watch' first.");
-        ImGui::SameLine();
-        if (ImGui::Button("Deep diff (structural)")) GoapProbe::DumpGoalDeepDiff();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("SUPERSEDED by PlanCtrl A/B. Its first run walked into "
-                              "the heap allocator headers and reported 80 meaningless "
-                              "differences; it now refuses pairs whose DTI classes do "
-                              "not match. Kept because the class-guarded walk is still "
-                              "useful elsewhere.");
-        ImGui::SameLine();
-        if (ImGui::Button("Diff Follow vs DashFollow")) GoapProbe::DumpGoalDiff();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("On disk the two .gop files differ by exactly one dword "
-                              "- the motion command id (1 vs 0xAD). Both are loaded. "
-                              "This diff finds where that number lives in memory.");
-        ImGui::SameLine();
-        if (ImGui::Button("Dump pawn planner")) GoapProbe::DumpPawnPlanner();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Maps the pawn body children, finds cAIGoalPlanning, "
-                              "reads the current priority code (+0x17C) and searches "
-                              "for the dash command ids (0xAD / 0xB0 / 0xB5) from the "
-                              ".gop files. Read-only.");
-        ImGui::SameLine();
-        const bool bg = GoapProbe::BackgroundWalkActive();
-        if (bg) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
-        if (ImGui::Button(bg ? "walking... (stop)" : "Background walk (depth 5)")) {
-            if (bg) GoapProbe::StopBackgroundWalk();
-            else    GoapProbe::StartBackgroundWalk();
-        }
-        if (bg) ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Same search, but a slice per frame: the game does not "
-                              "stutter and the walk can go five levels deep. The one "
-                              "shot dump is capped at three levels and the planner is "
-                              "not there.");
-        ImGui::SameLine();
-        if (ImGui::Button("Dump Arisen (stamina compare)")) GoapProbe::DumpArisenCompare();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The pawn body holds 25+ rPlStamina rule resources but no "
-                              "live cPlStamina object. If the Arisen has the live one, "
-                              "pawns literally have stamina rules without a stamina "
-                              "meter - which would explain the unused St500 threshold.");
-        ImGui::SameLine();
+    // Панель СВЁРНУТА и разложена по двум строкам. Причина простая: восемь
+    // кнопок в ряд растягивали окно на весь экран, и нужную приходилось
+    // искать глазами. Плюс пять проб отработали свой вопрос и удалены
+    // вместе с кодом (см. GoapProbe.h).
+    if (ImGui::CollapsingHeader("GOAP probe (pawn dash track)")) {
+        // Ряд 1 — измерение. Именно этим снимаются числа трека.
         const bool w = GoapProbe::CodeWatchActive();
         if (w) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
         if (ImGui::Button(w ? "code watch: ON" : "code watch: off"))
             GoapProbe::ToggleCodeWatch();
         if (w) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Logs every change of the pawn's selected priority code "
-                              "together with its current act, and feeds the histogram. "
-                              "Turning it ON resets the histogram, so each session is "
-                              "a clean measurement.");
+            ImGui::SetTooltip("Logs every change of the pawn's selected priority "
+                              "code with its current act, and feeds the histogram. "
+                              "Turning it ON resets the histogram, so every "
+                              "measurement starts clean.");
+        ImGui::SameLine();
+        if (ImGui::Button("Histogram")) GoapProbe::DumpCodeHistogram();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Frames spent in each priority code, split by combat. "
+                              "Enable 'code watch' first.");
+        ImGui::SameLine();
+        if (ImGui::Button("Plan interfaces")) GoapProbe::DumpPlanInterfaces();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Which cCmc* motor commands are wired into the live "
+                              "plan blocks. Every dash so far happened under code 1 "
+                              "(Follow), so the jog/dash switch lives inside that "
+                              "goal. Press once while the pawn jogs and once while "
+                              "it dashes.");
+
+        // Ряд 2 — карты и разборы. Нажимаются редко, обычно один раз.
+        if (ImGui::Button("Goal codes")) GoapProbe::DumpPlannerGoals();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("All loaded goals with their priority codes "
+                              "(code = (slot - 8) / 4). Re-run it on a pawn of a "
+                              "different vocation: the goal set is not the same.");
+        ImGui::SameLine();
+        if (ImGui::Button("Priority rows")) GoapProbe::DumpPriorityRows();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("All 85 cPrioParam rows by bucket, with the goal name "
+                              "next to each code. Says which codes the priority "
+                              "layer can nominate at all - dash codes 84/85 have no "
+                              "row.");
+        ImGui::SameLine();
+        if (ImGui::Button("PlanCtrl A/B")) GoapProbe::DumpPlanCtrlAB();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Dumps and diffs PlanCtrl(1) against PlanCtrl(84). "
+                              "Same array, same type, so equal offsets mean equal "
+                              "fields. Read-only.");
+
         ImGui::TextWrapped("%s", GoapProbe::Status());
     }
 

@@ -197,6 +197,186 @@ uintptr_t FindChildByClass(uintptr_t body, uint32_t bodyBytes,
     return 0;
 }
 
+// --- Планировщик пешки: код приоритета и имя цели (только чтение) -----------
+//
+// Разрешение — ПО ИМЕНИ КЛАССА. Смещение cAICtrl +0x2E64 у тел партии
+// наблюдалось не раз, но слоты тела переиспользуются между состояниями
+// (FIX_RULES §6: планировщик уже «пропадал» с зашитого cAICtrl+0x68),
+// поэтому известное смещение — только подсказка, а решает имя.
+//
+// Кэш на одно тело: полный перебор двух объектов по именам стоит дорого,
+// а зовут это каждые 150 мс. Смена тела или выгрузка мира кэш сбрасывают.
+static const uint32_t kPawnBodyBytes  = 0x5A10;   // тело uCmc
+static const uint32_t kAICtrlBytes    = 704;      // cAICtrl
+static const uint32_t kGoalSlot0      = 0x08;     // массив загруженных целей
+static const int32_t  kMaxGoalCode    = 91;       // коды 0..90
+
+static uintptr_t g_plannerBody    = 0;
+static uintptr_t g_plannerPtr     = 0;
+static DWORD     g_plannerTryMs   = 0;
+
+static uintptr_t ResolvePawnPlanner()
+{
+    if (!InWorld()) { g_plannerBody = 0; g_plannerPtr = 0; return 0; }
+
+    const uintptr_t body = MainPawnBody();
+    if (!body) { g_plannerBody = 0; g_plannerPtr = 0; return 0; }
+    if (body == g_plannerBody && g_plannerPtr) return g_plannerPtr;
+
+    // Не искать чаще раза в две секунды: перебор по именам классов —
+    // дорогая работа, а тик пешек частый.
+    const DWORD now = MsNow();
+    if (body == g_plannerBody && g_plannerTryMs && now - g_plannerTryMs < 2000)
+        return 0;
+    g_plannerBody  = body;
+    g_plannerTryMs = now;
+    g_plannerPtr   = 0;
+
+    // Шаг 1: cAICtrl. Сначала по известному смещению, но С ПРОВЕРКОЙ ИМЕНИ.
+    uintptr_t ctrl = 0;
+    if (RdPtr((void*)(body + 0x2E64), &ctrl) && LooksHeap(ctrl)) {
+        char nm[48] = {};
+        if (!NameOfLiveObject(ctrl, nm, sizeof(nm)) || strcmp(nm, "cAICtrl") != 0)
+            ctrl = 0;
+    } else {
+        ctrl = 0;
+    }
+    if (!ctrl) ctrl = FindChildByClass(body, kPawnBodyBytes, "cAICtrl", 0);
+    if (!ctrl) return 0;
+
+    // Шаг 2: планировщик внутри cAICtrl — тоже по имени.
+    g_plannerPtr = FindChildByClass(ctrl, kAICtrlBytes, "cAIGoalPlanning", 0);
+    return g_plannerPtr;
+}
+
+bool PawnPriorityCode(int32_t* codeOut)
+{
+    if (codeOut) *codeOut = -1;
+    const uintptr_t planner = ResolvePawnPlanner();
+    if (!planner) return false;
+    int32_t code = -1;
+    if (!Rd((void*)(planner + 0x17C), &code, 4)) return false;
+    if (codeOut) *codeOut = code;
+    return true;
+}
+
+bool PawnGoalName(int32_t code, char* out, int cap)
+{
+    if (!out || cap < 2) return false;
+    out[0] = 0;
+    if (code < 0 || code >= kMaxGoalCode) return false;
+    const uintptr_t planner = ResolvePawnPlanner();
+    if (!planner) return false;
+
+    uintptr_t res = 0;
+    if (!RdPtr((void*)(planner + kGoalSlot0 + (uint32_t)code * 4), &res)) return false;
+    if (!LooksHeap(res)) return false;
+    char nm[48] = {};
+    if (!NameOfLiveObject(res, nm, sizeof(nm)) || strcmp(nm, "rAIGoalPlanning") != 0)
+        return false;
+
+    // У ресурса по +0x08 лежит путь строкой (подтверждено на rPlStamina и
+    // на всех 69 целях планировщика).
+    char path[96] = {};
+    if (!Rd((void*)(res + 0x08), path, sizeof(path) - 1)) return false;
+    int n = 0;
+    for (; n < (int)sizeof(path) - 1 && path[n]; ++n) {
+        const unsigned char c = (unsigned char)path[n];
+        if (c < 0x20 || c > 0x7E) break;
+    }
+    path[n] = 0;
+    if (n <= 3) return false;
+
+    const char* tail = path;
+    for (const char* p = path; *p; ++p) if (*p == '\\' || *p == '/') tail = p + 1;
+    lstrcpynA(out, tail, cap);
+    return out[0] != 0;
+}
+
+// Моторные интерфейсы внутри живого блока плана.
+//
+// PlanCtrl(code) = planner + 0x190 + code*0x110 (SOURCE_OF_TRUTH §4.0).
+//
+// ПЕРВАЯ ВЕРСИЯ ВЕРНУЛА «(none found)» И БЫЛА ПРАВА ПО-СВОЕМУ.
+// Она смотрела на глубину 1: сам указатель и то, на что он указывает.
+// А документированная цепочка длиннее (SOURCE_OF_TRUTH §5.1):
+//
+//     PlanCtrl -> узел плана -> +0x04 -> ActionInterfaceParam -> +0x08 -> cCmc*
+//
+// То есть до моторной команды три разыменования, а не одно. Ответ
+// «не нашёл» при поиске на неверной глубине — ровно тот сорт вранья, за
+// которым мы охотимся весь трек, поэтому теперь функция не только ищет
+// глубже, но и ДОКЛАДЫВАЕТ, где именно искала: в строку дописывается
+// «(depth 3, N nodes)». Предел инструмента виден в его выводе.
+//
+// Обход ограничен: 64 узла, по 0x40 байт на узел, глубина 3. Это дёшево
+// и вызывается по событию, а не каждый кадр.
+bool PawnPlanInterfaces(int32_t code, char* out, int cap)
+{
+    if (!out || cap < 2) return false;
+    out[0] = 0;
+    if (code < 0 || code >= kMaxGoalCode) return false;
+    const uintptr_t planner = ResolvePawnPlanner();
+    if (!planner) return false;
+
+    const uintptr_t block = planner + 0x190 + (uint32_t)code * 0x110;
+    if (!RegionOk(block, 0x110)) return false;
+
+    struct QNode { uintptr_t addr; uint32_t bytes; int depth; };
+    QNode q[64];
+    int nq = 0, head = 0;
+    q[nq].addr = block; q[nq].bytes = 0x110; q[nq].depth = 0; ++nq;
+
+    char seen[6][40];
+    int found = 0, written = 0, visited = 0;
+    memset(seen, 0, sizeof(seen));
+
+    while (head < nq && found < 6) {
+        const QNode cur = q[head++];
+        ++visited;
+        if (!RegionOk(cur.addr, cur.bytes)) continue;
+
+        for (uint32_t off = 0; off + 4 <= cur.bytes; off += 4) {
+            uintptr_t p = 0;
+            if (!RdPtr((void*)(cur.addr + off), &p)) continue;
+            if (!LooksHeap(p) || p == cur.addr) continue;
+
+            char nm[48] = {};
+            const bool named = NameOfLiveObject(p, nm, sizeof(nm)) && nm[0];
+
+            if (named && (strncmp(nm, "cCmc", 4) == 0 || strstr(nm, "ActionInterface"))) {
+                bool dup = false;
+                for (int i = 0; i < found; ++i)
+                    if (!strcmp(seen[i], nm)) { dup = true; break; }
+                if (dup) continue;
+                lstrcpynA(seen[found], nm, sizeof(seen[found]));
+                ++found;
+                if (written && written < cap - 2) { out[written++] = ','; out[written++] = ' '; }
+                for (const char* z = nm; *z && written < cap - 1; ++z) out[written++] = *z;
+                out[written] = 0;
+                if (found >= 6) break;
+                continue;   // нашли команду — глубже по этой ветке не идём
+            }
+
+            // Не команда — кандидат на промежуточный узел цепочки.
+            // Живые тела и списки актёров в очередь не берём: там чужая
+            // подсистема, и мы уже обжигались на соседях по списку.
+            if (named && (strncmp(nm, "uPl", 3) == 0 || strncmp(nm, "uCmc", 4) == 0
+                       || strncmp(nm, "uEm", 3) == 0 || strncmp(nm, "uNpc", 4) == 0))
+                continue;
+            if (cur.depth >= 3 || nq >= 64) continue;
+            q[nq].addr = p; q[nq].bytes = 0x40; q[nq].depth = cur.depth + 1; ++nq;
+        }
+    }
+
+    // Предел поиска — частью ответа, а не примечанием в чужой голове.
+    char tail[48];
+    wsprintfA(tail, "%s(depth 3, %d nodes)", found ? "  " : "", visited);
+    for (const char* z = tail; *z && written < cap - 1; ++z) out[written++] = *z;
+    out[written] = 0;
+    return found > 0;
+}
+
 uintptr_t ActObjectOf(uintptr_t body)
 {
     if (!body) return 0;

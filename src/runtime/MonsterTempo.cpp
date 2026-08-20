@@ -394,6 +394,13 @@ struct AnimTrack {
     uintptr_t actVt;                  // vtable действия, для которого решали
     bool      actIsAttack;
     char      kind[16];               // для списка в панели
+    // Тело попало сюда не как монстр, а по переопределению (пешка).
+    // Для него не действует ограничение «только атаки»: слою пешек нужен
+    // как раз темп БЕГА, а не замаха. И при снятии переопределения такому
+    // телу возвращаются исходные значения.
+    bool      viaOverride;
+    bool      actIsMove;              // тело сейчас в состоянии передвижения
+    bool      actClassified;          // состояние уже разбирали (см. ловушку ниже)
 };
 static AnimTrack g_animTrack[kMaxTracked] = {};
 static int       g_animCount = 0;
@@ -414,6 +421,47 @@ static int       g_animScope = kScopeAll;
 //   1.0 — кто быстро бегает, тот быстро и бьёт (цельное существо);
 //   между — смесь.
 static float     g_animCoupling = 0.0f;
+
+// Разрешение применять ряд анимации к телам с переопределением (пешки).
+static bool      g_animForOverrides = false;
+static uint32_t  g_animRestores = 0;   // сколько раз снимали переопределение
+
+void SetAnimForOverrides(bool on) { g_animForOverrides = on; }
+bool GetAnimForOverrides()        { return g_animForOverrides; }
+
+// Read-only проба ряда у произвольного тела. Печатает вердикт один раз
+// на метку: список проверенных меток набирается сам, как у видов.
+bool AnimRowProbe(uintptr_t body, const char* label)
+{
+    if (!body || !label || !label[0]) return false;
+    static char s_probed[8][24] = {};
+    static int  s_nProbed = 0;
+    for (int i = 0; i < s_nProbed; ++i)
+        if (!strcmp(s_probed[i], label)) return false;
+    if (s_nProbed < 8) { lstrcpynA(s_probed[s_nProbed], label, 24); ++s_nProbed; }
+
+    float cur[kAnimRateCount] = {};
+    const bool readOk = Mem::Rd((void*)(body + kAnimRateOff0), cur, sizeof(cur));
+    int ones = 0, plausible = 0;
+    for (int k = 0; readOk && k < kAnimRateCount; ++k) {
+        const float v = cur[k];
+        if (!(v == v)) continue;
+        if (v >= 0.05f && v <= 8.0f) ++plausible;
+        if (v == 1.0f) ++ones;
+    }
+    char l[240];
+    sprintf_s(l, "Tempo: anim row probe %s at 0x%08X +0x%04X: %s"
+                 " %.3f %.3f %.3f %.3f %.3f  (plausible %d/5, exactly 1.0: %d/5)"
+                 " -> %s",
+              label, (unsigned)body, (unsigned)kAnimRateOff0,
+              readOk ? "values" : "UNREADABLE",
+              cur[0], cur[1], cur[2], cur[3], cur[4], plausible, ones,
+              (readOk && plausible == kAnimRateCount && ones > 0)
+                  ? "row looks like the rate row - coupling is possible"
+                  : "does NOT look like the rate row - do not write");
+    logFile << l << std::endl;
+    return readOk && plausible == kAnimRateCount && ones > 0;
+}
 
 // СЧЁТЧИК ЧУЖИХ ЗАПИСЕЙ.
 //
@@ -643,7 +691,12 @@ static float AnimFactorFor(uintptr_t body)
 // чтение 20 байт на монстра.
 void AnimTick()
 {
-    if (!g_animEnabled || !g_animCount) return;
+    // Ряд анимации нужен двум потребителям: монстрам (`animEnabled`) и
+    // слою пешек (`pawnHaste.animCouple`). Раньше здесь стоял только
+    // первый флаг — и связка анимации у пешки молча не работала бы при
+    // выключенном темпе монстров. Та же ошибка, что была с хуками
+    // передвижения, ловим её заранее.
+    if ((!g_animEnabled && !g_animForOverrides) || !g_animCount) return;
     AnimTimer timer;
     for (int i = 0; i < g_animCount; ++i) {
         AnimTrack& t = g_animTrack[i];
@@ -656,7 +709,51 @@ void AnimTick()
         // сменился сам объект действия: имя стоит поиска по vtable, а
         // указатель — одно чтение.
         float factor = t.factor;
-        if (g_animScope == kScopeAttack) {
+
+        // ТЕЛА ПАРТИИ: ТОЛЬКО ПЕРЕДВИЖЕНИЕ, И ТОЛЬКО ПЕРВОЕ ПОЛЕ.
+        //
+        // Наблюдение за рядом (74.4) расставило всё по местам:
+        //
+        //     act cPlActWait          1.000 1.000 1.000 1.000 1.000
+        //     act cPlActWalk          1.060 1.000 1.000 1.000 1.000
+        //     act cPlActRun           1.150 1.000 1.000 1.000 1.000
+        //     act cPlActWpnDagger...  1.000 1.000 1.000 1.000 1.000
+        //
+        // ПЕРВОЕ поле — темп передвижения, его ведёт движок и меняет с
+        // состоянием. Остальные четыре стоят на 1.0 всегда. Мы же писали
+        // во все пять и в любом состоянии — отсюда «1.300 при cPlActWait»
+        // в логе: дёрганая анимация покоя, ускоренный замах и общее
+        // ощущение, что стало хуже.
+        //
+        // Теперь для тел из переопределений: множитель применяется только
+        // в состояниях передвижения и только к полю [0].
+        if (t.viaOverride) {
+            const uintptr_t act = ActObjectOf(t.body);
+            uintptr_t vt = 0;
+            if (act) Mem::RdPtr((void*)act, &vt);
+            // ЛОВУШКА ПЕРВОГО КАДРА. Изначально t.actVt = 0, и если в этот
+            // самый момент действие не резолвится (vt тоже 0), условие
+            // «vt != t.actVt» ложно — состояние НИКОГДА не классифицируется,
+            // и множитель молча не применяется. Ровно тот сорт тихого
+            // отказа, который мы весь трек и вылавливаем: флаг «уже
+            // разбирали» должен быть отдельным, а не выводиться из нуля.
+            if (vt != t.actVt || !t.actClassified) {
+                t.actClassified = (vt != 0);
+                t.actVt = vt;
+                char nm[48] = {};
+                if (act) Mem::NameOfLiveObjectSafe((const void*)act, nm, sizeof(nm));
+                t.actIsMove = nm[0]
+                    && (!strcmp(nm, "cPlActRun") || !strcmp(nm, "cPlActWalk")
+                        || !strcmp(nm, "cPlActRunEnd")
+                        || !strcmp(nm, "cPlActHoldWeaponMv")
+                        || !strncmp(nm, "cPlActDash", 10));
+            }
+            if (!t.actIsMove) factor = 1.0f;
+        }
+
+        // Пешке нужен темп БЕГА, а не замаха: ограничение «только атаки»
+        // к телам из переопределений не применяется.
+        if (g_animScope == kScopeAttack && !t.viaOverride) {
             // Один указатель за кадр; имя класса — только когда действие
             // сменилось, и то один раз на класс за сессию (кэш по vtable).
             const uintptr_t act = ActObjectOf(t.body);
@@ -683,9 +780,13 @@ void AnimTick()
             }
         }
 
+        // У тел из переопределений трогаем только поле [0]: остальные
+        // четыре у пешки неподвижны, и лезть в них незачем.
+        const int nFields = t.viaOverride ? 1 : kAnimRateCount;
+
         float want[kAnimRateCount];
         bool  dirty = false;
-        for (int k = 0; k < kAnimRateCount; ++k) {
+        for (int k = 0; k < nFields; ++k) {
             const float v = cur[k];
             // Мусор и явно не множители пропускаем: тело могло быть
             // переиспользовано движком под другой объект.
@@ -700,10 +801,10 @@ void AnimTick()
             if (w != v) dirty = true;
         }
         if (dirty) {
-            Mem::WrSafe((void*)(t.body + kAnimRateOff0), want, sizeof(want));
+            Mem::WrSafe((void*)(t.body + kAnimRateOff0), want, nFields * sizeof(float));
             ++g_animOurWrites;
         }
-        for (int k = 0; k < kAnimRateCount; ++k) t.mine[k] = want[k];
+        for (int k = 0; k < nFields; ++k) t.mine[k] = want[k];
         t.init = true;
     }
 }
@@ -714,11 +815,11 @@ void RefreshTable()
     // включить и при выключенном [monsterTempo] enabled.
     OverridesExpire();
 
-    if (g_animEnabled) {
+    if (g_animEnabled || g_animForOverrides) {
         AnimTrack fresh[kMaxTracked] = {};
         int m = 0;
         float alo = 99.0f, ahi = 0.0f;
-        for (int i = 0; i < g_nAct && m < kMaxTracked; ++i) {
+        for (int i = 0; g_animEnabled && i < g_nAct && m < kMaxTracked; ++i) {
             const uintptr_t body = g_act[i].ptr;
             if (!body) continue;
             if (!KindIsEnemy(g_act[i].kind)) continue;
@@ -769,6 +870,115 @@ void RefreshTable()
             if (t.factor < alo) alo = t.factor;
             if (t.factor > ahi) ahi = t.factor;
         }
+        // ТЕЛА ИЗ ПЕРЕОПРЕДЕЛЕНИЙ (пешка). Симметрично таблице передвижения.
+        //
+        // Гейт строже, чем для видов: тут мы пишем не в монстра, которого
+        // не жалко, а в тело партии, и смещение подтверждено только на
+        // монстрах. Требуем, чтобы ВСЕ пять полей были ровно 1.0 —
+        // «ряд на месте и в покое». Если там что-то другое, запись не
+        // состоится, а в логе останется вердикт пробы.
+        if (g_animForOverrides) {
+            for (int i = 0; i < g_nOvr && m < kMaxTracked; ++i) {
+                const uintptr_t b = g_ovr[i].body;
+                if (!b || g_ovr[i].atk == 1.0f) continue;
+                bool dup = false;
+                for (int k = 0; k < m; ++k) if (fresh[k].body == b) { dup = true; break; }
+                if (dup) continue;
+
+                // ГЕЙТ ОСЛАБЛЕН ПО ЖИВОМУ ЗАМЕРУ 74.3, И ВОТ ПОЧЕМУ.
+                //
+                // Первая проба на стоящей пешке дала «1.000 x5» и зелёный
+                // свет. Вторая, снятая на бегу, дала:
+                //
+                //     1.060 1.000 1.000 1.000 1.000 -> NOT the rate row
+                //
+                // Это не другой ряд. Это ТОТ ЖЕ ряд, в котором первое поле
+                // ведёт сам движок: у бегущего тела темп воспроизведения
+                // не равен единице. Требование «все пять ровно 1.0»
+                // отказывало ровно в том состоянии, ради которого связка и
+                // задумана, — на бегу.
+                //
+                // Поэтому условие теперь то же, что у видов: все пять
+                // похожи на множители (0.05…8.0) и хотя бы одно ровно 1.0.
+                // Защита от чужой памяти сохраняется, а живое поле больше
+                // не считается уликой против ряда. Записи это не пугает:
+                // AnimTick перечитывает базу каждый кадр и умножает на
+                // неё, а не на нашу прошлую запись.
+                char nm[24] = {};
+                Mem::NameOfLiveObject(b, nm, sizeof(nm));
+                AnimRowProbe(b, nm[0] ? nm : "override-body");
+                {
+                    float cur[kAnimRateCount] = {};
+                    if (!Mem::Rd((void*)(b + kAnimRateOff0), cur, sizeof(cur))) continue;
+                    bool sane = true, anyOne = false;
+                    for (int k = 0; k < kAnimRateCount; ++k) {
+                        const float v = cur[k];
+                        if (!(v == v) || v < 0.05f || v > 8.0f) { sane = false; break; }
+                        if (v == 1.0f) anyOne = true;
+                    }
+                    if (!sane || !anyOne) continue;
+                }
+
+                AnimTrack& t = fresh[m];
+                t.body = b;
+                t.viaOverride = true;
+                float f = g_ovr[i].atk;
+                if (f < kAnimMin) f = kAnimMin;
+                if (f > kAnimMax) f = kAnimMax;
+                t.factor = f;
+                lstrcpynA(t.kind, nm[0] ? nm : "pawn", sizeof(t.kind));
+                for (int k = 0; k < g_animCount; ++k) {
+                    if (g_animTrack[k].body != b) continue;
+                    t.init = g_animTrack[k].init;
+                    // Состояние действия тоже переносим: иначе каждые
+                    // 150 мс мы заново резолвили бы имя класса действия.
+                    t.actVt = g_animTrack[k].actVt;
+                    t.actIsMove = g_animTrack[k].actIsMove;
+                    t.actClassified = g_animTrack[k].actClassified;
+                    for (int q = 0; q < kAnimRateCount; ++q) {
+                        t.base[q] = g_animTrack[k].base[q];
+                        t.mine[q] = g_animTrack[k].mine[q];
+                    }
+                    break;
+                }
+                ++m;
+            }
+        }
+
+        // ВОЗВРАТ ИСХОДНОГО ПРИ СНЯТИИ.
+        //
+        // У монстра исчезнувшая дорожка — это смерть или выгрузка, и
+        // оставленное значение никого не волнует. У пешки волнует: рывок
+        // кончился, а анимация осталась быстрой навсегда. Поэтому тела,
+        // попавшие сюда по переопределению, при выпадении из таблицы
+        // получают свои числа обратно.
+        for (int k = 0; k < g_animCount; ++k) {
+            AnimTrack& old = g_animTrack[k];
+            if (!old.body || !old.viaOverride || !old.init) continue;
+            bool still = false;
+            for (int q = 0; q < m; ++q) if (fresh[q].body == old.body) { still = true; break; }
+            if (still) continue;
+            Mem::WrSafe((void*)(old.body + kAnimRateOff0), old.base, sizeof(float));
+            // ЛОГ СТАЛ ПРИБОРОМ ТОЛЬКО ПОСЛЕ ТОГО, КАК ЕГО ЗАТКНУЛИ.
+            //
+            // В замере 74.4 эта строка повторилась под сотню раз подряд —
+            // и в этом была вся диагностика: дорожка ставилась и снималась
+            // каждые 150 мс, то есть ускорение мигало. Само по себе
+            // мигание чинится в слое пешек (гистерезис), а здесь строка
+            // становится счётчиком: первые пять подробно, дальше число.
+            ++g_animRestores;
+            if (g_animRestores <= 5) {
+                char l[180];
+                sprintf_s(l, "Tempo: anim restored on 0x%08X %s (override ended, #%u)",
+                          (unsigned)old.body, old.kind[0] ? old.kind : "?",
+                          g_animRestores);
+                logFile << l << std::endl;
+            } else if (g_animRestores == 6) {
+                logFile << "Tempo: anim restore is repeating - further ones are"
+                           " counted silently (see the panel)" << std::endl;
+            }
+        }
+
         // Счётчик последним — по той же причине, что и у таблицы хуков.
         for (int k = 0; k < m; ++k) g_animTrack[k] = fresh[k];
         g_animCount = m;
@@ -860,6 +1070,8 @@ void Init()
     if (g_animHi > kAnimMax) g_animHi = kAnimMax;
     if (g_animLo > g_animHi) { const float s2 = g_animLo; g_animLo = g_animHi; g_animHi = s2; }
     g_animCoupling = config.getFloat("monsterTempo", "animCoupling", 0.0f);
+    // Ручка принадлежит слою пешек, поэтому и живёт в его секции.
+    g_animForOverrides = config.getBool("pawnHaste", "animCouple", false);
     if (g_animCoupling < 0.0f) g_animCoupling = 0.0f;
     if (g_animCoupling > 1.0f) g_animCoupling = 1.0f;
 
@@ -923,9 +1135,27 @@ void Init()
             << " sprint=" << (pHkSprint ? 1 : 0) << "/" << g_sprintMatches << " matches"
             << std::endl;
 
-    if (g_walkMatches != 1 || g_sprintMatches != 1) {
-        logFile << "MonsterTempo: ambiguous signature - hook not installed."
-                << " The game runs vanilla." << std::endl;
+    // ПРИБОР ВРАЛ, И ЭТО ВИДНО В ЛОГЕ 73.27.
+    //
+    //     MonsterTempo: sprint resolved uniquely, rva 0xc5cbd5
+    //     MonsterTempo: walk matches 317, best context 3/3, such sites 1
+    //     TempoWalk hook: MH_OK, MH_OK
+    //     MonsterTempo: ambiguous signature - hook not installed. Vanilla.
+    //
+    // Хуки стоят оба, а строкой ниже сказано, что игра идёт ванильной.
+    // Причина в условии: сигнатура обычного передвижения НЕ уникальна по
+    // построению (317 совпадений в образе), она опознаётся по контексту —
+    // ровно одно место, где рядом стоят все три записи координат. Считать
+    // «317 != 1» признаком неудачи означало проверять не то: успех — это
+    // установленный хук, а не число совпадений сигнатуры.
+    // Отключённый в ini хук — не авария, поэтому жалуемся только на то,
+    // что хотели поставить и не смогли.
+    if ((g_hookWalk && !pHkWalk) || (g_hookSprint && !pHkSprint)) {
+        logFile << "MonsterTempo: wanted hook NOT installed (walk "
+                << (g_hookWalk ? (pHkWalk ? "ok" : "FAILED") : "off")
+                << ", sprint "
+                << (g_hookSprint ? (pHkSprint ? "ok" : "FAILED") : "off")
+                << ") - that part runs vanilla." << std::endl;
     }
 }
 
@@ -972,6 +1202,7 @@ Status GetStatus()
     s.animAttacksOnly = (g_animScope == kScopeAttack);
     s.animEngineWrites = g_animEngineWrites;
     s.animOurWrites    = g_animOurWrites;
+    s.animRestores     = g_animRestores;
     s.animCoupling     = g_animCoupling;
     return s;
 }
@@ -1095,8 +1326,12 @@ void AnimCost(uint32_t* lastUs, uint32_t* avgUs, uint32_t* maxUs)
     if (maxUs)  *maxUs  = g_animMaxUs;
 }
 
+static void AnimRowWatchTick();   // определение ниже, рядом с самим наблюдателем
+
 void SprintWatchTick()
 {
+    AnimRowWatchTick();   // наблюдение за рядом идёт от того же общего тика
+
     const uintptr_t b = g_lastSprintBody;
     if (!b) return;
     g_lastSprintBody = 0;
@@ -1117,6 +1352,85 @@ void SprintWatchTick()
         return;
     }
     ++g_sprint.other;
+}
+
+// --- НАБЛЮДЕНИЕ ЗА РЯДОМ (только чтение) ------------------------------------
+//
+// Замер 74.3 показал, что первое поле ряда живое: у стоящей пешки 1.000,
+// у бегущей 1.060. Значит вопрос «какое поле отвечает за бег» решается не
+// рассуждением, а десятью секундами наблюдения: пишем пять чисел рядом с
+// текущим действием тела и смотрим, что с чем меняется.
+//
+// Ничего не пишет. Работает от общего тика, по кадру за раз.
+static uintptr_t g_rowWatchBody = 0;
+static DWORD     g_rowWatchUntil = 0;
+static DWORD     g_rowWatchNext = 0;
+static char      g_rowWatchAct[48] = {};
+
+void AnimRowWatchStart(uintptr_t body, uint32_t ms)
+{
+    if (!body) return;
+    g_rowWatchBody  = body;
+    g_rowWatchUntil = MsNow() + (ms ? ms : 15000);
+    g_rowWatchNext  = 0;
+    g_rowWatchAct[0] = 0;
+    logFile << "Tempo: anim row watch started (read-only)" << std::endl;
+}
+
+bool AnimRowWatchActive() { return g_rowWatchBody != 0; }
+
+static void AnimRowWatchTick()
+{
+    if (!g_rowWatchBody) return;
+    const DWORD now = MsNow();
+    if ((int32_t)(now - g_rowWatchUntil) >= 0) {
+        g_rowWatchBody = 0;
+        logFile << "Tempo: anim row watch finished" << std::endl;
+        return;
+    }
+    if (g_rowWatchNext && (int32_t)(now - g_rowWatchNext) < 0) return;
+    g_rowWatchNext = now + 250;
+
+    float cur[kAnimRateCount] = {};
+    if (!Mem::Rd((void*)(g_rowWatchBody + kAnimRateOff0), cur, sizeof(cur))) return;
+
+    char act[48] = {};
+    const uintptr_t a = ActObjectOf(g_rowWatchBody);
+    if (a) Mem::NameOfLiveObjectSafe((const void*)a, act, sizeof(act));
+
+    // СОСТОЯНИЕ НАШЕЙ ДОРОЖКИ РЯДОМ С ЧИСЛАМИ.
+    //
+    // Замер 74.6 показал в наблюдателе только числа движка — и по нему
+    // нельзя было понять, то ли связка не пишет, то ли в этот момент
+    // ускорения просто не было. Наблюдатель обязан показывать не только
+    // объект наблюдения, но и состояние наблюдателя: есть ли дорожка,
+    // считаем ли состояние движением, что мы туда написали в прошлый раз.
+    const AnimTrack* tr = 0;
+    for (int i = 0; i < g_animCount; ++i)
+        if (g_animTrack[i].body == g_rowWatchBody) { tr = &g_animTrack[i]; break; }
+
+    // Печатаем не каждый сэмпл, а изменения: иначе пятнадцать секунд
+    // покоя займут шестьдесят одинаковых строк.
+    static float last[kAnimRateCount] = {};
+    bool changed = strcmp(act, g_rowWatchAct) != 0;
+    for (int k = 0; k < kAnimRateCount && !changed; ++k)
+        if (cur[k] != last[k]) changed = true;
+    if (!changed) return;
+    for (int k = 0; k < kAnimRateCount; ++k) last[k] = cur[k];
+    lstrcpynA(g_rowWatchAct, act, sizeof(g_rowWatchAct));
+
+    char l[280];
+    if (tr)
+        sprintf_s(l, "Tempo: row %.3f %.3f %.3f %.3f %.3f   act %-28s"
+                     " | track: x%.2f move=%d base %.3f ours %.3f writes %u",
+                  cur[0], cur[1], cur[2], cur[3], cur[4], act[0] ? act : "?",
+                  tr->factor, tr->actIsMove ? 1 : 0, tr->base[0], tr->mine[0],
+                  g_animOurWrites);
+    else
+        sprintf_s(l, "Tempo: row %.3f %.3f %.3f %.3f %.3f   act %-28s"
+                     " | track: NONE (no haste right now)",
+                  cur[0], cur[1], cur[2], cur[3], cur[4], act[0] ? act : "?");
+    logFile << l << std::endl;
 }
 
 SprintStats GetSprintStats() { return g_sprint; }
