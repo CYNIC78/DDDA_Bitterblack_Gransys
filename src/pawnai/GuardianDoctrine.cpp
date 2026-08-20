@@ -317,17 +317,195 @@ void BuildGuardianSitRep(GuardianSitRep& s)
 bool g_guardianFixEnabled = false; // vanilla по умолчанию (ini [pawnAI] guardianFix)
 float g_guardianMeleeRadius = 6.0f;   // м, радиус ближнего перехвата (57.3)
 float g_guardianPreemptRadius = 10.0f; // м, зона «потенциальной опасности» (58)
-int32_t g_guardianDaggerBiasMelee = 2;   // бонус в melee-радиусе (58)
+// ПОТОЛОК ПОДНЯТ ДО +5 (75.27).
+//
+// Замер 75.26 показал: фикс исправно применялся (`APPLIED code54 = 0`,
+// затем `= 2`, десяток записей за бой) — а кинжалы пешка так и не
+// достала. Значит снятия штрафа и бонуса +2 НЕ ХВАТАЕТ.
+//
+// Ориентир даёт сама игра: у Scather primary то же правило несёт +5, и
+// при нём кинжалы занимают четверть боя. Разница между нашим +2 и
+// ванильным +5 — три ведра приоритета, и, судя по всему, лук сидит как
+// раз между ними.
+int32_t g_guardianDaggerBiasMelee = 2;   // бонус в melee-радиусе (58; потолок +5)
 int32_t g_guardianDaggerBiasPreempt = 0; // снятие штрафа в preempt-радиусе (58)
+
+// ============================================================================
+// РЫЧАГ, КОТОРЫЙ РАБОТАЕТ: СКЛОННОСТЬ, А НЕ ПРАВИЛО (75.28)
+// ============================================================================
+//
+// РЕШАЮЩАЯ УЛИКА ИЗ ЛОГА 75.27. Фикс писал `AddS32` десятки раз за бой, и
+// вместе с каждой записью печатался номер ведра, куда попала строка:
+//
+//     code54 = 0) slot=44   x21      code54 = 2) slot=44   x18
+//     code54 = 0) slot=46   x17      code54 = 2) slot=46   x14
+//
+// Номер ведра НЕ ЗАВИСИТ от того, что мы записали: и при 0, и при +2
+// строка оказывается то в 44, то в 46. Значит правка `AddS32` в рантайме
+// **не двигает строку в живой раскладке**. Раскладка считается когда-то
+// раньше — и наша запись до неё не доходит.
+//
+// Отсюда вывод, неприятный, но однозначный: весь наш Guardian-фикс всё
+// это время был **поведенчески пустым**. Он честно писал, проверял и
+// откатывал число, на которое игра в этот момент уже не смотрит.
+//
+// ЧТО ПРИ ЭТОМ РАБОТАЕТ ТОЧНО. Смена СКЛОННОСТЕЙ — доказано замером:
+// Guardian 1000 -> 0 кадров кинжалов, Scather 1000 -> 1612 кадров, та же
+// пешка, та же сессия, разница только в склонности. Значит игра
+// пересчитывает раскладку по склонностям и делает это на живую.
+//
+// Поэтому доктрина переходит на тот рычаг, который доказан:
+//   угроза в зоне телохранителя  -> временно поднять Scather;
+//   зона очистилась              -> вернуть исходное значение.
+//
+// Это тот же принцип «совет, а не приказ»: мы не трогаем ни цель, ни
+// действие, ни планировщик — только характер, который игра и без нас
+// использует для выбора. И, в отличие от правки правила, у него есть
+// живое доказательство.
+static bool  g_inclLeverActive = false;
+static float g_inclLeverBase[I_COUNT];    // ВСЕ склонности до вмешательства
+static bool  g_inclLeverBaseOk = false;
+static int   g_inclLeverWrites = 0;
+
+// РЕЖИМ РЫЧАГА. Возражение тестера сняло с повестки первый вариант:
+//
+//   «Игрок окружён толпой мелочи, а за радиусом стоит циклоп. И что
+//    сделает пешка с твоим решением?»
+//
+// С поднятым Scather — побежит к циклопу. Scather это «атакуй, и посильнее»,
+// он меняет ВЫБОР ЦЕЛИ, а нам нужно всего лишь снять запрет на кинжалы.
+// Лечить симптом лекарством с другим действием — плохая идея.
+//
+// Правильный рычаг вытекает из карты правил. Что Guardian реально делает
+// на нашей пешке:
+//
+//   Guardian primary   : 54(-3)          <- запрет на кинжалы
+//   Guardian secondary : 54(-2)          <- он же, послабее
+//   Guardian tertiary  : 15(-2) 13(-2)   <- кинжалов НЕ КАСАЕТСЯ
+//
+// То есть достаточно, чтобы Guardian перестал быть первым или вторым по
+// величине — и штраф на ближнюю атаку исчезает сам, без единого грамма
+// чужой агрессии. Пешка сохраняет свои остальные склонности и решает,
+// кого бить, по-прежнему сама.
+//
+// Понижение делается минимальным: Guardian опускается чуть ниже двух
+// ближайших соседей, а не обнуляется. Как только зона очищается — точное
+// исходное значение возвращается.
+enum LeverMode { LEVER_OFF = 0, LEVER_DEMOTE_GUARDIAN = 1, LEVER_BOOST_SCATHER = 2 };
+int  g_guardianLeverMode = LEVER_DEMOTE_GUARDIAN;   // ini [pawnAI] guardianLeverMode
+float g_guardianScatherBoost = 800.0f;              // только для режима 2
+bool  g_guardianUseInclLever = true;
+
+static void InclLeverApply(bool want)
+{
+    if (want == g_inclLeverActive) return;
+
+    float cur[I_COUNT];
+    ReadAllIncl(cur, 0);
+
+    if (want) {
+        memcpy(g_inclLeverBase, cur, sizeof(g_inclLeverBase));
+        g_inclLeverBaseOk = true;
+
+        if (g_guardianLeverMode == LEVER_BOOST_SCATHER) {
+            float v = g_guardianScatherBoost;
+            if (v < 0.0f) v = 0.0f;
+            if (v > 1000.0f) v = 1000.0f;
+            if (v <= cur[I_SCATHER]) return;
+            cur[I_SCATHER] = v;
+        } else {
+            // ПОНИЖЕНИЕ GUARDIAN ДО ТРЕТЬЕГО МЕСТА.
+            //
+            // Ищем две самые высокие ЧУЖИЕ склонности. Guardian ставим
+            // ниже меньшей из них — тогда он третий, и правил на кинжалы
+            // у него нет вовсе.
+            int top1 = -1, top2 = -1;
+            for (int i = 0; i < 9; ++i) {
+                if (i == I_GUARDIAN) continue;
+                if (top1 < 0 || cur[i] > cur[top1]) { top2 = top1; top1 = i; }
+                else if (top2 < 0 || cur[i] > cur[top2]) top2 = i;
+            }
+            if (top1 < 0 || top2 < 0) return;
+
+            float need = cur[top2] - 1.0f;
+            if (need < 0.0f) {
+                // Соседи в нуле — опустить Guardian ниже нельзя, поэтому
+                // приподнимаем двух самых безобидных. Mitigator и
+                // Challenger на кинжалы не влияют вовсе (карта правил),
+                // так что характер боя от них не поедет.
+                cur[I_MITIGATOR] = 120.0f;
+                cur[I_CHALLENGER] = 100.0f;
+                need = 60.0f;
+            }
+            if (cur[I_GUARDIAN] <= need) return;     // уже не первый — не трогаем
+            cur[I_GUARDIAN] = need;
+        }
+
+        WriteAllIncl(cur, 0);
+        const uintptr_t body = Runtime::MainPawnBody();
+        if (body) {
+            for (int i = 0; i < 9; ++i)
+                if (cur[i] != g_inclLeverBase[i])
+                    Runtime::PawnSetInclinationLive(body, i, cur[i]);
+        }
+        ++g_inclLeverWrites;
+        g_inclLeverActive = true;
+
+        char l[240];
+        sprintf_s(l, "GuardianLever: threat in zone -> %s (Gua %.0f -> %.0f,"
+                     " Sca %.0f -> %.0f), writes %d",
+                  (g_guardianLeverMode == LEVER_BOOST_SCATHER)
+                      ? "boost Scather" : "demote Guardian to third place",
+                  g_inclLeverBase[I_GUARDIAN], cur[I_GUARDIAN],
+                  g_inclLeverBase[I_SCATHER], cur[I_SCATHER], g_inclLeverWrites);
+        logFile << l << std::endl;
+    } else {
+        if (g_inclLeverBaseOk) {
+            WriteAllIncl(g_inclLeverBase, 0);
+            const uintptr_t body = Runtime::MainPawnBody();
+            if (body)
+                for (int i = 0; i < 9; ++i)
+                    Runtime::PawnSetInclinationLive(body, i, g_inclLeverBase[i]);
+            char l[200];
+            sprintf_s(l, "GuardianLever: zone clear -> restored (Gua %.0f, Sca %.0f)",
+                      g_inclLeverBase[I_GUARDIAN], g_inclLeverBase[I_SCATHER]);
+            logFile << l << std::endl;
+        }
+        g_inclLeverActive = false;
+    }
+}
+
+void GuardianLeverRestore()
+{
+    if (g_inclLeverActive) InclLeverApply(false);
+}
+
+bool GuardianLeverIsActive() { return g_inclLeverActive; }
+
+// У ОДНОГО ПРАВИЛА ОДИН ХОЗЯИН.
+//
+// Приборы, которые сами пишут в строку code 54 (развёртка по вёдрам),
+// обязаны сначала спросить, не занят ли рычаг доктриной. Спрашивают через
+// эту функцию, а не через сам флаг: девтулзам незачем видеть переменные
+// продуктового слоя.
+bool GuardianDoctrineOwnsRule() { return g_guardianFixEnabled; }
 
 void GuardianDoctrineTick()
 {
     static GuardianDoctrine d;
-    Runtime::GuardianFixSetTarget(-3); // vanilla по умолчанию
-    if (!g_guardianFixEnabled) {
-        Runtime::GuardianFixTick();
-        return;
-    }
+
+    // ВОЙНА ЗА ОДНО ПРАВИЛО (найдено 20.08, после того как рычаги убрали
+    // из панели).
+    //
+    // Раньше эта ветка каждый тик ставила правилу code 54 ванильное -3 и
+    // звала GuardianFixTick() — «на всякий случай, вдруг что-то осталось
+    // применённым». Пока ручка была видна в панели, это ещё имело смысл.
+    // Теперь правилом владеет эррата, и такой «откат на всякий случай»
+    // означает, что два модуля пишут в одно поле в каждом тике: эррата
+    // ставит 0, доктрина возвращает -3, и так по кругу.
+    //
+    // Ручка выключена навсегда — значит и трогать правило отсюда нечего.
+    if (!g_guardianFixEnabled) return;
 
     GuardianSitRep s;
     BuildGuardianSitRep(s);
@@ -350,6 +528,15 @@ void GuardianDoctrineTick()
 
     Runtime::GuardianFixSetTarget(desired);
     Runtime::GuardianFixTick();
+
+    // Рычаг склонности — тот, у которого есть доказательство. Условие то
+    // же самое, что у прежнего фикса: угроза в зоне и подходящая вокация.
+    if (g_guardianUseInclLever) {
+        const bool want = r.zoneEngaged && meleeOrHybrid && r.threatsInZone > 0;
+        InclLeverApply(want);
+    } else {
+        GuardianLeverRestore();
+    }
 }
 
 } // namespace PawnAI

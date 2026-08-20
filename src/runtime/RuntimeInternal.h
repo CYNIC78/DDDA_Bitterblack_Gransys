@@ -160,6 +160,9 @@ struct PartyBodyDump {
     char      role[24];
     bool      playerRecordRef;
     bool      mainPawnRecordRef;
+    // Индекс записи персонажа, на которую ссылается тело: 0 — своя пешка,
+    // 1..2 — наёмные, -1 — не определено. Надёжнее любой эвристики.
+    int       pawnRecordIdx;
     bool      pawnManagerRef;
     bool      hasPawnIntel;
     BYTE      body[kPartyBodySize];
@@ -434,6 +437,17 @@ void PartyAddPawnManagerCandidate(uintptr_t obj, uintptr_t wantVt);
 // targetSel (они для профиля/аудита) — только тела.
 void PartyFindBodies(bool partyOnly = false);
 
+// Состав партии изменился (наняли/уволили пешку) — просим пересканировать.
+// Полный скан дорогой, поэтому он делается по запросу и не чаще раза в
+// пять секунд, а не каждый тик.
+void PartyRequestRescan();
+bool PartyHasBody(uintptr_t body);
+// Принять тело в список партии из обхода живых объектов (без скана памяти).
+void PartyAdoptBody(uintptr_t body, const char* dti);
+void PartySetExpectedPawns(int n);
+// Сколько пешек в партии ПО ЗАПИСЯМ персонажей (не по телам): 1..3.
+int  PartyRecordPawnCount();
+
 void PartyInspectBody(PartyBodyDump& P);
 
 void PartyMarkPawnManagerRefs();
@@ -522,6 +536,36 @@ const char* GuardianFixStatus();
 // плавную смену desired (градиент: -3 → 0 → +2 по дистанции угрозы).
 void GuardianFixTick();
 
+// Удержание рычага за прибором: пока on, GuardianFixSetTarget() от доктрины
+// игнорируется. Смысл и обоснование — в Runtime.h.
+void GuardianFixHold(bool on, int32_t value);
+
+bool GuardianFixHeld();
+
+// Живое ведро строки code 54 (-1, если правило не разрешено) и признак
+// разрешённости. Нужны прибору развёртки, чтобы печатать факт, а не намерение.
+int   GuardianFixLiveSlot();
+bool  GuardianFixResolved();
+
 void WorldScan_Tick();
+
+
+// --- РЕЕСТР ЭРРАТ (75.45) -------------------------------------------------
+// Слой B по docs/ERRATA_ARCHITECTURE.md: статичные починки сломанных правил.
+// Две группы, две галки, два независимых счёта:
+//   группа 0 - Guardian душит кинжалы (code 54, ранги 1 и 2);
+//   группа 1 - Nexus душит магию      (code 55, ранги 1 и 2).
+// Правило ищется ПО СОДЕРЖАНИЮ (склонность + ранг в проверке), а не по
+// номеру: порядок правил внутри строки нам никто не обещал.
+extern bool    g_errataDaggerOn;    // ini [errata] guardianDaggerBan
+extern int32_t g_errataDaggerVal;   // ini [errata] guardianDaggerValue
+extern bool    g_errataMagicOn;     // ini [errata] nexusMagicBan
+extern int32_t g_errataMagicVal;    // ini [errata] nexusMagicValue
+void  ErrataTick();
+void  ErrataRestore(int group);     // 0 = кинжалы, 1 = магия
+void  ErrataRestoreAll();
+bool  ErrataIsApplied(int group);
+int   ErrataReasserts(int group);
+const char* ErrataStatus(int group);
 
 } // namespace Runtime

@@ -7,3 +7,6 @@
 #include <math.h>
 extern std::ofstream logFile;
 inline DWORD MsNow() { return 0; }
+// В настоящей сборке это глобал из dinput8.cpp; для проверки синтаксиса
+// достаточно объявления.
+extern BYTE** pBase;

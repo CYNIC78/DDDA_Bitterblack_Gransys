@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "74.9-haste-done"
+#define MOD_BUILD_TAG "75.46-your-ini-is-yours"

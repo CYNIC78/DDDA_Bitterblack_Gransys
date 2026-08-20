@@ -377,6 +377,71 @@ bool PawnPlanInterfaces(int32_t code, char* out, int cap)
     return found > 0;
 }
 
+// --- ЖИВЫЕ СКЛОННОСТИ ИЗ ТЕЛА (cCmcInfo) ------------------------------------
+//
+// ПОВОД. Тестер выставил наёмному Файтеру Scather 1000 и всё остальное в
+// ноль нашими ползунками, отвоевал бой — и увидел в игровом профиле
+// пешки прежнее: Guardian primary, Utilitarian secondary. То есть запись
+// в запись персонажа игру НЕ УБЕДИЛА.
+//
+// А в SOURCE_OF_TRUTH §6 уже записан второй адрес тех же девяти чисел:
+// `cCmcInfo + 0x14B8 + id*0x0C` — тройка `{state, id, value}` на каждую
+// склонность, прямо в живом теле. Для главной пешки оба места сходятся
+// (её запись — часть сохранения), а для наёмных, похоже, работает именно
+// тело.
+//
+// Пока не доказано, какое из мест игра действительно читает, продуктовый
+// код не пишет НИ В ОДНО из них у наёмных: сначала читаем оба и
+// сравниваем.
+bool PawnInclinationsLive(uintptr_t body, float* out9)
+{
+    if (!body || !out9) return false;
+    for (int i = 0; i < 9; ++i) out9[i] = -1.0f;
+
+    const uintptr_t info = FindChildByClass(body, 0x58E0, "cCmcInfo", 0);
+    if (!info) return false;
+
+    int found = 0;
+    for (int k = 0; k < 9; ++k) {
+        const uintptr_t t = info + 0x14B8 + (uintptr_t)k * 0x0C;
+        int32_t state = 0, id = 0;
+        float value = 0.0f;
+        if (!Rd((void*)(t + 0x00), &state, 4)) continue;
+        if (!Rd((void*)(t + 0x04), &id, 4)) continue;
+        if (!Rd((void*)(t + 0x08), &value, 4)) continue;
+        if (id < 0 || id > 9) continue;
+        if (!(value >= 0.0f && value <= 1000.0f)) continue;
+        if (id < 9) { out9[id] = value; ++found; }
+    }
+    return found >= 5;   // половина и больше — раскладка та
+}
+
+// Записать склонность в ЖИВОЕ ТЕЛО. Пара к PawnInclinationsLive().
+//
+// Запись персонажа мы пишем так же, как это делает рабочий мод
+// `ddda-dinput8` (тот же адрес `0xA7000 + offset + 0x96C + 0x1224`), но
+// профиль наёмной пешки после этого показывал прежнее. Второй адрес тех
+// же чисел живёт в теле, и если движок читает поведение оттуда, писать
+// надо в оба места. Что именно окажется авторитетным — покажет игра.
+bool PawnSetInclinationLive(uintptr_t body, int id, float value)
+{
+    if (!body || id < 0 || id > 8) return false;
+    if (!(value >= 0.0f && value <= 1000.0f)) return false;
+    const uintptr_t info = FindChildByClass(body, 0x58E0, "cCmcInfo", 0);
+    if (!info) return false;
+
+    for (int k = 0; k < 9; ++k) {
+        const uintptr_t t = info + 0x14B8 + (uintptr_t)k * 0x0C;
+        int32_t slotId = 0;
+        if (!Rd((void*)(t + 0x04), &slotId, 4)) continue;
+        if (slotId != id) continue;
+        if (!WrSafe((void*)(t + 0x08), &value, 4)) return false;
+        float back = -1.0f;
+        return Rd((void*)(t + 0x08), &back, 4) && back == value;
+    }
+    return false;
+}
+
 uintptr_t ActObjectOf(uintptr_t body)
 {
     if (!body) return 0;
@@ -792,6 +857,21 @@ int EnemyCount()
 // "гистерезис выгрузки" в FIELD_MAP). Но для модулей поведения мёртвый
 // враг — мусор: мутировать его масштаб или поводок бессмысленно, а в
 // счётчике "врагов рядом" он завышает опасность.
+// Сырой доступ к списку живых объектов: без фильтра «существо».
+//
+// `EnemyBodyAt` отсеивает всё, что не существо, — и перекличка, глядя
+// через него, не увидела бы ни одной пешки. Для диагностики нужен именно
+// сырой список: вопрос стоит «видит ли обход тела партии вообще».
+int ActorCount() { return g_nAct; }
+
+uintptr_t ActorAt(int idx, const char** kindOut)
+{
+    if (kindOut) *kindOut = 0;
+    if (idx < 0 || idx >= g_nAct) return 0;
+    if (kindOut) *kindOut = g_act[idx].kind;
+    return g_act[idx].ptr;
+}
+
 uintptr_t EnemyBodyAt(int idx, const char** kindOut)
 {
     if (idx < 0) return 0;
@@ -845,6 +925,9 @@ void WorldScan_Tick()
         if (g_wasInWorld) {
             if (g_research.onWorldUnload) g_research.onWorldUnload("world unload");
             PartyPriorityProfileRestoreAll("world unload");
+            // Эррата тоже обязана вернуть ваниль: указатели после выгрузки
+            // недействительны, а незакрытая правка — это долг.
+            ErrataRestoreAll();
             PartyPriorityProfileResetRuntime();
             g_priorityProfileWorldSince = 0;
             g_priorityProfileLastDiscover = 0;
@@ -873,6 +956,43 @@ void WorldScan_Tick()
     Tempo::SprintWatchTick();   // кто вообще спринтует: игрок, пешка, монстр
 
     // Build 56.2: Guardian doctrine anchor/pawn positions (throttled discover + cheap read).
+    // СОСТАВ ПАРТИИ МОГ ИЗМЕНИТЬСЯ.
+    //
+    // Разбор партии не пересканирует, пока найденные тела живы, — иначе
+    // полный скан памяти шёл бы каждый тик. Но наёмная пешка приходит
+    // посреди игры, и заметить её может только тот, кто и так каждый тик
+    // смотрит на живые тела: обход актёров. Если в мире есть `uCmc`,
+    // которого нет в списке партии, просим пересканировать (запрос
+    // троттлится на стороне разбора).
+    // ТЕЛА ПЕШЕК БЕРЁМ ИЗ СПИСКА ЖИВЫХ, А НЕ ИЗ СКАНА ПАМЯТИ.
+    //
+    // Лог 75.10 расставил точки: записи персонажей показывают три пешки
+    // (Страйдер 4, Файтер 5, Маг 5 — уровни и вокации верные), а скан
+    // памяти находит ОДНО тело, и все пробы читают его же. То есть
+    // сравнение «Файтер против Страйдерши» было сравнением пешки с самой
+    // собой.
+    //
+    // Скан памяти оказался ненадёжным источником: он зависит от раскладки
+    // куч и от того, что успело попасть в регионы. Обход же живых объектов
+    // идёт по связному списку от известных семян и находит соседей по
+    // списку — а пешки лежат именно там.
+    //
+    // Поэтому теперь тела не «запрашиваются сканом», а ДОБАВЛЯЮТСЯ прямо
+    // отсюда: увидели `uCmc`, которого нет в списке партии, — включили.
+    {
+        int seenPawns = 0;
+        for (int i = 0; i < g_nAct; ++i) {
+            const char* k = g_act[i].kind;
+            if (!k) continue;
+            const bool isPawn = (strcmp(k, "uCmc") == 0);
+            if (!isPawn && strcmp(k, "uPlayer") != 0) continue;
+            if (isPawn) ++seenPawns;
+            if (PartyHasBody(g_act[i].ptr)) continue;
+            PartyAdoptBody(g_act[i].ptr, k);
+        }
+        if (seenPawns > 0) PartySetExpectedPawns(seenPawns);
+    }
+
     PartyPositionsTick();
 
     // Temporary player/pawn probe: '=' takes an AI snapshot. This is

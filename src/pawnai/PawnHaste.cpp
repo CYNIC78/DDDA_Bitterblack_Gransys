@@ -17,9 +17,63 @@ static bool  s_active  = false;
 static int   s_applied = 0;
 static float s_lastDist = -1.0f;
 static char  s_why[64] = "off";
-static uintptr_t s_body = 0;      // кому применили, чтобы было что снять
 static bool  s_animCouple = false;   // ускорять ли заодно анимацию бега
 static bool  s_probed = false;       // ряд множителей у пешки уже проверен
+// СОСТОЯНИЕ НА КАЖДУЮ ПЕШКУ, А НЕ ОДНО НА ВСЕХ.
+//
+// До 75.1 модуль знал ровно одно тело. Наёмные пешки — такие же `uCmc`,
+// и им нужна та же компенсация: монстров мы разогнали всем сразу. Но
+// решение принимается ПО КАЖДОЙ отдельно: у каждой своя дистанция до
+// врага, своё состояние тела и свой гистерезис. Общий счётчик тут дал бы
+// ровно тот дребезг, который мы лечили в 74.5.
+//
+// Граница из HIRED_PAWNS_SCOPE.md соблюдается по построению: мы трогаем
+// только рантайм-множители, к записи персонажа чужой пешки не
+// прикасаемся вовсе.
+struct Slot {
+    uintptr_t body;
+    bool      active;
+    bool      isMain;
+    int       offStreak;
+    float     lastDist;
+    float     lastUsed;
+    char      act[48];
+    char      why[64];
+};
+static const int kMaxPawns = 4;
+static Slot s_slot[kMaxPawns];
+static int  s_nSlots = 0;
+
+static Slot* SlotFor(uintptr_t body, bool isMain)
+{
+    for (int i = 0; i < s_nSlots; ++i)
+        if (s_slot[i].body == body) { s_slot[i].isMain = isMain; return &s_slot[i]; }
+    if (s_nSlots >= kMaxPawns) return 0;
+    Slot& S = s_slot[s_nSlots++];
+    memset(&S, 0, sizeof(S));
+    S.body = body;
+    S.isMain = isMain;
+    S.lastDist = -1.0f;
+    S.lastUsed = 1.0f;
+    lstrcpynA(S.why, "new", sizeof(S.why));
+    return &S;
+}
+
+static void ReleaseSlot(Slot& S, const char* why)
+{
+    S.offStreak = 0;
+    if (S.active && S.body) Runtime::Tempo::ClearOverride(S.body);
+    S.active = false;
+    lstrcpynA(S.why, why, sizeof(S.why));
+}
+
+static void ReleaseAll(const char* why)
+{
+    for (int i = 0; i < s_nSlots; ++i) ReleaseSlot(s_slot[i], why);
+    lstrcpynA(s_why, why, sizeof(s_why));
+    s_active = false;
+}
+
 static bool  s_matchTempo = false;   // брать множитель у самых быстрых врагов
 static float s_lastUsed = 1.0f;      // что применили в последний раз
 static bool  s_requireWeapon = true; // требовать признак боя у самой пешки
@@ -50,7 +104,6 @@ static const uint32_t kTtlMs = 1200;
 // нужен потому, что дистанция до врага дышит вокруг границы окна, и без
 // него модуль включается-выключается на каждом шаге пешки.
 static const int kOffTicks = 4;
-static int  s_offStreak = 0;
 
 // Расширение окна на выход. Вошли по 5…40 м, выходим только за 3…45 м:
 // одна и та же граница на вход и на выход — это и есть дребезг.
@@ -95,23 +148,12 @@ void Init()
     logFile << l << std::endl;
 }
 
-static void Release(const char* why)
-{
-    s_offStreak = 0;
-    if (s_body) {
-        Runtime::Tempo::ClearOverride(s_body);
-        s_body = 0;
-    }
-    s_active = false;
-    lstrcpynA(s_why, why, sizeof(s_why));
-}
-
-void Shutdown() { Release("shutdown"); }
+void Shutdown() { ReleaseAll("shutdown"); }
 
 void SetEnabled(bool on)
 {
     s_enabled = on;
-    if (!on) Release("off");
+    if (!on) ReleaseAll("off");
 }
 
 void SetFactor(float f)
@@ -122,34 +164,32 @@ void SetFactor(float f)
 }
 
 void SetRequireWeapon(bool on) { s_requireWeapon = on; }
+void SetMatchTempo(bool on)     { s_matchTempo = on; }
 
-void Tick()
+// Решение по ОДНОЙ пешке. Всё, что раньше было телом Tick(), переехало
+// сюда без изменений по существу: те же окна, тот же гистерезис, тот же
+// гейт по оружию и по движению. Изменился только адресат: теперь их
+// столько, сколько пешек в партии.
+static void TickPawn(Slot& S, const WorldReport& w, const CombatReport& rep)
 {
-    if (!s_enabled) { if (s_active) Release("off"); return; }
+    const uintptr_t pawn = S.body;
 
-    // Тело главной пешки и её позиция — из продуктового слоя.
-    float px = 0, py = 0, pz = 0;
-    if (!Runtime::GetMainPawnWorldPos(&px, &py, &pz)) {
-        Release("no pawn position");
+    // Позиция тела: +0x40/+0x44/+0x48 (SOURCE_OF_TRUTH §2). У главной
+    // пешки её же отдаёт продуктовый слой, но наёмным нужен общий путь.
+    float p[3] = {};
+    if (!Runtime::ReadSafe(pawn + 0x40, p, sizeof(p))) {
+        ReleaseSlot(S, "no position");
         return;
     }
-    const uintptr_t pawn = Runtime::MainPawnBody();
-    if (!pawn) { Release("no pawn body"); return; }
 
-    // Бой определяем по присутствию врагов, а не по факту удара: пешке
-    // надо разгоняться ДО первого размена, иначе смысл теряется.
-    const WorldReport w = CombatBus::Instance().LastWorld();
-    if (w.enemyCount <= 0) { s_lastDist = -1.0f; Release("no enemies"); return; }
-
-    // Ближайший враг к ПЕШКЕ, а не к Аризену: рывок нужен ей.
-    // Попутно смотрим, НАСКОЛЬКО разогнаны те, кто рядом: это и есть
-    // мера компенсации (см. ниже).
+    // Ближайший враг к ЭТОЙ пешке. Попутно смотрим, насколько разогнаны
+    // те, кто рядом: это и есть мера компенсации.
     float best = 1.0e9f;
     float fastest = 1.0f;
     for (int i = 0; i < w.count; ++i) {
         const WorldPresence& u = w.units[i];
         if (!u.ptr || !u.kind || !Runtime::KindIsEnemy(u.kind)) continue;
-        const float dx = u.x - px, dy = u.y - py, dz = u.z - pz;
+        const float dx = u.x - p[0], dy = u.y - p[1], dz = u.z - p[2];
         const float d = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
         if (d < best) best = d;
         if (d <= s_maxDist) {
@@ -158,162 +198,148 @@ void Tick()
                 fastest = lo;
         }
     }
-    if (best > 1.0e8f) { s_lastDist = -1.0f; Release("no enemy position"); return; }
-    s_lastDist = best;
+    if (best > 1.0e8f) { S.lastDist = -1.0f; ReleaseSlot(S, "no enemy position"); return; }
+    S.lastDist = best;
 
-    // Окно применения.
-    //
-    // Ближняя граница: вплотную рывок не нужен и выглядит дёрганьем —
-    // пешка и так на месте. Дальняя: если враг за сорок метров, это уже
-    // не бой, а переход, и там пешка спринтует сама (цель Follow).
-    // Гистерезис: пока ускорение УЖЕ работает, окно шире, и снимаем его
-    // только после нескольких неудачных тиков подряд.
-    const float nearGate = s_active ? (s_minDist - kExitSlackNear) : s_minDist;
-    const float farGate  = s_active ? (s_maxDist + kExitSlackFar)  : s_maxDist;
+    // Окно применения с гистерезисом: вошли по 5…40 м, выходим за 3…45 м,
+    // и только после нескольких неудачных тиков подряд. Одна и та же
+    // граница на вход и на выход — это и есть дребезг (74.5).
+    const float nearGate = S.active ? (s_minDist - kExitSlackNear) : s_minDist;
+    const float farGate  = S.active ? (s_maxDist + kExitSlackFar)  : s_maxDist;
     if (best < nearGate || best > farGate) {
-        if (++s_offStreak >= kOffTicks)
-            Release(best < nearGate ? "in contact" : "too far - vanilla dash applies");
+        if (++S.offStreak >= kOffTicks)
+            ReleaseSlot(S, best < nearGate ? "in contact" : "too far - vanilla dash applies");
         return;
     }
 
-    // ОБНАЖЕНО ЛИ ОРУЖИЕ (предложение тестера, и оно точнее нашего).
-    //
-    // «Враг в радиусе» — грубая метка: враги за стеной, которых партия не
-    // видит, включали ускорение. У пешки же есть собственный признак боя,
-    // который не врёт: состояния с обнажённым оружием. В логе они видны
-    // прямо: `cPlActHoldWeaponMv` (движение с оружием в руках) против
-    // `cPlActRun` (оружие убрано), плюс всё семейство `cPlActWpn*` —
-    // это уже удары.
-    //
-    // Признак используется как ГЕЙТ, а не как единственный сигнал:
-    // требуется обнажённое оружие ИЛИ подтверждение продуктового
-    // детектора боя. Так пешка, идущая с оружием наголо по пустой
-    // дороге, ускорения не получит, а застигнутая врасплох — получит.
     char act[48] = {};
     Runtime::ReadLiveAct(pawn, act, sizeof(act));
+    lstrcpynA(S.act, act, sizeof(S.act));
 
-    // НЕ УСКОРЯТЬ СБИТУЮ С НОГ ПЕШКУ.
-    //
-    // В замере 74.6 включение поймано на `cPlActDmgCrumbleDead`: пешку
-    // складывает ударом, а мы в этот момент решаем, что ей надо быстрее
-    // бежать. Вреда мало (в этих состояниях анимацию мы не трогаем), но
-    // это неверное решение слоя, а неверные решения надо убирать, пока
-    // они не смешались с верными в статистике.
+    // Не ускорять сбитую с ног (поймано на `cPlActDmgCrumbleDead`).
     if (act[0] && (!strncmp(act, "cPlActDmg", 9)
                 || !strncmp(act, "cPlActDead", 10)
                 || !strncmp(act, "cPlActNeardeath", 15)
                 || !strncmp(act, "cPlActLifted", 12))) {
-        if (++s_offStreak >= kOffTicks) Release("knocked down");
+        if (++S.offStreak >= kOffTicks) ReleaseSlot(S, "knocked down");
         return;
     }
 
-    // УСКОРЯТЬ ТОЛЬКО ТОГО, КТО ИДЁТ.
-    //
-    // Замер 74.6 поймал включения на `cPlActWait` (пешка стоит),
-    // `cPlActJump` и посреди приёма кинжалами. Анимации это не касалось —
-    // туда множитель и не заходит, — но множитель ПЕРЕДВИЖЕНИЯ применялся
-    // всё равно, а компенсация задумана ровно про перемещение.
-    //
-    // Теперь состояние тела — часть условия, а не только область записи:
-    // нет шага — нет и компенсации.
+    // Ускорять только того, кто идёт. Состояния переноски входят сюда
+    // намеренно: Утилитарианец с метательным хламом занимает позицию.
     const bool moving = act[0]
         && (!strcmp(act, "cPlActRun") || !strcmp(act, "cPlActWalk")
             || !strcmp(act, "cPlActRunEnd") || !strcmp(act, "cPlActHoldWeaponMv")
             || !strncmp(act, "cPlActDash", 10)
-            // Утилитарианец с метательным хламом: подобрала (LiftBeginSmallItem),
-            // побежала занимать позицию (LiftRun/LiftWalk), метнула. В замере
-            // 74.8 эта цепочка видна целиком, и это ровно то перемещение под
-            // давлением, ради которого модуль существует.
             || !strcmp(act, "cPlActLiftRun") || !strcmp(act, "cPlActLiftWalk")
             || !strcmp(act, "cPlActLiftJump"));
 
+    // Признак боя у самой пешки: обнажённое оружие ИЛИ детектор.
     const bool weaponOut = act[0]
         && (!strncmp(act, "cPlActHoldWeapon", 16) || !strncmp(act, "cPlActWpn", 9));
     if (s_requireWeapon) {
-        const CombatReport rep = CombatBus::Instance().LastReport();
         const bool fighting = weaponOut || rep.inCombat || w.enemyCombatCount > 0
                             || w.pawnEngaged;
         if (!fighting) {
-            if (++s_offStreak >= kOffTicks) Release("weapon sheathed - not fighting");
+            if (++S.offStreak >= kOffTicks) ReleaseSlot(S, "weapon sheathed - not fighting");
             return;
         }
     }
-    s_offStreak = 0;
+    S.offStreak = 0;
 
-    // СВЯЗКА АНИМАЦИИ (замечание тестера, и оно верное).
-    //
-    // Раньше здесь стояла жёсткая единица: «двигаем тушку, анимацию не
-    // трогаем». Отсюда и проскальзывание стоп, которое мы честно
-    // называли подделкой. Но у монстров ускорение анимации у нас уже
-    // работает — рядом множителей воспроизведения. Если тот же ряд есть
-    // в теле пешки, подделка превращается в нормальный быстрый бег.
-    //
-    // Порядок осторожный:
-    //   1. один раз ЧИТАЕМ ряд у пешки и печатаем вердикт (без записи);
-    //   2. писать разрешено только при `[pawnHaste] animCouple = on`
-    //      И только если все пять полей были ровно 1.0;
-    //   3. при снятии рывка примитив возвращает исходные значения сам.
-    if (!s_probed) {
-        s_probed = true;
-        Runtime::Tempo::AnimRowProbe(pawn, "uCmc (main pawn)");
+    // Проба ряда анимации — один раз на тело, только чтение.
+    if (!S.active) {
+        char label[40];
+        sprintf_s(label, "uCmc (%s)", S.isMain ? "main pawn" : "hired pawn");
+        Runtime::Tempo::AnimRowProbe(pawn, label);
     }
-    // КОМПЕНСАЦИЯ, А НЕ БАФФ.
-    //
-    // Формулировка тестера меняет смысл модуля: мы ускорили монстров —
-    // мы и обязаны вернуть пешке возможность передислоцироваться под их
-    // напором. Значит правильное число берётся не с потолка, а у самих
-    // монстров: насколько разогнан самый быстрый враг поблизости,
-    // настолько и компенсируем. Ни больше.
-    //
-    // При `matchMonsterTempo = off` работает прежнее фиксированное число.
+
+    // Компенсация, а не бафф: число берём у самого быстрого врага рядом.
     float use = s_factor;
     if (s_matchTempo) {
         use = fastest;
         if (use < 1.0f) use = 1.0f;
         if (use > kMaxFactor) use = kMaxFactor;
-        if (use <= 1.0f) { Release("monsters run vanilla - nothing to compensate"); return; }
+        if (use <= 1.0f) {
+            ReleaseSlot(S, "monsters run vanilla - nothing to compensate");
+            return;
+        }
     }
 
-    // ПЕРЕОПРЕДЕЛЕНИЕ НЕ СНИМАЕТСЯ, КОГДА ПЕШКА ОСТАНОВИЛАСЬ.
-    //
-    // В 74.8 «не движется» приводило к Release(), то есть дорожка анимации
-    // сносилась и ставилась заново на каждом размене: в логе 74.8 счётчик
-    // снятий дошёл до предела и дальше считался молча. Это лишняя возня в
-    // чужой памяти на ровном месте.
-    //
-    // Правильнее оставить дорожку жить, а на время неподвижности выдать
-    // нейтральное число. Множитель ПЕРЕДВИЖЕНИЯ при этом безопасен сам по
-    // себе: он умножает покадровое смещение, а у стоящего оно нулевое.
-    // Анимацию же гасит свой гейт внутри примитива (`move=0` в логе
-    // наблюдателя), поэтому в замахе ничего не ускорится.
+    // Дорожка не сносится, когда пешка остановилась: неподвижной выдаём
+    // нейтральное число (множитель передвижения у стоящего и так ничего
+    // не делает — он умножает покадровое смещение).
     const float locoFactor = moving ? use : 1.0f;
     const float animFactor = s_animCouple ? use : 1.0f;
     Runtime::Tempo::SetOverride(pawn, locoFactor, animFactor, kTtlMs);
-    s_lastUsed = locoFactor;
-    lstrcpynA(s_lastAct, act, sizeof(s_lastAct));
-    // Классификатор «оружие обнажено» проверяется тем же способом, что и
-    // всё остальное в проекте: первые срабатывания печатаются с именем
-    // состояния, чтобы метку можно было опровергнуть, а не поверить ей.
-    if (!s_active) { if (weaponOut) ++s_burstsWeapon; else ++s_burstsDetector; }
-    if (!s_active && s_actLogged < 8) {
-        ++s_actLogged;
-        char l[240];
-        // Счётчик наших записей в ряд — прямо в строке включения.
-        // Иначе «связка включена» и «связка что-то делает» опять окажутся
-        // разными утверждениями, которые нечем развести.
-        const Runtime::Tempo::Status ts = Runtime::Tempo::GetStatus();
-        sprintf_s(l, "PawnHaste: burst at %.1f m, x%.2f, pawn act %s (weapon %s),"
-                     " anim coupling %s, anim writes so far %u",
-                  best, use, act[0] ? act : "?", weaponOut ? "OUT" : "not detected",
-                  Runtime::Tempo::GetAnimForOverrides() ? "ON" : "OFF -> feet will slide",
-                  ts.animOurWrites);
-        logFile << l << std::endl;
+    S.lastUsed = locoFactor;
+    lstrcpynA(S.why, moving ? "compensating" : "holding (not moving)", sizeof(S.why));
+
+    if (!S.active) {
+        if (weaponOut) ++s_burstsWeapon; else ++s_burstsDetector;
+        if (s_actLogged < 8) {
+            ++s_actLogged;
+            const Runtime::Tempo::Status ts = Runtime::Tempo::GetStatus();
+            char l[280];
+            sprintf_s(l, "PawnHaste: burst on %s pawn at %.1f m, x%.2f, act %s"
+                         " (weapon %s), anim coupling %s, anim writes so far %u",
+                      S.isMain ? "MAIN" : "hired", best, use, act[0] ? act : "?",
+                      weaponOut ? "OUT" : "not detected",
+                      Runtime::Tempo::GetAnimForOverrides() ? "ON" : "OFF",
+                      ts.animOurWrites);
+            logFile << l << std::endl;
+        }
     }
-    if (!s_active) ++s_applied;
-    s_active = true;
-    s_body = pawn;
-    sprintf_s(s_why, "closing %.0f m", best);
+    S.active = true;
+
+    // Сводка для панели берётся у главной пешки: она в фокусе внимания.
+    if (S.isMain) {
+        s_active = true;
+        s_lastDist = best;
+        s_lastUsed = locoFactor;
+        lstrcpynA(s_lastAct, act, sizeof(s_lastAct));
+        lstrcpynA(s_why, S.why, sizeof(s_why));
+    }
 }
+
+void Tick()
+{
+    if (!s_enabled) { ReleaseAll("off"); return; }
+
+    const WorldReport w = CombatBus::Instance().LastWorld();
+    if (w.enemyCount <= 0) { s_lastDist = -1.0f; ReleaseAll("no enemies"); return; }
+
+    const int n = Runtime::PawnBodyCount();
+    if (n <= 0) { ReleaseAll("no pawn bodies"); return; }
+
+    const CombatReport rep = CombatBus::Instance().LastReport();
+
+    // Сводку главной пешки собираем заново каждый тик: если её слот в
+    // этом тике не обновится, панель не должна показывать вчерашнее.
+    s_active = false;
+
+    bool seen[kMaxPawns] = {};
+    for (int i = 0; i < n && i < kMaxPawns; ++i) {
+        bool isMain = false;
+        const uintptr_t body = Runtime::PawnBodyAt(i, &isMain);
+        if (!body) continue;
+        Slot* S = SlotFor(body, isMain);
+        if (!S) continue;
+        seen[(int)(S - s_slot)] = true;
+        TickPawn(*S, w, rep);
+    }
+
+    // Пешку могли уволить или она умерла — слот больше не подтверждается
+    // разбором партии. Указатель при этом хранить нельзя (правило
+    // проекта), поэтому просто забываем слот: переопределение погаснет
+    // само по ttl.
+    for (int i = 0; i < s_nSlots; ) {
+        if (seen[i]) { ++i; continue; }
+        for (int k = i + 1; k < s_nSlots; ++k) s_slot[k - 1] = s_slot[k];
+        --s_nSlots;
+    }
+}
+
 
 Status Get()
 {
@@ -329,6 +355,10 @@ Status Get()
     s.animCouple = Runtime::Tempo::GetAnimForOverrides();
     s.burstsWeapon = s_burstsWeapon;
     s.burstsDetector = s_burstsDetector;
+    s.pawnsTracked = s_nSlots;
+    int act = 0;
+    for (int i = 0; i < s_nSlots; ++i) if (s_slot[i].active) ++act;
+    s.pawnsActive = act;
     lstrcpynA(s.act, s_lastAct, sizeof(s.act));
     lstrcpynA(s.why, s_why, sizeof(s.why));
     return s;

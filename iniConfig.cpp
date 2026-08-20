@@ -60,6 +60,58 @@ T printError(LPCSTR section, LPCSTR key, T defValue)
 	return defValue;
 }
 
+
+// ================= ДОСЫЛКА НЕДОСТАЮЩИХ КЛЮЧЕЙ (75.46) =================
+//
+// БОЛЬ, КОТОРУЮ ЭТО ЗАКРЫВАЕТ (тестер, 20.08):
+//
+//   «Прикинь, мне каждый новый тест выставлять настройки заново, когда
+//    обновляется инишник в билде.»
+//
+// Причина была не в чтении: отсутствующий ключ и так молча берёт значение
+// по умолчанию, старый ini работает с новой сборкой. Беда в том, что вместе
+// со сборкой ехал ГОТОВЫЙ ini, и, положив его в игру, тестер затирал свои
+// значения чужими умолчаниями.
+//
+// Лечим с двух сторон:
+//   1) сборка больше не везёт `ddda_ai_overhaul.ini`. Она везёт
+//      `ddda_ai_overhaul.default.ini` — справочник, который ничего не
+//      затирает, потому что называется иначе;
+//   2) мод сам ДОПИСЫВАЕТ в пользовательский ini ключи, которых там нет,
+//      с их значениями по умолчанию. Ключ появился в новой версии — он
+//      сам возникнет в файле, а всё, что тестер уже выставил, останется
+//      нетронутым.
+//
+// Дописываем ровно один раз на ключ: после записи он в файле есть, и
+// следующее чтение идёт обычным путём. Списки (`getInts`/`getFloats`) не
+// трогаем — у них нет осмысленного «значения по умолчанию», которое можно
+// записать текстом.
+bool iniConfig::fileExists() const
+{
+	return GetFileAttributesA(fileName) != INVALID_FILE_ATTRIBUTES;
+}
+
+void iniConfig::backfill(LPCSTR section, LPCSTR key, LPCSTR value) const
+{
+	if (!autoBackfill || !section || !key || !value) return;
+	// Файла нет вовсе — свежая установка. Создаём с шапкой, дальше он
+	// наполнится сам: каждый ключ допишется при первом же чтении.
+	if (!fileExists()) {
+		std::ofstream f(fileName);
+		if (!f) return;
+		f << "; DDDA AI Overhaul - settings\n"
+		     "; This file is written by the mod. Missing keys are added with\n"
+		     "; their defaults; values you set here are never overwritten.\n"
+		     "; Full reference with comments: ddda_ai_overhaul.default.ini\n";
+		f.close();
+		logFile << "Config: created " << fileName
+		        << " (fresh install; defaults will be filled in)" << std::endl;
+	}
+	WritePrivateProfileStringA(section, key, value, fileName);
+	logFile << "Config: added missing key [" << section << "] " << key
+	        << " = " << value << " (new option, default written)" << std::endl;
+}
+
 string iniConfig::getStr(LPCSTR section, LPCSTR key, string defValue)
 {
 	if (get(section, key, defValue.empty()))
@@ -69,7 +121,7 @@ string iniConfig::getStr(LPCSTR section, LPCSTR key, string defValue)
 
 int iniConfig::getInt(LPCSTR section, LPCSTR key, int defValue)
 {
-	if (!get(section, key)) return defValue;   // ключа нет — норма
+	if (!get(section, key)) { char t[32]; sprintf_s(t, "%d", defValue); backfill(section, key, t); return defValue; }
 	try { return std::stoi(buffer, nullptr, 0); }
 	catch (...) {}
 	return printError(section, key, defValue); // ключ есть, но значение битое
@@ -77,7 +129,7 @@ int iniConfig::getInt(LPCSTR section, LPCSTR key, int defValue)
 
 unsigned int iniConfig::getUInt(LPCSTR section, LPCSTR key, unsigned defValue)
 {
-	if (!get(section, key)) return defValue;
+	if (!get(section, key)) { char t[32]; sprintf_s(t, "%u", defValue); backfill(section, key, t); return defValue; }
 	try { return std::stoul(buffer, nullptr, 0); }
 	catch (...) {}
 	return printError(section, key, defValue);
@@ -85,7 +137,7 @@ unsigned int iniConfig::getUInt(LPCSTR section, LPCSTR key, unsigned defValue)
 
 float iniConfig::getFloat(LPCSTR section, LPCSTR key, float defValue)
 {
-	if (!get(section, key)) return defValue;
+	if (!get(section, key)) { char t[32]; sprintf_s(t, "%g", defValue); backfill(section, key, t); return defValue; }
 	try { return std::stof(buffer, nullptr); }
 	catch (...) {}
 	return printError(section, key, defValue);
@@ -93,7 +145,7 @@ float iniConfig::getFloat(LPCSTR section, LPCSTR key, float defValue)
 
 double iniConfig::getDouble(LPCSTR section, LPCSTR key, double defValue)
 {
-	if (!get(section, key)) return defValue;
+	if (!get(section, key)) { char t[32]; sprintf_s(t, "%g", defValue); backfill(section, key, t); return defValue; }
 	try { return std::stod(buffer, nullptr); }
 	catch (...) {}
 	return printError(section, key, defValue);
@@ -101,7 +153,7 @@ double iniConfig::getDouble(LPCSTR section, LPCSTR key, double defValue)
 
 bool iniConfig::getBool(LPCSTR section, LPCSTR key, bool defValue)
 {
-	if (!get(section, key)) return defValue;
+	if (!get(section, key)) { backfill(section, key, defValue ? "on" : "off"); return defValue; }
 	try
 	{
 		if (_stricmp("true", buffer) == 0 || _stricmp("on", buffer) == 0)
@@ -115,7 +167,11 @@ bool iniConfig::getBool(LPCSTR section, LPCSTR key, bool defValue)
 
 int iniConfig::getEnum(LPCSTR section, LPCSTR key, int defValue, std::pair<int, LPCSTR> map[], int size)
 {
-	if (!get(section, key)) return defValue;
+	if (!get(section, key)) {
+		for (int i = 0; i < size; i++)
+			if (map[i].first == defValue) { backfill(section, key, map[i].second); break; }
+		return defValue;
+	}
 	try
 	{
 		for (int i = 0; i < size; i++)

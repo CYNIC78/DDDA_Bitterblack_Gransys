@@ -31,6 +31,11 @@ static Orchestrator g_orch;
 static bool  g_enabled = true;
 
 // Background tactical thread (150ms / ~6.7 Hz)
+// Самопроверка записи склонностей определена ниже, рядом с панелью, а
+// зовётся отсюда. Объявление обязано быть выше вызова: в прошлый раз тот
+// же промах дал C2065 на статике, теперь C3861 на функции.
+void HiredInclSelfTestTick();
+
 void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
@@ -43,6 +48,11 @@ void UpdatePawnAI(){
     // Каждый модуль вызываем в собственном SEH — никакого каскадного падения
     __try { CombatIntel_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) { /* следующий тик догонит */ }
+
+    // Самопроверка записи склонностей: живёт в тике, а не в отрисовке
+    // панели, иначе закрытие окна оборвало бы опыт на середине.
+    __try { HiredInclSelfTestTick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     __try { EntityCfg::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
@@ -66,6 +76,8 @@ void UpdatePawnAI(){
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
+    __try { Runtime::ErrataTick(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
     __try { PawnAI::GuardianDoctrineTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
@@ -89,6 +101,212 @@ static DWORD WINAPI PawnTickThread(LPVOID){
 }
 
 // ——— InGame UI Overlay (F12) ———
+
+// ============================================================================
+// ВРЕМЕННЫЙ ЭКСПЕРИМЕНТ: склонности НАЁМНЫХ пешек (75.2)
+// ============================================================================
+//
+// ЗАЧЕМ. Доктрина Guardian отлажена на одной вокации, а проверить её на
+// Файтере/Маге можно только имея такую пешку. Наёмные дают это сразу — но
+// их склонности игра менять не даёт: они приезжают из Рифта снимком.
+//
+// Тестер просит открыть их НА ВРЕМЯ, чтобы вживую посмотреть, как доктрина
+// отрабатывает на чужой вокации. Оценка будет субъективной — это принято и
+// записано: строгих чисел здесь не получится, инструмент даёт возможность
+// посмотреть, а не доказать.
+//
+// ПОЧЕМУ ЭТО НЕ НАРУШЕНИЕ НАШЕЙ ЖЕ ГРАНИЦЫ (HIRED_PAWNS_SCOPE.md §1):
+// граница запрещает менять чужой билд НАСОВСЕМ. Здесь три предохранителя:
+//   1. значения снимаются ДО первой записи и хранятся как база;
+//   2. откат по кнопке, по снятию галки и АВТОМАТИЧЕСКИ при выгрузке DLL;
+//   3. на диск не пишет ничего и никогда — сохранение игры мы не трогаем.
+// То есть чужая пешка возвращается в Рифт ровно такой, какой пришла,
+// если только игрок сам не сохранится с изменёнными значениями. Об этом
+// в панели написано прямым текстом.
+//
+// Запись идёт в запись персонажа (`pBase + 0xA7000 + 0x7F0 + idx*0x1660`),
+// то есть ровно туда же, куда доктрина пишет своей пешке.
+static bool  g_hiredInclUnlocked = false;
+static bool  g_hiredInclShow = false;
+static bool  g_hiCaptured[4] = {};
+static float g_hiBase[4][I_COUNT];
+static bool  g_hiChanged[4] = {};
+
+// Проверка, что по индексу действительно живая запись пешки, а не мусор.
+// Без неё «наёмная пешка №3» при партии из двух окажется случайными
+// байтами, а мы в них запишем float.
+static bool HiredRecordOk(int idx, int* vocOut, int* lvlOut)
+{
+    if (vocOut) *vocOut = 0;
+    if (lvlOut) *lvlOut = 0;
+    if (!pBase || !*pBase || idx < 0 || idx > 3) return false;
+    const uintptr_t rec = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET
+                        + (uintptr_t)idx * PAWN_STRIDE;
+    int voc = 0; unsigned short lvl = 0; float maxHp = 0.0f;
+    __try {
+        voc   = *(int32_t*)(rec + VOCATION_OFFSET);
+        lvl   = *(unsigned short*)(rec + 0xDD0);
+        maxHp = *(float*)(rec + 0x970);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    if (voc < 1 || voc > 9) return false;
+    if (lvl == 0 || lvl > 250) return false;
+    if (!(maxHp > 0.0f) || maxHp > 200000.0f) return false;
+    if (vocOut) *vocOut = voc;
+    if (lvlOut) *lvlOut = (int)lvl;
+    return true;
+}
+
+static void HiredInclCapture(int idx)
+{
+    if (idx < 0 || idx > 3 || g_hiCaptured[idx]) return;
+    ReadAllIncl(g_hiBase[idx], idx);
+    g_hiCaptured[idx] = true;
+    char l[220];
+    sprintf_s(l, "HiredIncl: baseline captured for pawn #%d: %.0f %.0f %.0f %.0f"
+                 " %.0f %.0f %.0f %.0f %.0f", idx,
+              g_hiBase[idx][0], g_hiBase[idx][1], g_hiBase[idx][2],
+              g_hiBase[idx][3], g_hiBase[idx][4], g_hiBase[idx][5],
+              g_hiBase[idx][6], g_hiBase[idx][7], g_hiBase[idx][8]);
+    logFile << l << std::endl;
+}
+
+static void HiredInclRestore(int idx)
+{
+    if (idx < 0 || idx > 3 || !g_hiCaptured[idx] || !g_hiChanged[idx]) return;
+    WriteAllIncl(g_hiBase[idx], idx);
+    g_hiChanged[idx] = false;
+    logFile << "HiredIncl: pawn #" << idx << " restored to the captured baseline"
+            << std::endl;
+}
+
+void HiredInclRestoreAll()
+{
+    for (int i = 0; i < 4; ++i) HiredInclRestore(i);
+}
+
+
+// ============================================================================
+// САМОПРОВЕРКА ЗАПИСИ СКЛОННОСТЕЙ (75.19)
+// ============================================================================
+//
+// ПОВОД — процессный, а не технический. Тестер выставил склонности
+// наёмной пешке, отвоевал бой, и только потом случайно заглянул в профиль
+// и увидел, что ничего не изменилось. Замер пропал, а вопрос «работает ли
+// запись» так и остался открытым.
+//
+// Это моя ошибка в постановке работы: проверять чужую реализацию глазами
+// в игре — не работа тестера. Мод обязан проверять себя сам и говорить
+// одной строкой, что получилось.
+//
+// ЧТО ДЕЛАЕТ САМОПРОВЕРКА (одна кнопка, пять секунд, полный откат):
+//   1. запоминает исходные значения обоих источников;
+//   2. пишет пробное значение в оба (запись персонажа + живое тело);
+//   3. три секунды следит, ДЕРЖАТСЯ ли числа или движок их возвращает;
+//   4. печатает вердикт по каждому источнику отдельно;
+//   5. восстанавливает исходное.
+//
+// Вердикт «держится» не означает «игра это читает» — он означает, что
+// память наша и её никто не перетирает. Читает ли её ИИ, показывает
+// только поведение; но без этого шага и спрашивать нечего.
+struct HiredSelfTest {
+    bool     active;
+    int      idx;
+    int      phase;          // 0 — не запущен, 1 — наблюдение, 2 — откат
+    DWORD    t0;
+    int      samples;
+    int      recHeld, recReverted;
+    int      bodyHeld, bodyReverted, bodyUnavailable;
+    float    probe;
+    int      inclId;
+    float    recBase[I_COUNT];
+    float    bodyBase[9];
+    bool     bodyBaseOk;
+};
+static HiredSelfTest g_hst = {};
+
+void HiredInclSelfTestStart(int idx)
+{
+    if (g_hst.active || idx < 1 || idx > 3) return;
+    memset(&g_hst, 0, sizeof(g_hst));
+    g_hst.idx = idx;
+    g_hst.inclId = I_SCATHER;     // безопасная склонность для пробы
+    g_hst.probe = 999.0f;
+
+    ReadAllIncl(g_hst.recBase, idx);
+    bool isMain = false;
+    const uintptr_t body = Runtime::PawnBodyAt(idx, &isMain);
+    g_hst.bodyBaseOk = body && Runtime::PawnInclinationsLive(body, g_hst.bodyBase);
+
+    float v[I_COUNT];
+    memcpy(v, g_hst.recBase, sizeof(v));
+    v[g_hst.inclId] = g_hst.probe;
+    WriteAllIncl(v, idx);
+    if (body) Runtime::PawnSetInclinationLive(body, g_hst.inclId, g_hst.probe);
+
+    g_hst.active = true;
+    g_hst.phase = 1;
+    g_hst.t0 = MsNow();
+    logFile << "HiredIncl selftest: started on hired #" << idx
+            << ", writing Scather = 999 to both sources" << std::endl;
+}
+
+void HiredInclSelfTestTick()
+{
+    if (!g_hst.active) return;
+    const DWORD now = MsNow();
+
+    if (g_hst.phase == 1) {
+        float rec[I_COUNT];
+        ReadAllIncl(rec, g_hst.idx);
+        if (rec[g_hst.inclId] == g_hst.probe) ++g_hst.recHeld; else ++g_hst.recReverted;
+
+        bool isMain = false;
+        const uintptr_t body = Runtime::PawnBodyAt(g_hst.idx, &isMain);
+        float live[9] = {};
+        if (body && Runtime::PawnInclinationsLive(body, live)) {
+            if (live[g_hst.inclId] == g_hst.probe) ++g_hst.bodyHeld;
+            else ++g_hst.bodyReverted;
+        } else {
+            ++g_hst.bodyUnavailable;
+        }
+        ++g_hst.samples;
+
+        if (now - g_hst.t0 < 3000) return;
+        g_hst.phase = 2;
+    }
+
+    // Откат и вердикт.
+    WriteAllIncl(g_hst.recBase, g_hst.idx);
+    bool isMain = false;
+    const uintptr_t body = Runtime::PawnBodyAt(g_hst.idx, &isMain);
+    if (body && g_hst.bodyBaseOk)
+        Runtime::PawnSetInclinationLive(body, g_hst.inclId, g_hst.bodyBase[g_hst.inclId]);
+
+    char l[300];
+    sprintf_s(l, "HiredIncl selftest: hired #%d, %d samples over 3 s", g_hst.idx, g_hst.samples);
+    logFile << l << std::endl;
+    sprintf_s(l, "   RECORD: held %d, reverted %d -> %s",
+              g_hst.recHeld, g_hst.recReverted,
+              g_hst.recReverted ? "the engine REWRITES this place - our value does not live here"
+                                : "our value STAYS (nobody overwrites it)");
+    logFile << l << std::endl;
+    if (g_hst.bodyUnavailable && !g_hst.bodyHeld && !g_hst.bodyReverted)
+        logFile << "   BODY  : cCmcInfo not readable on this pawn" << std::endl;
+    else {
+        sprintf_s(l, "   BODY  : held %d, reverted %d -> %s",
+                  g_hst.bodyHeld, g_hst.bodyReverted,
+                  g_hst.bodyReverted ? "the engine REWRITES the live mirror"
+                                     : "our value STAYS in the live body");
+        logFile << l << std::endl;
+    }
+    logFile << "   NOTE: 'stays' means nobody overwrites our bytes. Whether the AI"
+               " READS them is a behaviour question, not a memory one." << std::endl;
+    logFile << "   restored to the captured baseline" << std::endl;
+
+    g_hst.active = false;
+    g_hst.phase = 0;
+}
+
 void RenderPawnAIUI(){
     if(!ImGui::CollapsingHeader("Pawn AI Overhaul v2.8 Modular")) return;
     ImGui::PushID("PawnAI");
@@ -125,9 +343,26 @@ void RenderPawnAIUI(){
                                          : ImVec4(0.6f, 0.6f, 0.6f, 1),
                 "%s | nearest enemy %.1f m | bursts %d | applied x%.2f",
                 hs.why, hs.distM, hs.applied, hs.used);
+            ImGui::TextDisabled("  pawns tracked %d, compensating now %d "
+                                "(hired pawns included)",
+                                hs.pawnsTracked, hs.pawnsActive);
             ImGui::TextDisabled("  factor source: %s",
                 hs.matchTempo ? "matched to the fastest monster nearby"
                               : "fixed number above");
+            // Замеры 74.8 и 75.13 подряд шли с множителем 1.30 — это
+            // потолок, то есть фиксированное число из ini. Ключ
+            // matchMonsterTempo существовал только в файле, а файл у
+            // тестера старше сборки. Ручка должна быть там, где смотрят.
+            bool match = hs.matchTempo;
+            if (ImGui::Checkbox("match monster tempo (compensation, not buff)", &match)) {
+                PawnAI::Haste::SetMatchTempo(match);
+                config.setBool("pawnHaste", "matchMonsterTempo", match);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("ON: the multiplier equals the fastest nearby "
+                                  "monster's own multiplier, so we give back exactly "
+                                  "what we added. OFF: the fixed number above, which "
+                                  "is a buff, not compensation.");
             bool needWpn = hs.requireWeapon;
             if (ImGui::Checkbox("require the pawn's weapon drawn", &needWpn)) {
                 PawnAI::Haste::SetRequireWeapon(needWpn);
@@ -193,6 +428,8 @@ void RenderPawnAIUI(){
                                   "that moves with locomotion is the one that "
                                   "carries the run animation. Read-only.");
         }
+
+
 
         // Прибор для трека «честный спринт»: считает переходы пешки в
         // состояния cPlActDash*. До правки GOAP в бою обязан быть ноль.
@@ -309,22 +546,44 @@ void RenderPawnAIUI(){
     if(ImGui::Checkbox("Auto-adapt in combat", &g_orch.tactical.enabled)) config.setBool("pawnAI", "tactical", g_orch.tactical.enabled);
     if(ImGui::IsItemHovered()) ImGui::SetTooltip("In combat, system adds a situational delta on top of your sliders (based on enemy category).");
 
-    // Кнопки-пресеты: клик = переезд ползунков + мгновенная запись в память (бары прыгают)
+    // ПРЕСЕТЫ — ВЫПАДАЮЩИМ СПИСКОМ (75.39).
+    //
+    // Шесть кнопок в ряд занимали всю ширину панели и читались как шесть
+    // разных действий, хотя это одно действие с шестью значениями. Список
+    // занимает одну строку и заодно ЧЕСТНО показывает седьмое состояние —
+    // «Custom», то есть ползунки, сдвинутые рукой.
+    //
+    // Отдельного «кастомного пресета» заводить не нужно и не надо: ползунки
+    // И ЕСТЬ якорь, они уже сохраняются в ini при каждом движении. «Custom»
+    // в списке — это не ещё одно хранилище, а имя текущего состояния якоря.
     {
-        bool anyLoaded = false;
-        for (int p = 0; p < PawnAI::PresetManager::COUNT; p++) {
-            if (p > 0) ImGui::SameLine();
-            if (ImGui::Button(PawnAI::PresetManager::presets[p].name)) {
-                g_orch.presets.LoadPreset(p);
-                config.setInt("pawnAI", "lastPreset", p);
-                // Пишем в память немедленно — прогресс-бары обновятся сразу
+        const int kCustom = PawnAI::PresetManager::COUNT;
+        static const char* names[PawnAI::PresetManager::COUNT + 1] = {};
+        for (int p = 0; p < PawnAI::PresetManager::COUNT; ++p)
+            names[p] = PawnAI::PresetManager::presets[p].name;
+        names[kCustom] = "Custom (your sliders)";
+
+        int sel = g_orch.presets.IsModified() ? kCustom
+                                              : g_orch.presets.lastPresetIdx;
+        ImGui::PushItemWidth(220);
+        if (ImGui::Combo("preset", &sel, names, kCustom + 1)) {
+            if (sel < kCustom) {
+                g_orch.presets.LoadPreset(sel);
+                config.setInt("pawnAI", "lastPreset", sel);
+                // Пишем в память немедленно — прогресс-бары обновятся сразу.
                 float f[I_COUNT]; g_orch.presets.GetBaseTarget(f);
                 WriteAllIncl(f, 0);
-                anyLoaded = true;
             }
+            // Выбор "Custom" сам по себе ничего не меняет: он и так означает
+            // «то, что сейчас на ползунках».
         }
+        ImGui::PopItemWidth();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Load this preset into sliders and memory instantly.");
+            ImGui::SetTooltip("A preset is just a set of slider values. Picking "
+                              "one moves the sliders and writes them at once. "
+                              "'Custom' is not a seventh preset - it is the name "
+                              "for sliders you moved by hand. They are saved to "
+                              "the ini on every move and come back next session.");
     }
     ImGui::TextDisabled("Preset: %s%s | Smooth: %.2f",
         PawnAI::PresetManager::presets[g_orch.presets.lastPresetIdx].name,
@@ -340,6 +599,37 @@ void RenderPawnAIUI(){
         float incl[I_COUNT]; ReadAllIncl(incl, 0);
 
         ImGui::TextDisabled("Slider = current target (truth). Live = actual value (+delta from combat).");
+
+        // КТО ТЯНЕТ СКЛОННОСТЬ ВНИЗ — ГОВОРИТЬ ВСЛУХ.
+        //
+        // Жалоба тестера 20.08: «какого хрена у меня инклинации моей пешки
+        // сбрасываются, каждый раз крутить надо». Разбор показал, что тянет
+        // их НАШ ЖЕ модуль: вокационный кордон ставит Guardian потолок, если
+        // пешка не мили. Страйдер — гибрид, значит потолок применяется.
+        //
+        // Ползунок при этом честно стоит на 1000, а живое значение уезжает к
+        // потолку, и снаружи это выглядит как «настройка не сохранилась».
+        // Панель обязана называть виновника сама, а не оставлять это на
+        // раскопки в логе.
+        if (g_orch.cordon.enabled && g_orch.cordon.lastGuardianCap > 0.0f
+            && g_orch.presets.anchor[I_GUARDIAN] > g_orch.cordon.lastGuardianCap) {
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                "Vocation cordon is capping Guardian at %.0f (pawn class: %s).",
+                g_orch.cordon.lastGuardianCap, g_orch.cordon.lastClassName);
+            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
+                "Your slider says %.0f - THAT is why it looks like the setting"
+                " does not stick.", g_orch.presets.anchor[I_GUARDIAN]);
+            if (ImGui::Checkbox("vocation cordon (cap Guardian on non-melee pawns)",
+                                &g_orch.cordon.enabled))
+                config.setBool("pawnAI", "vocationCordon", g_orch.cordon.enabled);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Uncheck it and the Guardian slider will be "
+                                  "obeyed as written. The cordon exists because "
+                                  "a ranged pawn with high Guardian glues herself "
+                                  "to you instead of shooting - but that reason "
+                                  "is weaker now that the dagger ban is lifted.");
+            ImGui::Separator();
+        }
         ImGui::TextDisabled("Acquisitor mgr: combat=suppress, idle=loot boost | %s%s",
             PawnAI::PresetManager::presets[g_orch.presets.lastPresetIdx].name,
             g_orch.presets.IsModified() ? " (Modified)" : "");
@@ -423,6 +713,104 @@ void RenderPawnAIUI(){
         if(ImGui::Button("Reset Balanced")) {
             g_orch.presets.ResetDefaultAnchor();
         }
+
+        // [UI-BLOCK-PAWN-BEGIN]  <- метка для tools/syntax_check.sh, не удалять
+        // --- НАЁМНЫЕ ПЕШКИ, ТУТ ЖЕ ----------------------------------------
+        //
+        // Раньше это была отдельная секция ниже по панели. Держать
+        // склонности в двух разных местах — значит заставлять человека
+        // помнить, где что; всё, что про склонности, живёт здесь.
+        //
+        // ПОДТВЕРЖДЕНО (75.20): запись в наёмных РАБОТАЕТ. Профиль пешки
+        // просто кэшируется и обновляется при смене локации — проверено и
+        // на нашем моде, и на `ddda-dinput8`. То есть заморожен был не
+        // билд пешки, а его отображение.
+        ImGui::Separator();
+        ImGui::Checkbox("show hired pawns", &g_hiredInclShow);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hired pawns are somebody else's build. Editing is a "
+                              "temporary test tool: baselines are captured before the "
+                              "first write and restored on unload. The in-game "
+                              "profile refreshes only on a location change - that is "
+                              "the game caching the card, not our write failing.");
+
+        if (g_hiredInclShow) {
+            ImGui::SameLine();
+            ImGui::Checkbox("allow editing", &g_hiredInclUnlocked);
+            if (!g_hiredInclUnlocked && g_hiChanged[1] + g_hiChanged[2] + g_hiChanged[3])
+                HiredInclRestoreAll();
+
+            for (int idx = 1; idx <= 3; ++idx) {
+                int voc = 0, lvl = 0;
+                if (!HiredRecordOk(idx, &voc, &lvl)) continue;
+                ImGui::PushID(1000 + idx);
+                HiredInclCapture(idx);
+
+                // ЗАГОЛОВОК НЕ МЕНЯЕТСЯ.
+                //
+                // Дрожание интерфейса, из-за которого тестер промахивался
+                // мимо ползунков, шло отсюда: в заголовок подставлялась
+                // пометка «[edited]», а строка справа то появлялась, то
+                // исчезала вместе с телом пешки (разбор партии
+                // пересобирается раз в несколько секунд). Менялась ширина
+                // — прыгала вся раскладка.
+                //
+                // Теперь заголовок постоянный, а всё изменчивое ушло в
+                // поля фиксированной ширины.
+                char hdr[64];
+                sprintf_s(hdr, "hired #%d: %-14s lvl %2d", idx, VocationName(voc), lvl);
+                if (!ImGui::CollapsingHeader(hdr)) { ImGui::PopID(); continue; }
+
+                float rec[I_COUNT];
+                ReadAllIncl(rec, idx);
+                for (int i = 0; i < 9; ++i) {
+                    ImGui::PushID(i);
+                    ImGui::Text("%-12s", InclName(i));
+                    ImGui::SameLine(115);
+
+                    float fr = rec[i] / 1000.0f;
+                    if (fr < 0.0f) fr = 0.0f;
+                    if (fr > 1.0f) fr = 1.0f;
+                    ImGui::ProgressBar(fr, ImVec2(150.0f, 0), "");
+                    ImVec2 bmin = ImGui::GetItemRectMin();
+                    ImVec2 bmax = ImGui::GetItemRectMax();
+
+                    if (g_hiredInclUnlocked) {
+                        ImGui::SetCursorScreenPos(bmin);
+                        ImGui::PushStyleColor(ImGuiCol_FrameBg,        ImVec4(0,0,0,0));
+                        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(0,0,0,0));
+                        ImGui::PushItemWidth(150.0f);
+                        float v = rec[i];
+                        if (ImGui::SliderFloat("##hi", &v, 0.0f, 1000.0f, "")) {
+                            rec[i] = v;
+                            WriteAllIncl(rec, idx);
+                            bool im = false;
+                            const uintptr_t b = Runtime::PawnBodyAt(idx, &im);
+                            if (b) Runtime::PawnSetInclinationLive(b, i, v);
+                            g_hiChanged[idx] = true;
+                        }
+                        ImGui::PopItemWidth();
+                        ImGui::PopStyleColor(2);
+                    }
+
+                    // Ширина этой надписи постоянна при любых значениях —
+                    // именно она раньше и дёргала раскладку.
+                    ImGui::SetCursorScreenPos(ImVec2(bmax.x + 6.0f, bmin.y));
+                    ImGui::Text("%4.0f", rec[i]);
+                    ImGui::PopID();
+                }
+
+                if (g_hiredInclUnlocked) {
+                    if (ImGui::SmallButton("restore")) HiredInclRestore(idx);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("self-test write (5 s)"))
+                        HiredInclSelfTestStart(idx);
+                }
+                ImGui::PopID();
+            }
+        }
+        // [UI-BLOCK-PAWN-END]
+
         ImGui::TreePop();
     }
 
@@ -457,14 +845,94 @@ void RenderPawnAIUI(){
         ImGui::TextDisabled("Observe-only: decides, writes NOTHING to game memory.");
 
         ImGui::Separator();
-        // Build 57.1: динамический Guardian-фикс (code 54, -3 -> 0).
-        if (ImGui::Checkbox("Guardian fix (code 54, -3->0)", &PawnAI::g_guardianFixEnabled)) {
-            config.setBool("pawnAI", "guardianFix", PawnAI::g_guardianFixEnabled);
+        // --- ЭРРАТА (слой B): статичная починка сломанного правила ---------
+        //
+        // Это НЕ доктрина. Доктрина крутит веса по ситуации, как задумано
+        // дизайном; эррата снимает запрет, которого в дизайне быть не
+        // должно. Разделение и его смысл — в docs/ERRATA_ARCHITECTURE.md.
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f),
+                           "Errata - static fixes of broken vanilla rules");
+        ImGui::TextDisabled("Not the doctrine. These lift rules that should not exist.");
+
+        // --- E01/E02: Guardian душит кинжалы --------------------------------
+        if (ImGui::Checkbox("Guardian dagger ban - LIFT IT (code 54)",
+                            &Runtime::g_errataDaggerOn)) {
+            config.setBool("errata", "guardianDaggerBan", Runtime::g_errataDaggerOn);
+            if (!Runtime::g_errataDaggerOn) Runtime::ErrataRestore(0);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Transactional: lifts Guardian -3 penalty on WpnDaggerAtk ONLY while a threat is in your zone and pawn is melee/hybrid. Rollback when zone clears.");
-        ImGui::TextColored(Runtime::GuardianFixIsApplied() ? ImVec4(0.3f,1,0.3f,1) : ImVec4(0.7f,0.7f,0.7f,1),
-            "%s", Runtime::GuardianFixStatus());
+            ImGui::SetTooltip("Vanilla gives Guardian -3 and -2 on WpnDaggerAtk, "
+                              "which removes melee from a dagger pawn for good. "
+                              "Measured: 0 dagger frames out of 500 in vanilla, "
+                              "246 out of 1858 with this on. Both ranks are "
+                              "lifted. Affects the shared resource, so the whole "
+                              "party - but only matters for pawns whose Guardian "
+                              "is first or second.");
+        {
+            int v = (int)Runtime::g_errataDaggerVal;
+            ImGui::PushItemWidth(160);
+            if (ImGui::SliderInt("dagger AddS32", &v, -3, 5)) {
+                Runtime::g_errataDaggerVal = (int32_t)v;
+                config.setInt("errata", "guardianDaggerValue", v);
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("-3 = vanilla (the ban). 0 = the ban simply "
+                                  "removed. +5 = what Scather primary carries.");
+        }
+        ImGui::TextColored(Runtime::ErrataIsApplied(0) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
+                                                       : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                           "%s", Runtime::ErrataStatus(0));
+
+        // --- E03/E04: Nexus душит магию -------------------------------------
+        if (ImGui::Checkbox("Nexus magic ban - LIFT IT (code 55)",
+                            &Runtime::g_errataMagicOn)) {
+            config.setBool("errata", "nexusMagicBan", Runtime::g_errataMagicOn);
+            if (!Runtime::g_errataMagicOn) Runtime::ErrataRestore(1);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The same construction as the Guardian one, but for "
+                              "casters: Nexus puts -3 and -2 on WpnWandAtk, the "
+                              "main attack of a Mage or Sorcerer. An inclination "
+                              "meant to make her look after a party member ends up "
+                              "telling her not to cast. Untested in combat yet - "
+                              "the rule map is certain, the effect is not measured.");
+        {
+            int v = (int)Runtime::g_errataMagicVal;
+            ImGui::PushItemWidth(160);
+            if (ImGui::SliderInt("magic AddS32", &v, -3, 5)) {
+                Runtime::g_errataMagicVal = (int32_t)v;
+                config.setInt("errata", "nexusMagicValue", v);
+            }
+            ImGui::PopItemWidth();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("-3 = vanilla (the ban). 0 = the ban removed.");
+        }
+        ImGui::TextColored(Runtime::ErrataIsApplied(1) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
+                                                       : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                           "%s", Runtime::ErrataStatus(1));
+
+        // --- ВЫПОЛОТО В 75.40 -----------------------------------------------
+        //
+        // Здесь стояли ещё две ручки на то же самое правило:
+        //
+        //   `Guardian fix (code 54, -3->0)` — ситуативная правка, включалась
+        //       только пока угроза в зоне телохранителя;
+        //   `inclination lever` — понижение Guardian / подъём Scather, плюс
+        //       два ползунка смещения.
+        //
+        // Обе проиграли эррате и обе были построены на выводах, которые
+        // потом оказались ложными:
+        //   - рычаг склонности вырос из «AddS32 не двигает строку» (75.28) —
+        //     это была ошибка чтения приборов;
+        //   - и он же опирался на «смена склонности пересчитывает раскладку»,
+        //     что опровергнуто логом 16a: живая запись склонности раскладку
+        //     НЕ пересчитывает.
+        //
+        // Три ручки на одно правило — это гарантированная война записей и
+        // непонятный интерфейс. Победитель один: эррата выше. Код доктрины
+        // пока остаётся (на нём висит зона телохранителя), но из панели
+        // рычаги убраны, а ключи ini принудительно выключены при загрузке.
 
         ImGui::Separator();
         ImGui::Text("Role: %s | combat %s",
@@ -535,7 +1003,17 @@ void Hooks::PawnAI(){
     g_orch.presets.smooth    = config.getFloat("pawnAI", "smooth", 0.10f);
     g_orch.tactical.enabled  = config.getBool("pawnAI", "tactical", true);
     // Build 57.1: динамический Guardian-фикс (vanilla по умолчанию).
-    PawnAI::g_guardianFixEnabled = config.getBool("pawnAI", "guardianFix", false);
+    // Две старые ручки на правило code 54 выполоты из панели (75.40) и
+    // принудительно выключены: победила эррата, а три хозяина у одного
+    // правила — это война записей.
+    PawnAI::g_guardianFixEnabled  = false;
+    PawnAI::g_guardianUseInclLever = false;
+    Runtime::g_errataDaggerOn  = config.getBool("errata", "guardianDaggerBan", false);
+    Runtime::g_errataDaggerVal = (int32_t)config.getInt("errata", "guardianDaggerValue", 0);
+    Runtime::g_errataMagicOn   = config.getBool("errata", "nexusMagicBan", false);
+    Runtime::g_errataMagicVal  = (int32_t)config.getInt("errata", "nexusMagicValue", 0);
+    PawnAI::g_guardianScatherBoost = config.getFloat("pawnAI", "guardianScatherBoost", 800.0f);
+    PawnAI::g_guardianLeverMode = (int)config.getFloat("pawnAI", "guardianLeverMode", 1.0f);
     PawnAI::g_guardianMeleeRadius = config.getFloat("pawnAI", "guardianMeleeRadius", 6.0f);
     // Build 58: градиентные зоны телохранителя.
     PawnAI::g_guardianPreemptRadius = config.getFloat("pawnAI", "guardianPreemptRadius", 10.0f);
@@ -569,5 +1047,9 @@ void Hooks::PawnAI_Shutdown(){
         g_pawnTickThread = nullptr;
     }
     if (g_pawnTickEvent) { CloseHandle(g_pawnTickEvent); g_pawnTickEvent = nullptr; }
+    // Чужие пешки возвращаются в Рифт такими, какими пришли: откат
+    // склонностей наёмных — часть выгрузки, а не забота пользователя.
+    HiredInclRestoreAll();
+    PawnAI::GuardianLeverRestore();   // склонность обязана вернуться при выгрузке
     g_orch.Shutdown();
 }

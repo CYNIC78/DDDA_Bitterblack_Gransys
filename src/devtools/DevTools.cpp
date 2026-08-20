@@ -4296,6 +4296,24 @@ static void RenderDevToolsUI()
     // искать глазами. Плюс пять проб отработали свой вопрос и удалены
     // вместе с кодом (см. GoapProbe.h).
     if (ImGui::CollapsingHeader("GOAP probe (pawn dash track)")) {
+        // ЦЕЛЬ ПРОБЫ. Все дампы читали свою пешку; с полной партией это
+        // молча давало ответ не про того, на кого смотрит тестер.
+        {
+            int target = GoapProbe::GetProbePawn();
+            ImGui::Text("probe target:");
+            for (int i = 0; i <= 2; ++i) {
+                int voc = 0, lvl = 0;
+                uintptr_t body = 0;
+                if (!Runtime::PartyRecordInfo(i, &voc, &lvl, &body)) continue;
+                char lbl[48];
+                sprintf_s(lbl, "%s##pt%d", i == 0 ? "own" : (i == 1 ? "hired 1" : "hired 2"), i);
+                ImGui::SameLine();
+                if (ImGui::RadioButton(lbl, target == i)) GoapProbe::SetProbePawn(i);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Vocation %d, level %d, live body %s", voc, lvl,
+                                      body ? "found" : "not found");
+            }
+        }
         // Ряд 1 — измерение. Именно этим снимаются числа трека.
         const bool w = GoapProbe::CodeWatchActive();
         if (w) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
@@ -4340,6 +4358,66 @@ static void RenderDevToolsUI()
             ImGui::SetTooltip("Dumps and diffs PlanCtrl(1) against PlanCtrl(84). "
                               "Same array, same type, so equal offsets mean equal "
                               "fields. Read-only.");
+        ImGui::SameLine();
+        if (ImGui::Button(GoapProbe::SlotSweepActive()
+                          ? "Bucket sweep: RUNNING (click to stop)"
+                          : "Bucket sweep (code 54)"))
+            GoapProbe::ToggleSlotSweep();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Walks the dagger row (code 54) across the 48 "
+                              "buckets and counts how much of each fight the "
+                              "pawn spends in melee at every position. Answers "
+                              "the one open question: which bucket wins between "
+                              "PL_Party (bow) and Etc (daggers). WRITES to the "
+                              "rule - uncheck the Guardian fix first. Steps "
+                              "advance on COMBAT frames only; just keep fighting. "
+                              "The report prints itself.");
+        ImGui::SameLine();
+        if (ImGui::Button("Bucket map")) GoapProbe::DumpBucketMap();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Where each priority row sits in this pawn's 48 "
+                              "buckets. The rules are shared by the whole party, "
+                              "but the LAYOUT is per pawn and is computed from her "
+                              "inclinations - so this is the applied personality. "
+                              "Press on one pawn, switch the target, press again: "
+                              "the diff is what the inclination actually did.");
+        ImGui::SameLine();
+        if (ImGui::Button("Inclination rules")) GoapProbe::DumpInclinationRules();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Every personality rule of all 85 rows, expanded: "
+                              "code, AddS32, and the inclination + rank it is "
+                              "conditioned on. Player reports about Guardian "
+                              "(sticks to you, only fights back, drops casts to "
+                              "reposition) describe position-over-action, not the "
+                              "dagger penalty we fixed - this map shows which "
+                              "codes each inclination actually moves.");
+        ImGui::SameLine();
+        if (ImGui::Button("Party roster")) GoapProbe::DumpPartyRoster();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Every pawn body in the party (a hired pawn is also "
+                              "uCmc) with its AI roots. Answers the question that "
+                              "decides the scope of every weight edit we make: is "
+                              "the priority resource shared by all pawns or one per "
+                              "pawn? Hire two pawns before pressing.");
+
+        // Трек идлов: гистограмма ДЕЙСТВИЙ, а не целей.
+        const bool aw = GoapProbe::ActWatchActive();
+        if (aw) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 1));
+        if (ImGui::Button(aw ? "act watch: ON" : "act watch: off"))
+            GoapProbe::ToggleActWatch();
+        if (aw) ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Idle track: counts the pawn's ACT classes, not its "
+                              "goals. A goal named Wait is one thing; how many "
+                              "different poses play under it is another, and the "
+                              "idle question is entirely about the second.");
+        ImGui::SameLine();
+        if (ImGui::Button("Act histogram")) GoapProbe::DumpActHistogram();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Frames and entries per act, split by combat, with the "
+                              "pawn's inclinations printed alongside. Stand around "
+                              "five minutes, dump, switch the primary inclination, "
+                              "dump again - the difference is the answer.");
 
         ImGui::TextWrapped("%s", GoapProbe::Status());
     }

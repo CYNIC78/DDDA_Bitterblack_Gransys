@@ -38,3 +38,4 @@ __pycache__/
 
 # Сгенерированное синтаксическим харнессом
 tools/tcomp/ui_block.inc
+tools/tcomp/ui_pawn_block.inc

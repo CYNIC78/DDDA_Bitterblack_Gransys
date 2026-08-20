@@ -378,12 +378,149 @@ def main() -> int:
             errors.append(f"[дубль] {name}() определена в: {', '.join(sorted(uniq))}")
 
     # --- 5. объявлено в .h, не определено нигде ---
+    #
+    # ПОЧЕМУ ЧАСТЬ ЭТОГО ТЕПЕРЬ ОШИБКА, А НЕ ПРЕДУПРЕЖДЕНИЕ.
+    #
+    # 21.08 сборка легла на LNK2019: `GetPawnInclinations()` была объявлена
+    # в PawnAI.h, определения не имела нигде, и её вызвали из новой пробы.
+    # Этот самый линтер писал про неё «нет тела?» — предупреждением, в
+    # списке из тридцати семи строк, где девяносто процентов это Windows
+    # API и ImGui. Предупреждение утонуло.
+    #
+    # Разделяем два случая:
+    #   объявлено и НЕ вызывается  -> предупреждение (мёртвое объявление);
+    #   объявлено и ВЫЗЫВАЕТСЯ     -> ОШИБКА, это гарантированный LNK2019.
+    #
+    # Внешние имена (Windows API, ImGui, CRT) сюда не попадают: у них нет
+    # объявления в НАШИХ заголовках.
+    called_names = set()
+    for f, clean in texts.items():
+        for m in CALL_RE.finditer(clean):
+            called_names.add(m.group(1))
+
     for name, files in sorted(decls.items()):
         if name in defs:
             continue
         hs = [f for f in files if f.suffix == ".h"]
-        if hs and name not in CXX_KEYWORDS:
-            warnings.append(f"[нет тела?] {name}() объявлена в {hs[0]}, определения не найдено")
+        if not hs or name in CXX_KEYWORDS:
+            continue
+        # Отличаем НАСТОЯЩИЙ прототип от вызова внутри inline-тела.
+        #
+        # Первая версия этой проверки выдала восемнадцать «ошибок», из
+        # которых все восемнадцать были ложными: `AcquireSRWLockExclusive(&m);`
+        # внутри inline-метода парсер принимал за объявление. Признак
+        # прототипа простой и надёжный — перед именем стоит тип
+        # возвращаемого значения, а строка кончается точкой с запятой.
+        proto = re.compile(
+            r"^[ \t]*(?:inline[ \t]+|static[ \t]+|extern[ \t]+)*"
+            r"[A-Za-z_][\w:<>,\*&\s]*[\s\*&]"
+            + re.escape(name) + r"[ \t]*\([^;{]*\)[ \t]*;[ \t]*$",
+            re.M)
+        # `decls` хранит ОТНОСИТЕЛЬНЫЕ пути, а `texts` — абсолютные.
+        # На этом самоконтроль проверки и поймал её саму: регулярка была
+        # верной, а текст ей передавался пустой, и «ошибка» тихо
+        # вырождалась в предупреждение. Тот же класс промаха, что мы весь
+        # проект ловим в приборах.
+        is_prototype = any(proto.search(texts.get(ROOT / h, "")) for h in hs)
+
+        if name in called_names and is_prototype:
+            errors.append(
+                f"[LNK2019] {name}() объявлена в {hs[0]}, определения нет НИГДЕ, "
+                f"а вызов есть -> сборка упадёт на линковке")
+        else:
+            warnings.append(
+                f"[нет тела?] {name}() объявлена в {hs[0]}, определения не найдено "
+                f"(не вызывается — мёртвое объявление)")
+
+    # --- 5a. файловый статик, использованный ВЫШЕ своего определения ---
+    #
+    # ПОВОД. 21.08 сборка легла на C2065: `g_partyExpectPawns` определили
+    # рядом с потребителем в тике партии, а читают его на триста строк
+    # выше, в скане. g++-харнесс это пропустил, потому что PartyRecon.cpp
+    # он не компилирует вовсе — а значит проверка порядка должна быть
+    # здесь, где смотрят на ВСЕ файлы.
+    #
+    # Ограничиваемся переменными по нашему соглашению об именах (g_/s_):
+    # для функций порядок в C++ решается объявлением, а для файловых
+    # статиков — нет.
+    static_var_def = re.compile(
+        r"^[ \t]*static\s+(?:volatile\s+|const\s+)*"
+        r"[A-Za-z_][\w:<>\*&\s]*?\b([gs]_\w+)\s*(?:=|\[|;)",
+        re.M)
+    for f, clean in texts.items():
+        if f.suffix != ".cpp":
+            continue
+        rel = f.relative_to(ROOT)
+        for m in static_var_def.finditer(clean):
+            name = m.group(1)
+            def_line = clean[:m.start()].count("\n") + 1
+            use = re.search(r"\b" + re.escape(name) + r"\b", clean)
+            if not use or use.start() >= m.start():
+                continue
+            use_line = clean[:use.start()].count("\n") + 1
+            errors.append(
+                f"[порядок] {rel}: {name} используется на строке {use_line}, "
+                f"а определён ниже, на строке {def_line} -> C2065")
+
+    # --- 5a2. функция вызвана ВЫШЕ своего определения, без объявления ---
+    #
+    # ПОВОД. Второй раз подряд сборка легла на порядок: сначала C2065 на
+    # файловом статике, теперь C3861 на функции — `HiredInclSelfTestTick()`
+    # зовётся из тика на строке 49, а определена на 251.
+    #
+    # В C++ это ловится тривиально: если вызов идёт раньше определения, то
+    # выше вызова обязано стоять объявление. Проверяем ровно это и только
+    # для функций, определённых в ЭТОМ же файле как свободные.
+    proto_re = re.compile(r"^[ \t]*(?:static[ \t]+|inline[ \t]+|extern[ \t]+)*"
+                          r"[A-Za-z_][\w:<>,\*&\s]*[\s\*&]([A-Za-z_]\w*)"
+                          r"[ \t]*\([^;{]*\)[ \t]*;", re.M)
+    def_re = re.compile(r"^[ \t]*(?:static[ \t]+|inline[ \t]+)*"
+                        r"[A-Za-z_][\w:<>,\*&\s]*[\s\*&]([A-Za-z_]\w*)"
+                        r"[ \t]*\([^;{]*\)[ \t\r\n]*\{", re.M)
+    # Скобка тела часто стоит на СЛЕДУЮЩЕЙ строке — первая версия
+    # регулярки этого не допускала и потому не поймала собственный
+    # случай на самотесте. Прототип от определения по-прежнему отличает
+    # точка с запятой.
+
+    for f, clean in texts.items():
+        if f.suffix != ".cpp":
+            continue
+        rel = f.relative_to(ROOT)
+        # где что определено и где объявлено
+        defs_at = {}
+        for m in def_re.finditer(clean):
+            defs_at.setdefault(m.group(1), m.start())
+        protos_at = {}
+        for m in proto_re.finditer(clean):
+            protos_at.setdefault(m.group(1), m.start())
+
+        for name, dpos in defs_at.items():
+            if name in CXX_KEYWORDS:
+                continue
+            # первый вызов этого имени в файле
+            call = re.search(r"(?<![\w:.>])" + re.escape(name) + r"[ \t]*\(", clean)
+            if not call or call.start() >= dpos:
+                continue
+            # если это сам заголовок определения — пропускаем
+            if call.start() == dpos:
+                continue
+            ppos = protos_at.get(name)
+            if ppos is not None and ppos < call.start():
+                continue                      # объявление есть и оно выше вызова
+            # ОБЪЯВЛЕНИЕ МОЖЕТ ЖИТЬ В ЗАГОЛОВКЕ.
+            #
+            # Первый прогон выдал пять «ошибок» на коде, который прекрасно
+            # собирается: `IsInCombat()` объявлена в CombatIntel.h,
+            # `Reset()` — в DashWatch.h и так далее. Проверка смотрела
+            # только в сам .cpp. Если имя объявлено в любом нашем
+            # заголовке, порядок внутри файла значения не имеет.
+            if any(h.suffix == ".h" for h in decls.get(name, [])):
+                continue
+            call_line = clean[:call.start()].count("\n") + 1
+            def_line = clean[:dpos].count("\n") + 1
+            errors.append(
+                f"[порядок] {rel}: {name}() вызывается на строке {call_line}, "
+                f"определена на {def_line}, объявления выше вызова нет -> C3861")
 
     # --- 5b. видимость глобалов внутри единицы трансляции ---
     # Ловит главную ошибку переноса кода между файлами: функция уехала,

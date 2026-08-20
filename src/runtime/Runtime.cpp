@@ -64,6 +64,7 @@ void Shutdown()
     // без ожиданий и join'ов — мы в DllMain.
     Tempo::Shutdown();
     PartyPriorityProfileRestoreAll("DLL detach");
+    ErrataRestoreAll();
 }
 
 } // namespace Runtime

@@ -54,6 +54,10 @@ int       EnemyCount();
 // Перебор врагов: idx 0..EnemyCount()-1. Возвращает тело и (опц.) имя класса
 // («uEm0100»). 0, если такого индекса нет.
 uintptr_t EnemyBodyAt(int idx, const char** kindOut);
+// Сырой список живых объектов (без фильтра «существо»): нужен, чтобы
+// видеть в нём тела партии — фильтрованный доступ их прячет.
+int       ActorCount();
+uintptr_t ActorAt(int idx, const char** kindOut);
 // Тело первого врага заданного вида. 0, если такого вида в мире нет.
 uintptr_t FirstBodyOfKind(const char* kind);
 // Враг ли объект этого вида (не заяц, не NPC).
@@ -69,6 +73,31 @@ bool GetMainPawnWorldPos(float* x, float* y, float* z);
 // чтобы адресовать примитивы (например, множитель передвижения).
 uintptr_t MainPawnBody();
 uintptr_t ArisenBody();
+
+// --- пешки партии целиком (главная + наёмные) -------------------------------
+//
+// Наёмная пешка — тоже тело класса `uCmc`, поэтому «первый uCmc» больше не
+// является определением главной. Здесь перечисление всех, с пометкой, кто
+// свой: главная опознаётся ссылкой на запись персонажа (Arisen + 0x7F0).
+//
+// Продуктовые модули по-прежнему работают с главной пешкой. Наёмные пешки
+// принадлежат другому игроку: их запись персонажа (вокация, склонности,
+// скиллы, аугменты) НЕ наша зона — только рантайм-советы.
+int       PawnBodyCount();
+uintptr_t PawnBodyAt(int idx, bool* isMainOut);
+
+// Состав партии изменился (наняли/уволили пешку) — попросить пересканировать.
+// Разбор не сканирует память заново, пока найденные тела живы; наёмная
+// пешка приходит посреди игры и иначе не появляется в списке никогда.
+void      PartyRequestRescan();
+
+// Сколько пешек в партии ПО ЗАПИСЯМ персонажей (своя + наёмные, 1..3).
+// Записи лежат по фиксированным смещениям от pBase и доступны всегда —
+// в отличие от живых тел, которые ещё надо найти в куче.
+int       PartyRecordPawnCount();
+// Карточка пешки по номеру записи (0 — своя, 1..2 — наёмные): вокация,
+// уровень и живое тело, если оно уже найдено.
+bool      PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut);
 // Имя класса текущего действия существа через DTI (+0x2DC8). Работает и
 // для тел партии: у Аризена там cPlAct*, у пешки — тоже.
 bool ReadLiveAct(uintptr_t body, char* out, int cap);
@@ -112,6 +141,16 @@ bool PawnGoalName(int32_t code, char* out, int cap);
 // дёшево и вызывается только по событию, не каждый кадр.
 bool PawnPlanInterfaces(int32_t code, char* out, int cap);
 
+// Девять склонностей из ЖИВОГО ТЕЛА (`cCmcInfo + 0x14B8 + id*0x0C`).
+//
+// Второй адрес тех же чисел, отличный от записи персонажа. Замер 75.16
+// показал расхождение: запись в character record наёмной пешки игру не
+// убедила — профиль показывал прежние значения. Пока не доказано, какое
+// место авторитетно, читаем оба и сравниваем.
+bool PawnInclinationsLive(uintptr_t body, float* out9);
+// Запись той же склонности в живое тело, с проверкой чтением.
+bool PawnSetInclinationLive(uintptr_t body, int id, float value);
+
 // Найти в теле указатель на живой объект заданного класса. Возвращает
 // адрес объекта и (опц.) смещение в теле. 0, если не найден.
 //
@@ -135,5 +174,39 @@ void  GuardianFixSetTarget(int32_t desiredAddS32);
 bool  GuardianFixIsApplied();
 const char* GuardianFixStatus();
 void  GuardianFixTick();   // доктрина зовёт каждый тик (apply/rollback)
+
+// --- УДЕРЖАНИЕ РЫЧАГА ЗА ПРИБОРОМ (75.31) --------------------------------
+// У одного правила не может быть двух хозяев. Доктрина каждый тик ставит
+// своё значение (-3 по умолчанию), и любой замер, который хочет подержать
+// строку в заданном ведре, был бы затёрт в том же кадре.
+//
+// Поэтому владение объявляется явно: пока держит прибор, SetTarget от
+// доктрины игнорируется. Отпустил — доктрина снова хозяйка.
+void  GuardianFixHold(bool on, int32_t value);
+bool  GuardianFixHeld();
+
+// Живое ведро строки code 54 (-1, если правило не разрешено) и признак
+// разрешённости. Нужны прибору развёртки, чтобы печатать факт, а не намерение.
+int   GuardianFixLiveSlot();
+bool  GuardianFixResolved();
+
+
+// --- РЕЕСТР ЭРРАТ (75.45) -------------------------------------------------
+// Слой B по docs/ERRATA_ARCHITECTURE.md: статичные починки сломанных правил.
+// Две группы, две галки, два независимых счёта:
+//   группа 0 - Guardian душит кинжалы (code 54, ранги 1 и 2);
+//   группа 1 - Nexus душит магию      (code 55, ранги 1 и 2).
+// Правило ищется ПО СОДЕРЖАНИЮ (склонность + ранг в проверке), а не по
+// номеру: порядок правил внутри строки нам никто не обещал.
+extern bool    g_errataDaggerOn;    // ini [errata] guardianDaggerBan
+extern int32_t g_errataDaggerVal;   // ini [errata] guardianDaggerValue
+extern bool    g_errataMagicOn;     // ini [errata] nexusMagicBan
+extern int32_t g_errataMagicVal;    // ini [errata] nexusMagicValue
+void  ErrataTick();
+void  ErrataRestore(int group);     // 0 = кинжалы, 1 = магия
+void  ErrataRestoreAll();
+bool  ErrataIsApplied(int group);
+int   ErrataReasserts(int group);
+const char* ErrataStatus(int group);
 
 } // namespace Runtime

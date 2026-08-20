@@ -6,7 +6,15 @@ class iniConfig
 	LPCSTR fileName;
 
 	bool get(LPCSTR section, LPCSTR key, bool allowEmpty = false);
+	// Дописать в пользовательский файл ключ, которого в нём нет. Подробности
+	// и причина — в iniConfig.cpp, блок «ДОСЫЛКА НЕДОСТАЮЩИХ КЛЮЧЕЙ».
+	void backfill(LPCSTR section, LPCSTR key, LPCSTR value) const;
+	bool fileExists() const;
 public:
+	// Дописывать недостающие ключи с их умолчаниями. Благодаря этому
+	// обновление мода НЕ требует замены ini: новые опции появятся в файле
+	// сами, а выставленные значения останутся.
+	bool autoBackfill = true;
 	explicit iniConfig(LPCSTR fileName);
 
 	void removeKey(LPCSTR section, LPCSTR key) const;

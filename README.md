@@ -129,7 +129,10 @@ Priority profiles не запускают действие насильно. О�
 1. Открыть `ddda-ai-overhaul.sln` или `.vcxproj` в Visual Studio.
 2. Выбрать **Release | Win32**.
 3. Build Solution.
-4. Скопировать `dinput8.dll` и `ddda_ai_overhaul.ini` в папку с `DDDA.exe`.
+4. Скопировать `dinput8.dll` в папку с `DDDA.exe`. **Ini копировать не нужно** —
+   мод создаст `ddda_ai_overhaul.ini` сам и допишет новые ключи при обновлении,
+   не трогая уже выставленные значения. Файл `ddda_ai_overhaul.default.ini` в
+   репозитории — только справочник.
 
 > **Сверяйте тег.** Первая строка лога печатает `MOD_BUILD_TAG` — это
 > единственный надёжный способ убедиться, что игра запустила именно ту
@@ -217,6 +220,7 @@ Sensors / target selection
 | [`docs/SPECIES_ROLLOUT.md`](docs/SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак |
 | [`docs/PAWN_SPRINT_RECON.md`](docs/PAWN_SPRINT_RECON.md) | трек спринта/уклонения: коды целей, приоритетные строки, компенсация темпа |
 | [`docs/PAWN_IDLE_RECON.md`](docs/PAWN_IDLE_RECON.md) | разнообразие простоя вне боя: почему пул НПЦ закрыт и что взамен |
+| [`docs/HIRED_PAWNS_SCOPE.md`](docs/HIRED_PAWNS_SCOPE.md) | наёмные пешки: что можно, что нельзя, и замер общего ресурса приоритетов |
 | [`docs/MONSTER_TEMPO_RECON.md`](docs/MONSTER_TEMPO_RECON.md) | история охоты за темпом: что исключили и как нашли |
 | [`docs/STATUS_EFFECTS_RECON.md`](docs/STATUS_EFFECTS_RECON.md) | статусы и торпор; карта `cCharParamEnemy` (72 поля) |
 | [`docs/TEMPO_HUNT_PROTOCOL_RU.md`](docs/TEMPO_HUNT_PROTOCOL_RU.md) | протокол исследования: что вводить и когда жать |

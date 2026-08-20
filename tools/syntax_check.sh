@@ -51,6 +51,19 @@ open('tools/tcomp/ui_block.inc', 'w', encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_t.cpp"
 
+echo "== 2b/9 UI block (PawnAI.cpp) =="
+# ЗАЧЕМ ЕЩЁ ОДИН БЛОК. Панель пешек живёт в PawnAI.cpp и до 75.2 не
+# проверялась вовсе: ошибки в вызовах ImGui там ловились только сборкой у
+# тестера, то есть ценой итерации. Проверяем тот же кусок тем же способом.
+python3 - <<'PY'
+p = 'src/PawnAI.cpp'
+s = open(p, encoding='utf-8').read()
+start = s.index('\n', s.index('[UI-BLOCK-PAWN-BEGIN]')) + 1
+end = s.rindex('\n', start, s.index('[UI-BLOCK-PAWN-END]', start))
+open('tools/tcomp/ui_pawn_block.inc', 'w', encoding='utf-8').write(s[start:end])
+PY
+$GPP "$T/ui_pawn_t.cpp"
+
 echo "== 9/9 ASCII in UI strings =="
 python3 - <<'PY'
 import re, glob, sys
