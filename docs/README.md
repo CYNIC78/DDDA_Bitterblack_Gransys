@@ -27,6 +27,7 @@
 | [`TEMPO_SYSTEM.md`](TEMPO_SYSTEM.md) | **система темпа**: примитив, две ручки, связка, пресеты, замеренная цена |
 | [`MONSTER_AI_ARCHITECTURE.md`](MONSTER_AI_ARCHITECTURE.md) | **две стороны и одна шина**: контракт режиссёра монстров, правила политик |
 | [`SPECIES_ROLLOUT.md`](SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак по `ActMap` |
+| [`WAND_RANGE.md`](WAND_RANGE.md) | **эррата посоха пешки**: eligibility 15 м, не игрок, IceWalk короткий |
 | [`PAWN_SPRINT_RECON.md`](PAWN_SPRINT_RECON.md) | почему пешки не спринтят в бою: разведка GOAP, приборы, план правки |
 | [`generated/PAWN_GOAL_SET.md`](generated/PAWN_GOAL_SET.md) | 69 загруженных целей планировщика пешки со смещениями (живой дамп) |
 | [`STATUS_EFFECTS_RECON.md`](STATUS_EFFECTS_RECON.md) | статусы и торпор (のろま), карта `cCharParamEnemy` из 72 полей |

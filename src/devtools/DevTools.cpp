@@ -4321,84 +4321,47 @@ static void RenderDevToolsUI()
             GoapProbe::ToggleCodeWatch();
         if (w) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Logs every change of the pawn's selected priority "
-                              "code with its current act, and feeds the histogram. "
-                              "Turning it ON resets the histogram, so every "
-                              "measurement starts clean.");
+            ImGui::SetTooltip("Log priority-code changes. ON resets the histogram.");
         ImGui::SameLine();
         if (ImGui::Button("Histogram")) GoapProbe::DumpCodeHistogram();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Frames spent in each priority code, split by combat. "
-                              "Enable 'code watch' first.");
+            ImGui::SetTooltip("Frames per priority code. Turn code watch on first.");
         ImGui::SameLine();
         if (ImGui::Button("Plan interfaces")) GoapProbe::DumpPlanInterfaces();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Which cCmc* motor commands are wired into the live "
-                              "plan blocks. Every dash so far happened under code 1 "
-                              "(Follow), so the jog/dash switch lives inside that "
-                              "goal. Press once while the pawn jogs and once while "
-                              "it dashes.");
+            ImGui::SetTooltip("cCmc* in live plan. Press while jogging, then dashing.");
 
         // Ряд 2 — карты и разборы. Нажимаются редко, обычно один раз.
         if (ImGui::Button("Goal codes")) GoapProbe::DumpPlannerGoals();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("All loaded goals with their priority codes "
-                              "(code = (slot - 8) / 4). Re-run it on a pawn of a "
-                              "different vocation: the goal set is not the same.");
+            ImGui::SetTooltip("Loaded goals and their codes. Re-run per vocation.");
         ImGui::SameLine();
         if (ImGui::Button("Priority rows")) GoapProbe::DumpPriorityRows();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("All 85 cPrioParam rows by bucket, with the goal name "
-                              "next to each code. Says which codes the priority "
-                              "layer can nominate at all - dash codes 84/85 have no "
-                              "row.");
+            ImGui::SetTooltip("85 priority rows by bucket. Dash 84/85 have none.");
         ImGui::SameLine();
         if (ImGui::Button("PlanCtrl A/B")) GoapProbe::DumpPlanCtrlAB();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Dumps and diffs PlanCtrl(1) against PlanCtrl(84). "
-                              "Same array, same type, so equal offsets mean equal "
-                              "fields. Read-only.");
+            ImGui::SetTooltip("Diff PlanCtrl Follow vs DashFollow. Read-only.");
         ImGui::SameLine();
         if (ImGui::Button(GoapProbe::SlotSweepActive()
                           ? "Bucket sweep: RUNNING (click to stop)"
                           : "Bucket sweep (code 54)"))
             GoapProbe::ToggleSlotSweep();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Walks the dagger row (code 54) across the 48 "
-                              "buckets and counts how much of each fight the "
-                              "pawn spends in melee at every position. Answers "
-                              "the one open question: which bucket wins between "
-                              "PL_Party (bow) and Etc (daggers). WRITES to the "
-                              "rule - uncheck the Guardian fix first. Steps "
-                              "advance on COMBAT frames only; just keep fighting. "
-                              "The report prints itself.");
+            ImGui::SetTooltip("WRITES code 54 across 48 buckets. Uncheck Guardian fix first.");
         ImGui::SameLine();
         if (ImGui::Button("Bucket map")) GoapProbe::DumpBucketMap();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Where each priority row sits in this pawn's 48 "
-                              "buckets. The rules are shared by the whole party, "
-                              "but the LAYOUT is per pawn and is computed from her "
-                              "inclinations - so this is the applied personality. "
-                              "Press on one pawn, switch the target, press again: "
-                              "the diff is what the inclination actually did.");
+            ImGui::SetTooltip("Per-pawn bucket layout from inclinations.");
         ImGui::SameLine();
         if (ImGui::Button("Inclination rules")) GoapProbe::DumpInclinationRules();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Every personality rule of all 85 rows, expanded: "
-                              "code, AddS32, and the inclination + rank it is "
-                              "conditioned on. Player reports about Guardian "
-                              "(sticks to you, only fights back, drops casts to "
-                              "reposition) describe position-over-action, not the "
-                              "dagger penalty we fixed - this map shows which "
-                              "codes each inclination actually moves.");
+            ImGui::SetTooltip("All personality rules: code, AddS32, inclination, rank.");
         ImGui::SameLine();
         if (ImGui::Button("Party roster")) GoapProbe::DumpPartyRoster();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Every pawn body in the party (a hired pawn is also "
-                              "uCmc) with its AI roots. Answers the question that "
-                              "decides the scope of every weight edit we make: is "
-                              "the priority resource shared by all pawns or one per "
-                              "pawn? Hire two pawns before pressing.");
+            ImGui::SetTooltip("Party AI roots. Hire two pawns first.");
 
         // Трек идлов: гистограмма ДЕЙСТВИЙ, а не целей.
         const bool aw = GoapProbe::ActWatchActive();
@@ -4407,17 +4370,11 @@ static void RenderDevToolsUI()
             GoapProbe::ToggleActWatch();
         if (aw) ImGui::PopStyleColor();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Idle track: counts the pawn's ACT classes, not its "
-                              "goals. A goal named Wait is one thing; how many "
-                              "different poses play under it is another, and the "
-                              "idle question is entirely about the second.");
+            ImGui::SetTooltip("Count ACT classes, not goals.");
         ImGui::SameLine();
         if (ImGui::Button("Act histogram")) GoapProbe::DumpActHistogram();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Frames and entries per act, split by combat, with the "
-                              "pawn's inclinations printed alongside. Stand around "
-                              "five minutes, dump, switch the primary inclination, "
-                              "dump again - the difference is the answer.");
+            ImGui::SetTooltip("Act histogram by combat. Dump, switch inclination, dump.");
 
         ImGui::TextWrapped("%s", GoapProbe::Status());
     }
@@ -4433,9 +4390,7 @@ static void RenderDevToolsUI()
 
         // ---------- ШАГ 1: замер --------------------------------------------
         if (!AnimProbe::Active()) {
-            ImGui::TextWrapped("STEP 1. Stand next to the goblin and press Start. "
-                               "The status line must show a small distance - that is "
-                               "how you know it locked on the one you are fighting.");
+            ImGui::TextDisabled("STEP 1. Stand next to the goblin, press Start.");
             if (ImGui::Button("1. Start on goblin")) AnimProbe::Start("uEm0100");
             ImGui::SameLine();
             if (ImGui::Button("Start on any enemy")) AnimProbe::Start(nullptr);
@@ -4463,9 +4418,7 @@ static void RenderDevToolsUI()
                 if (ImGui::SmallButton("body only")) AnimProbe::WatchChild(0);
             }
         } else {
-            ImGui::TextWrapped("STEP 2. Let it swing at you three or four times, "
-                               "then press Stop. Two attacks minimum, otherwise the "
-                               "durations mean nothing.");
+            ImGui::TextDisabled("STEP 2. Let it swing 3-4 times, then Stop.");
             if (ImGui::Button("2. Stop and analyse")) AnimProbe::Stop();
         }
 
@@ -4480,11 +4433,7 @@ static void RenderDevToolsUI()
         // Проверяется одной кнопкой, без всякого перебора.
         ImGui::Separator();
         ImGui::TextColored(ImVec4(0.4f, 1.0f, 0.6f, 1), "PLAYBACK RATE (confirmed)");
-        ImGui::TextWrapped("body +0x0EE4 .. +0x0EF4 - five playback rates in a row, "
-                           "1.0 each. Writing 0.5 into any of them halves the monster; "
-                           "this was confirmed by hand. 0.5 = half speed, 1.5 = faster. "
-                           "The product version of this knob is in the Enemy AI panel "
-                           "(attack tempo variation).");
+        ImGui::TextDisabled("+0x0EE4..EF4 playback rates. Product knob is in Enemy AI.");
         static float suspectVal = 1.50f;
         ImGui::PushItemWidth(110);
         ImGui::InputFloat("value##susp", &suspectVal, 0.05f, 0.25f, 3);
@@ -4507,11 +4456,7 @@ static void RenderDevToolsUI()
             ImGui::TextDisabled("No candidates yet - run one capture (Start / Stop) "
                                 "or an A/B diff first.");
         } else {
-            ImGui::TextWrapped("STEP 3 (fast path). %d candidates. Do NOT test them "
-                               "one by one - write into ALL of them at once. If the "
-                               "attacks change speed, the multiplier is in the list; "
-                               "the tool then halves the set every round. Five fights "
-                               "instead of %d.", nc, nc);
+            ImGui::TextDisabled("STEP 3. %d candidates - write ALL, then bisect.", nc);
 
             ImGui::PushItemWidth(110);
             ImGui::InputFloat("multiplier", &testVal, 0.1f, 0.5f, 2);
@@ -4526,9 +4471,7 @@ static void RenderDevToolsUI()
                     AnimProbe::BisectBegin(testVal);
             } else {
                 ImGui::TextColored(ImVec4(1, 0.8f, 0.3f, 1), "%s", AnimProbe::BisectStatus());
-                ImGui::TextWrapped("Fight, press Stop, read the verdict line above, "
-                                   "then answer here. The next set is written "
-                                   "automatically when you press Start again.");
+                ImGui::TextDisabled("Fight, Stop, then answer faster / no change.");
                 if (AnimProbe::Active()) {
                     ImGui::TextDisabled("stop the capture before answering");
                 } else {
@@ -4574,10 +4517,7 @@ static void RenderDevToolsUI()
         // что без контрольного слепка отчёт забивается позой существа,
         // поэтому A2 стоит в середине и подписан как обязательный.
         ImGui::Separator();
-        ImGui::TextWrapped("STEP 4 (effect diff). Find the knob the engine itself "
-                           "turns. Order: A -> A2 -> apply torpor -> B -> Compare. "
-                           "Keep the target in the SAME state for A and A2: same "
-                           "pose, same act, no walking. Each capture takes ~1 s.");
+        ImGui::TextDisabled("STEP 4. A, A2, apply effect, B, Compare. Same pose.");
 
         // Состояние слепков видно всегда - иначе непонятно, что уже снято.
         ImGui::Text("captures:");
@@ -4613,9 +4553,7 @@ static void RenderDevToolsUI()
 
             if (ImGui::Button("Dump named char params")) AnimProbe::DumpCharParams();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("cCharParamEnemy = em0100_cmn.prp loaded into the "
-                                  "body, twice. 72 named fields incl. res_TORPOR and "
-                                  "RESTRAINT_SLOW_LV1/LV2/EX. Goes to the log.");
+                ImGui::SetTooltip("Dump 72 named char-param fields to the log.");
         }
         ImGui::TextWrapped("%s", AnimProbe::AbStatus());
     }
@@ -4626,10 +4564,7 @@ static void RenderDevToolsUI()
     // Only the two controlled subjects are shown here. Detailed bytes go to
     // JSON for offline analysis; the tester sees only body + current action.
     if (ImGui::CollapsingHeader("Player + Main Pawn recon", "partyrecon", true, true)) {
-        ImGui::TextWrapped(
-            "General priority sidecar: profiles contain 0..48 exact rule entries. "
-            "'-' switches vanilla/research_pair45_46; custom profiles are selected in "
-            "DDDA_AI_Overhaul\\ddda_pawn_ai_profiles.ini. '=' captures a snapshot.");
+        ImGui::TextDisabled("'-' profile switch. '=' snapshot.");
         if (ImGui::Button("Find both + capture baseline", ImVec2(280, 28)))
             PartyCapture(true);
         ImGui::SameLine();
@@ -4644,7 +4579,7 @@ static void RenderDevToolsUI()
             if (!g_researchDump && g_intentTrace) PartyIntentTraceStop("dump disabled");
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("When ON, capture writes ddda_party_recon / ddda_pawn_ai_bridge / ddda_pawn_intent_trace. Off by default - not needed for Guardian doctrine.");
+            ImGui::SetTooltip("Write recon json/csv. Off for normal play.");
 
         ImVec4 pcol = g_nParty >= 2
             ? ImVec4(0.35f, 1.0f, 0.35f, 1.0f)

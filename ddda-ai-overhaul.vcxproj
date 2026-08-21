@@ -152,6 +152,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\pawnai\PawnHaste.cpp" />
     <ClCompile Include="src\pawnai\VocationCordon.cpp" />
     <ClCompile Include="src\pawnai\DashWatch.cpp" />
+    <ClCompile Include="src\pawnai\WandRange.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -198,6 +199,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\PawnHaste.h" />
     <ClInclude Include="src\pawnai\VocationCordon.h" />
     <ClInclude Include="src\pawnai\DashWatch.h" />
+    <ClInclude Include="src\pawnai\WandRange.h" />
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\devtools\generated\GoapInterfaceMap.inl" />
     <ClInclude Include="src\devtools\generated\PawnPrioritySemantics.inl" />

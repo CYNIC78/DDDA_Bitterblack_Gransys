@@ -70,6 +70,7 @@ void   SetEnabled(bool on);
 void   SetFactor(float f);
 void   SetRequireWeapon(bool on);
 void   SetMatchTempo(bool on);
+void   SetAnimCouple(bool on);
 
 } // namespace Haste
 } // namespace PawnAI

@@ -18,7 +18,6 @@ static int   s_applied = 0;
 static float s_lastDist = -1.0f;
 static char  s_why[64] = "off";
 static bool  s_animCouple = false;   // ускорять ли заодно анимацию бега
-static bool  s_probed = false;       // ряд множителей у пешки уже проверен
 // СОСТОЯНИЕ НА КАЖДУЮ ПЕШКУ, А НЕ ОДНО НА ВСЕХ.
 //
 // До 75.1 модуль знал ровно одно тело. Наёмные пешки — такие же `uCmc`,
@@ -165,6 +164,11 @@ void SetFactor(float f)
 
 void SetRequireWeapon(bool on) { s_requireWeapon = on; }
 void SetMatchTempo(bool on)     { s_matchTempo = on; }
+void SetAnimCouple(bool on)
+{
+    s_animCouple = on;
+    Runtime::Tempo::SetAnimForOverrides(on);
+}
 
 // Решение по ОДНОЙ пешке. Всё, что раньше было телом Tick(), переехало
 // сюда без изменений по существу: те же окна, тот же гистерезис, тот же
@@ -276,6 +280,7 @@ static void TickPawn(Slot& S, const WorldReport& w, const CombatReport& rep)
     lstrcpynA(S.why, moving ? "compensating" : "holding (not moving)", sizeof(S.why));
 
     if (!S.active) {
+        ++s_applied;
         if (weaponOut) ++s_burstsWeapon; else ++s_burstsDetector;
         if (s_actLogged < 8) {
             ++s_actLogged;
@@ -330,11 +335,12 @@ void Tick()
     }
 
     // Пешку могли уволить или она умерла — слот больше не подтверждается
-    // разбором партии. Указатель при этом хранить нельзя (правило
-    // проекта), поэтому просто забываем слот: переопределение погаснет
-    // само по ttl.
+    // разбором партии. Указатель хранить нельзя, но и бросать живое
+    // переопределение на ttl нельзя: чужое тело могло уже пересесть на
+    // тот же адрес. Снимаем явно, потом забываем слот.
     for (int i = 0; i < s_nSlots; ) {
         if (seen[i]) { ++i; continue; }
+        ReleaseSlot(s_slot[i], "pawn left party");
         for (int k = i + 1; k < s_nSlots; ++k) s_slot[k - 1] = s_slot[k];
         --s_nSlots;
     }

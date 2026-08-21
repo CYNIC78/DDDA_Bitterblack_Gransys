@@ -28,8 +28,7 @@ void RenderEnemyAIUI()
 
     ImGui::PushID("EnemyAI");
 
-    ImGui::TextColored(ImVec4(0.6f, 0.9f, 1, 1),
-        "Runtime-first. Sliders are wishes until we hold a live think object.");
+    ImGui::TextDisabled("Sliders are wishes until we hold a live think object.");
 
     if (ImGui::Checkbox("Enable Enemy AI Module", &enemyAIEnabled))
         config.setBool("enemyAI", "enabled", enemyAIEnabled);
@@ -53,9 +52,7 @@ void RenderEnemyAIUI()
                 "sprint hook: %s (%d sig matches)",
                 ts.sprintHooked ? "ON" : "not installed", ts.sprintMatches);
             if (!ts.walkHooked || !ts.sprintHooked)
-                ImGui::TextWrapped("Both paths are needed. With only one hooked the "
-                                   "monster is fast in one mode and vanilla in the "
-                                   "other. See the log for matched RVAs.");
+                ImGui::TextDisabled("Need both hooks, else one gait stays vanilla.");
             float lo = 0, hi = 0;
             Runtime::Tempo::GetRange(&lo, &hi);
             bool changed = false;
@@ -81,14 +78,9 @@ void RenderEnemyAIUI()
             ImGui::SameLine();
             if (ImGui::SmallButton("reset##sprint")) Runtime::Tempo::ResetSprintStats();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Sampled at the sprint hook, one frame at a time. "
-                                  "Zero for pawns after a whole fight means they "
-                                  "never sprint in combat - the dash action is bound "
-                                  "to the Follow goal only.");
+                ImGui::SetTooltip("Bodies that hit the sprint hook this session.");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Each monster gets its own speed factor derived "
-                                  "from its body address, so a pack approaches out "
-                                  "of sync. Animations are untouched.");
+                ImGui::SetTooltip("Per-monster speed. Pack arrives out of sync.");
         }
     }
 
@@ -130,20 +122,14 @@ void RenderEnemyAIUI()
                 config.setBool("monsterTempo", "animAttacksOnly", only);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("The playback rate is global for the creature: it "
-                                  "speeds up walking and turning too. With this on the "
-                                  "factor is applied only while the current act is an "
-                                  "attack, so locomotion stays vanilla.");
+                ImGui::SetTooltip("Apply playback rate only during attacks.");
             float cpl = ts.animCoupling;
             if (ImGui::SliderFloat("coupling to speed", &cpl, 0.0f, 1.0f, "%.2f")) {
                 Runtime::Tempo::SetAnimCoupling(cpl);
                 config.setFloat("monsterTempo", "animCoupling", cpl);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("0 = the two knobs are independent (four "
-                                  "archetypes). 1 = whoever runs fast also swings "
-                                  "fast (one coherent creature). A sprinter with a "
-                                  "vanilla wind-up reads as 'ran up and froze'.");
+                ImGui::SetTooltip("0 = independent knobs. 1 = fast runners also swing fast.");
 
             // Заданное рядом с фактическим: узкий фактический разброс при
             // широком заданном — это либо мало монстров, либо плохой хеш.
@@ -182,14 +168,9 @@ void RenderEnemyAIUI()
                 ImGui::TextColored(ImVec4(1, 0.8f, 0.4f, 1), "| overrides %d", novr);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("If 'engine overwrote' stays at 0 through a whole "
-                                  "fight, the engine does not touch these fields and "
-                                  "per-frame holding is just insurance.");
+                ImGui::SetTooltip("engine overwrote=0 means we hold the fields ourselves.");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Playback rate of the whole animation set: wind-up, "
-                                  "hit and recovery all scale together. Multiplied on "
-                                  "top of whatever the engine sets, so torpor still "
-                                  "halves the monster.");
+                ImGui::SetTooltip("Whole-clip playback rate. Torpor still stacks.");
         }
     }
 
@@ -228,7 +209,7 @@ void RenderEnemyAIUI()
                                   kP[i].alo, kP[i].ahi, kP[i].cpl);
             if (i < 3) ImGui::SameLine();
         }
-        ImGui::TextDisabled("Presets set both knobs at once. Sliders above stay live.");
+        ImGui::TextDisabled("Presets set both knobs. Sliders stay live.");
     }
 
     // --- Режиссёр стороны монстров -----------------------------------------
@@ -262,18 +243,13 @@ void RenderEnemyAIUI()
     }
 
     ImGui::Separator();
-    ImGui::TextWrapped(
-        "We do not replace the player's .arc. XML/LOT are a catalog: "
-        "read at build time, written into loaded objects in memory. "
-        "See docs/ROADMAP.md phase 3.");
+    ImGui::TextDisabled("No .arc rewrite. Catalog in, live objects out.");
 
     ImGui::Separator();
 
     if (ImGui::TreeNode("Policy (not yet bound)"))
     {
-        ImGui::TextWrapped(
-            "These sliders are the policy we WILL write into live think objects. "
-            "They do not touch disk. They do nothing until Phase 3.1 finds cThinkMgr.");
+        ImGui::TextDisabled("Unbound. Waiting for cThinkMgr.");
 
         ImGui::PushItemWidth(200.0f);
         if (ImGui::SliderFloat("Target Aggression", &enemyAggression, 0.5f, 3.0f))
@@ -290,8 +266,7 @@ void RenderEnemyAIUI()
     }
 
     ImGui::Separator();
-    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1),
-        "Status: STUB. Waiting for WorldScan to hand us cThinkMgr.");
+    ImGui::TextDisabled("STUB - no cThinkMgr yet.");
 
     ImGui::PopID();
 }

@@ -23,6 +23,73 @@
 
 ## Текущий milestone
 
+**Build 75.56** — caster AI range закрыт как продукт.
+
+- пешка (все `uCmc`): кастерские cCmc с RangeMax 1–10 м → 15 м;
+- Anodyne (`cCmcHealing`), Levin (`LightningCloud`), Magick Bolt (`MagicUserCombo`);
+- IceWalk / лук / мили / игрок не трогаем;
+- канон: `docs/WAND_RANGE.md`. Живой бой: задняя линия, меньше панических прыжков.
+
+## Предыдущий milestone
+
+**Build 75.55** — all-cast: все кастерские cCmc на 15 м, IceWalk не трогаем (ауры Frigor).
+
+## Предыдущий milestone
+
+**Build 75.54** — wand-name: 75.53 патчил Slash/Dagger/Wait главной пешки.
+
+- фильтр имени `cCmcWand*` / `Magic*` / Funnel/Whip;
+- обход всех `uCmc`, не только main.
+
+## Предыдущий milestone
+
+**Build 75.53** — live-1.5: стартовый маг в бою показывает 0.0–1.5, не 0–2.0.
+
+- патч max 1–10 м на цепочке посоха (iface + code 55);
+- лог `bands:` печатает имя cCmc.
+
+## Предыдущий milestone
+
+**Build 75.52** — bolt-0-2: живая банда `0-2 m` это Magick Bolt (max=200), не тычок (max=150).
+
+- порог патча `max >= 180`, иначе болты выкидывались как poke;
+- `bands:` с десятыми (`0.0-2.0` vs `0.0-1.5`); список банд сбрасывается каждый тик.
+
+## Предыдущий milestone
+
+**Build 75.50** — `wand-anchor`. Дальность посоха через якорь эрраты.
+
+- больше не census тела; цепочка `cAICtrl -> cAIActionInterfaceCtrl -> cCmc+0x258`
+  (и PlanCtrl code 55), как Guardian/Nexus;
+- статус пишет, чего не хватает, а не «no matching rows».
+
+## Предыдущий milestone
+
+**Build 75.49** — `wand-range`. Посох пешки: AI 10 м -> 15 м.
+
+- только eligibility каста (`AIPlActParamWand` + живой `cCmc* +0x258`);
+- короткие тычки 0-3 м и прыжок-уворот не трогаем;
+- отпечаток ванили, откат по галке и выгрузке. Протокол: `docs/TEST_WAND_RANGE.md`.
+
+## Предыдущий milestone
+
+**Build 75.48** — `ui-compact`. Тултипы и подсказки ужаты.
+
+- все hover-тексты панели - одна короткая строка, без эссе про историю замера;
+- постоянные TextDisabled/TextWrapped-лекции в Pawn AI / Enemy AI / Camera / GOAP probe срезаны до статуса.
+
+## Предыдущий milestone
+
+**Build 75.47** — `haste-audit`. Промежуточный аудит компенсации пешек.
+
+- счётчик `bursts` в панели больше не врёт нулём: `s_applied` реально растёт;
+- `Haste::Shutdown` вызывается при выгрузке DLL — множители снимаются с тел;
+- слот уволенной пешки снимает override явно (чужое тело могло пересесть на адрес);
+- галка `couple run animation` пишет в слой пешек, а не мимо в примитив;
+- мёртвый флаг `s_probed` убран.
+
+## Предыдущий milestone
+
 **Build 75.30** — `demote-guardian`. Точный рычаг вместо грубого.
 
 - возражение тестера отвергло `boost Scather`: Scather управляет выбором

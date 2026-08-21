@@ -363,7 +363,7 @@ void RenderCameraUI()
 
     if (ImGui::Checkbox("Tactical Camera (MMB)", &g_freeCam))
         config.setBool("camera","freeCam",g_freeCam);
-    ImGui::TextWrapped("Freezes in place, tracks player. Arrows to reposition.");
+    ImGui::TextDisabled("Freeze + track. Arrows to move.");
 
     if (ImGui::Checkbox("Manual Fly (arrows/PgUp/PgDn)", &g_freeFly))
         config.setBool("camera","freeFly",g_freeFly);
@@ -377,7 +377,7 @@ void RenderCameraUI()
         if (!g_pawnCam) g_pawnCamDriving = false;
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Camera positions between Arisen and pawn (your view direction). Hotkey: NumPad 1.");
+        ImGui::SetTooltip("Blend Arisen/pawn. NumPad 1.");
     if (g_pawnCam) {
         if (ImGui::SliderFloat("Bias (0=Arisen, 0.5=mid, 1=pawn)", &g_pawnCamBias, 0.0f, 1.0f, "%.2f"))
             config.setFloat("camera", "pawnCamBias", g_pawnCamBias);
@@ -387,9 +387,7 @@ void RenderCameraUI()
                                0.002f, 0.20f, "%.3f"))
             config.setFloat("camera", "pawnCamBiasEase", g_pawnCamBiasEase);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("How fast the camera travels between Arisen and pawn. "
-                              "0.002 = slow drift, 0.20 = about as fast as the engine's "
-                              "own return to the player. Applies both ways.");
+            ImGui::SetTooltip("Blend speed both ways. 0.20 ~ engine return.");
         ImGui::Text("bias now %.2f -> %.2f", g_pawnCamBiasCur, g_pawnCamBias);
         ImGui::TextColored(g_pawnCamDriving ? ImVec4(0.3f,1,0.3f,1) : ImVec4(1,0.6f,0.3f,1),
             "state: %s | pawn %s | arisen %s | autocorrect %s",
@@ -398,16 +396,12 @@ void RenderCameraUI()
             g_dbgHaveArisen ? "ok" : "--",
             g_pawnCamAutoCorrectOff ? "patched off" : "vanilla");
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("If the camera hangs and this says 'engine owns camera', "
-                              "something other than our code holds it. If it says "
-                              "'DRIVING' with no bodies, that is our bug.");
+            ImGui::SetTooltip("DRIVING = we write. engine owns = not us.");
         if (ImGui::SliderFloat("Follow weight (vs engine)", &g_pawnCamFollow,
                                0.002f, 0.05f, "%.3f"))
             config.setFloat("camera", "pawnCamFollow", g_pawnCamFollow);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Our share of the camera each frame. The engine keeps "
-                              "writing it too, so this is a tug-of-war weight, not "
-                              "plain smoothing. Above ~0.05 it starts ghosting.");
+            ImGui::SetTooltip("Tug-of-war vs engine. Above ~0.05 ghosts.");
     }
 
     ImGui::PushItemWidth(150);
@@ -427,7 +421,7 @@ void RenderCameraUI()
         if (wasAuto != g_noAutoCorrect) ApplyAutoCorrect(g_noAutoCorrect);
     }
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Camera won't auto-return behind player.\\nIn F4 mode creates 'tracking' effect.");
+        ImGui::SetTooltip("No auto-return behind the player.");
     ImGui::SameLine();
     ImGui::TextDisabled("(dinp8)");
 

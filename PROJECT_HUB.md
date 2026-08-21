@@ -2,7 +2,7 @@
 
 ## Текущий milestone
 
-**Build 75.30:** `demote-guardian` (мобильность пешек под ускоренных монстров)
+**Build 75.56:** `anodyne` — кастер пешки, AI range 15 м (`docs/WAND_RANGE.md`)
 
 **Ветка разработки:** `work/player-main-pawn-recon`
 
@@ -47,6 +47,7 @@ ddda_pawn_ai_profiles.ini generalized priority sidecar template
 | `docs/generated/TYPE_ATLAS.md` | generated 4405-type catalog |
 | `docs/ARC_MAP.txt` | карта архивов |
 | `docs/PLAYER_PAWN_WORK/` | подробный pawn AI vertical slice |
+| `docs/WAND_RANGE.md` | эррата дальности посоха пешки (не игрок) |
 | `docs/PAWN_SPRINT_RECON.md` | трек «спринт/уклонение пешек» + компенсация темпа |
 | `docs/PAWN_IDLE_RECON.md` | разведка разнообразия простоя вне боя |
 | `docs/HIRED_PAWNS_SCOPE.md` | наёмные пешки: граница вмешательства и замер общего ресурса |

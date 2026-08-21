@@ -23,6 +23,7 @@
 #include "monsterai/MonsterDirector.h"
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
+#include "pawnai/WandRange.h"
 
 using namespace PawnAI;
 
@@ -42,8 +43,14 @@ void UpdatePawnAI(){
     __try { Runtime::WorldScan_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
-    if(!g_enabled || !pBase || !*pBase) return;
-    if(!IsInActiveGameplay()) return;
+    if(!g_enabled || !pBase || !*pBase) {
+        PawnAI::WandRange::Restore("pawn AI off");
+        return;
+    }
+    if(!IsInActiveGameplay()) {
+        PawnAI::WandRange::Restore("not in gameplay");
+        return;
+    }
 
     // Каждый модуль вызываем в собственном SEH — никакого каскадного падения
     __try { CombatIntel_Tick(); }
@@ -73,6 +80,9 @@ void UpdatePawnAI(){
 
     // Наблюдатель за рывками: приёмочный тест для будущей правки GOAP.
     __try { PawnAI::DashWatch::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    __try { PawnAI::WandRange::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
@@ -317,7 +327,7 @@ void RenderPawnAIUI(){
     // 1. Acquisitor Manager (бывший Sanitary Cordon)
     ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Acquisitor Manager");
     if(ImGui::Checkbox("Enable##acq", &g_orch.acquisitor.enabled)) config.setBool("pawnAI", "acquisitor", g_orch.acquisitor.enabled);
-    if(ImGui::IsItemHovered()) ImGui::SetTooltip("Soft manager for Acquisitor only: suppressed in combat, temporarily boosted out of combat (loot vacuum). Guardian/Nexus are now doctrines and are NOT capped.");
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("Acquisitor only: suppress in combat, loot boost out of it.");
 
     // 1b. Рывок в бою: у пешек нет даша на боевых целях вообще
     {
@@ -329,10 +339,7 @@ void RenderPawnAIUI(){
             config.setBool("pawnHaste", "enabled", on);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Pawns have no dash action on combat goals - it is bound "
-                              "to the Follow goal only. This does not fix the planner: "
-                              "it raises the movement multiplier while the pawn is "
-                              "closing distance. The animation stays a jog.");
+            ImGui::SetTooltip("Combat close-in speed. Dash itself is still Follow-only.");
         if (on) {
             float f = hs.factor;
             if (ImGui::SliderFloat("haste factor", &f, 1.00f, 1.30f, "%.2f")) {
@@ -359,22 +366,14 @@ void RenderPawnAIUI(){
                 config.setBool("pawnHaste", "matchMonsterTempo", match);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("ON: the multiplier equals the fastest nearby "
-                                  "monster's own multiplier, so we give back exactly "
-                                  "what we added. OFF: the fixed number above, which "
-                                  "is a buff, not compensation.");
+                ImGui::SetTooltip("ON: match fastest nearby monster. OFF: use the slider.");
             bool needWpn = hs.requireWeapon;
             if (ImGui::Checkbox("require the pawn's weapon drawn", &needWpn)) {
                 PawnAI::Haste::SetRequireWeapon(needWpn);
                 config.setBool("pawnHaste", "requireWeaponDrawn", needWpn);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("'An enemy is within radius' is a coarse label - "
-                                  "enemies behind a wall that nobody can see used to "
-                                  "trigger it. The pawn has its own tell: acts with "
-                                  "the weapon drawn (cPlActHoldWeaponMv while moving, "
-                                  "the cPlActWpn* family while striking). Gate: "
-                                  "weapon drawn OR the combat detector agrees.");
+                ImGui::SetTooltip("Weapon drawn OR combat detector. Stops wall-camp false hits.");
             ImGui::TextDisabled("  last burst act: %s  |  confirmed by weapon %d / "
                                 "by detector %d",
                                 hs.act[0] ? hs.act : "-",
@@ -391,28 +390,19 @@ void RenderPawnAIUI(){
             // видно там, где на него смотрят.
             if (!hs.animCouple)
                 ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1),
-                    "  coupling is OFF: the body moves faster under the vanilla "
-                    "animation - wide steps, sliding feet");
+                    "  coupling OFF - sliding feet");
 
             // Связка анимации. Пока вердикт пробы не прочитан в логе,
             // флажок держать выключенным: он разрешает ЗАПИСЬ в тело
             // пешки по смещению, подтверждённому только на монстрах.
-            bool couple = Runtime::Tempo::GetAnimForOverrides();
+            bool couple = hs.animCouple;
             if (ImGui::Checkbox("couple run animation", &couple)) {
-                Runtime::Tempo::SetAnimForOverrides(couple);
+                PawnAI::Haste::SetAnimCouple(couple);
                 config.setBool("pawnHaste", "animCouple", couple);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Monsters already scale BOTH movement and "
-                                  "animation playback (the rate row at +0x0EE4). "
-                                  "If the pawn body has the same row, the sliding "
-                                  "feet go away and this stops being a fake. The "
-                                  "first haste burst READS that row and prints the "
-                                  "verdict to the log without writing anything; "
-                                  "writing needs this box AND all five fields at "
-                                  "exactly 1.0. Original values are restored when "
-                                  "the burst ends.");
-            ImGui::TextDisabled("  see log: 'Tempo: anim row probe uCmc ...'");
+                ImGui::SetTooltip("Scale run animation with speed. Off = sliding feet.");
+            
             // Первое поле ряда живое: у стоящей пешки 1.000, у бегущей
             // 1.060. Какое поле за что отвечает — вопрос к наблюдению.
             const bool rw = Runtime::Tempo::AnimRowWatchActive();
@@ -422,11 +412,7 @@ void RenderPawnAIUI(){
                 if (pb) Runtime::Tempo::AnimRowWatchStart(pb, 15000);
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Logs the five rate fields next to the pawn's "
-                                  "current act, on change, for fifteen seconds. "
-                                  "Walk, run and dash during that window: the field "
-                                  "that moves with locomotion is the one that "
-                                  "carries the run animation. Read-only.");
+                ImGui::SetTooltip("15s log of the five rate fields. Read-only.");
         }
 
 
@@ -441,10 +427,7 @@ void RenderPawnAIUI(){
         ImGui::SameLine();
         if (ImGui::SmallButton("reset##dash")) PawnAI::DashWatch::Reset();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Counts transitions into cPlActDash* on the main pawn. "
-                              "Zero in combat plus non-zero out of combat is the "
-                              "baseline that proves the GOAP gap. After the planner "
-                              "patch this must become non-zero in combat.");
+            ImGui::SetTooltip("Dash-state entries on the main pawn.");
         ImGui::TextDisabled("  now: %s | last dash at %.1f m",
                             ds.lastAct[0] ? ds.lastAct : "?", ds.lastDistM);
         // Сшивка с планировщиком. Замер 73.27 дал ноль выборов кода 84/85
@@ -454,11 +437,7 @@ void RenderPawnAIUI(){
                             ds.dashUnderDash, ds.dashUnderFollow,
                             ds.dashUnderOther, ds.dashCodeUnknown);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Which priority code was active at the exact moment "
-                              "the pawn entered a dash state. The histogram says "
-                              "code 84 is never selected, yet dashes happen - so "
-                              "the dash comes from somewhere else, and this line "
-                              "names it.");
+            ImGui::SetTooltip("Priority code at the dash moment.");
         ImGui::TextDisabled("  last dash under code %d \"%s\"",
                             ds.lastCode, ds.lastGoal[0] ? ds.lastGoal : "?");
         {
@@ -479,11 +458,7 @@ void RenderPawnAIUI(){
         if (ImGui::Checkbox("Enable##cordon", &g_orch.cordon.enabled))
             config.setBool("pawnAI", "vocationCordon", g_orch.cordon.enabled);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Guardian only makes sense for melee. A ranged or caster "
-                              "pawn with active Guardian hugs the Arisen and shoots over "
-                              "his shoulder - it drags aggro straight onto him. The "
-                              "cordon caps Guardian and raises Pioneer so the pawn stops "
-                              "sticking to the anchor.");
+            ImGui::SetTooltip("Cap Guardian on ranged/caster so they do not glue to you.");
         if (g_orch.cordon.enabled) {
             ImGui::Text("pawn: %s | %s", g_orch.cordon.lastClassName, g_orch.cordon.lastAction);
             if (g_orch.cordon.lastGuardianCap > 0.0f) {
@@ -502,8 +477,7 @@ void RenderPawnAIUI(){
                 config.setFloat("pawnAI", "cordonGuardianCapHybrid", g_orch.cordon.guardianCapHybrid);
                 config.setFloat("pawnAI", "cordonPioneerFloorHybrid", g_orch.cordon.pioneerFloorHybrid);
             }
-            ImGui::TextDisabled("Pioneer is a blunt 'stop hugging the anchor' lever. "
-                                "Real flanking needs the Follow goal reversed.");
+            ImGui::TextDisabled("Pioneer = stop hugging. Flanking is a later Follow fix.");
         }
         ImGui::Separator();
     }
@@ -544,7 +518,7 @@ void RenderPawnAIUI(){
     if(ImGui::Checkbox("Use Presets/Anchors", &g_orch.presets.enabled)) config.setBool("pawnAI", "presetsEnabled", g_orch.presets.enabled);
     ImGui::SameLine(200);
     if(ImGui::Checkbox("Auto-adapt in combat", &g_orch.tactical.enabled)) config.setBool("pawnAI", "tactical", g_orch.tactical.enabled);
-    if(ImGui::IsItemHovered()) ImGui::SetTooltip("In combat, system adds a situational delta on top of your sliders (based on enemy category).");
+    if(ImGui::IsItemHovered()) ImGui::SetTooltip("Combat adds a small delta on top of the sliders.");
 
     // ПРЕСЕТЫ — ВЫПАДАЮЩИМ СПИСКОМ (75.39).
     //
@@ -579,11 +553,7 @@ void RenderPawnAIUI(){
         }
         ImGui::PopItemWidth();
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("A preset is just a set of slider values. Picking "
-                              "one moves the sliders and writes them at once. "
-                              "'Custom' is not a seventh preset - it is the name "
-                              "for sliders you moved by hand. They are saved to "
-                              "the ini on every move and come back next session.");
+            ImGui::SetTooltip("Loads slider values. Custom = you moved them by hand.");
     }
     ImGui::TextDisabled("Preset: %s%s | Smooth: %.2f",
         PawnAI::PresetManager::presets[g_orch.presets.lastPresetIdx].name,
@@ -598,7 +568,7 @@ void RenderPawnAIUI(){
     if(ImGui::TreeNode("Live Inclinations & Anchors")) {
         float incl[I_COUNT]; ReadAllIncl(incl, 0);
 
-        ImGui::TextDisabled("Slider = current target (truth). Live = actual value (+delta from combat).");
+        ImGui::TextDisabled("Slider = target. Bar = live.");
 
         // КТО ТЯНЕТ СКЛОННОСТЬ ВНИЗ — ГОВОРИТЬ ВСЛУХ.
         //
@@ -614,23 +584,17 @@ void RenderPawnAIUI(){
         if (g_orch.cordon.enabled && g_orch.cordon.lastGuardianCap > 0.0f
             && g_orch.presets.anchor[I_GUARDIAN] > g_orch.cordon.lastGuardianCap) {
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
-                "Vocation cordon is capping Guardian at %.0f (pawn class: %s).",
-                g_orch.cordon.lastGuardianCap, g_orch.cordon.lastClassName);
-            ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f),
-                "Your slider says %.0f - THAT is why it looks like the setting"
-                " does not stick.", g_orch.presets.anchor[I_GUARDIAN]);
+                "Cordon caps Guardian at %.0f (%s). Slider is %.0f.",
+                g_orch.cordon.lastGuardianCap, g_orch.cordon.lastClassName,
+                g_orch.presets.anchor[I_GUARDIAN]);
             if (ImGui::Checkbox("vocation cordon (cap Guardian on non-melee pawns)",
                                 &g_orch.cordon.enabled))
                 config.setBool("pawnAI", "vocationCordon", g_orch.cordon.enabled);
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Uncheck it and the Guardian slider will be "
-                                  "obeyed as written. The cordon exists because "
-                                  "a ranged pawn with high Guardian glues herself "
-                                  "to you instead of shooting - but that reason "
-                                  "is weaker now that the dagger ban is lifted.");
+                ImGui::SetTooltip("Off: Guardian slider is obeyed as written.");
             ImGui::Separator();
         }
-        ImGui::TextDisabled("Acquisitor mgr: combat=suppress, idle=loot boost | %s%s",
+        ImGui::TextDisabled("%s%s",
             PawnAI::PresetManager::presets[g_orch.presets.lastPresetIdx].name,
             g_orch.presets.IsModified() ? " (Modified)" : "");
         ImGui::Separator();
@@ -699,7 +663,7 @@ void RenderPawnAIUI(){
             float f[I_COUNT]; ReadAllIncl(f, 0);
             g_orch.presets.CaptureLive(f);
         }
-        if(ImGui::IsItemHovered()) ImGui::SetTooltip("Capture pawn's current live values as the slider target.");
+        if(ImGui::IsItemHovered()) ImGui::SetTooltip("Copy live values onto the sliders.");
 
         ImGui::SameLine();
         if(ImGui::Button("Apply Instantly")) {
@@ -707,7 +671,7 @@ void RenderPawnAIUI(){
             g_orch.presets.ApplyInstant(f);
             WriteAllIncl(f, 0);
         }
-        if(ImGui::IsItemHovered()) ImGui::SetTooltip("Instantly apply slider values without waiting for smooth LERP.");
+        if(ImGui::IsItemHovered()) ImGui::SetTooltip("Write sliders now, skip lerp.");
 
         ImGui::SameLine();
         if(ImGui::Button("Reset Balanced")) {
@@ -728,11 +692,7 @@ void RenderPawnAIUI(){
         ImGui::Separator();
         ImGui::Checkbox("show hired pawns", &g_hiredInclShow);
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Hired pawns are somebody else's build. Editing is a "
-                              "temporary test tool: baselines are captured before the "
-                              "first write and restored on unload. The in-game "
-                              "profile refreshes only on a location change - that is "
-                              "the game caching the card, not our write failing.");
+            ImGui::SetTooltip("Temp edit. Restored on unload. Profile card updates on zone change.");
 
         if (g_hiredInclShow) {
             ImGui::SameLine();
@@ -842,7 +802,7 @@ void RenderPawnAIUI(){
             (incl[I_NEXUS] > incl[I_GUARDIAN] + 1.0f) ? "Nexus (anchor = selected pawn)" :
                                                         "Tie (primary inclination decides)";
         ImGui::Text("Guardian %.0f / Nexus %.0f - %s", incl[I_GUARDIAN], incl[I_NEXUS], owner);
-        ImGui::TextDisabled("Observe-only: decides, writes NOTHING to game memory.");
+        ImGui::TextDisabled("Observe only.");
 
         ImGui::Separator();
         // --- ЭРРАТА (слой B): статичная починка сломанного правила ---------
@@ -852,7 +812,7 @@ void RenderPawnAIUI(){
         // должно. Разделение и его смысл — в docs/ERRATA_ARCHITECTURE.md.
         ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.4f, 1.0f),
                            "Errata - static fixes of broken vanilla rules");
-        ImGui::TextDisabled("Not the doctrine. These lift rules that should not exist.");
+        ImGui::TextDisabled("Static rule fixes, not doctrine.");
 
         // --- E01/E02: Guardian душит кинжалы --------------------------------
         if (ImGui::Checkbox("Guardian dagger ban - LIFT IT (code 54)",
@@ -861,13 +821,7 @@ void RenderPawnAIUI(){
             if (!Runtime::g_errataDaggerOn) Runtime::ErrataRestore(0);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Vanilla gives Guardian -3 and -2 on WpnDaggerAtk, "
-                              "which removes melee from a dagger pawn for good. "
-                              "Measured: 0 dagger frames out of 500 in vanilla, "
-                              "246 out of 1858 with this on. Both ranks are "
-                              "lifted. Affects the shared resource, so the whole "
-                              "party - but only matters for pawns whose Guardian "
-                              "is first or second.");
+            ImGui::SetTooltip("Lift Guardian -3/-2 on daggers. Shared resource, whole party.");
         {
             int v = (int)Runtime::g_errataDaggerVal;
             ImGui::PushItemWidth(160);
@@ -877,8 +831,7 @@ void RenderPawnAIUI(){
             }
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("-3 = vanilla (the ban). 0 = the ban simply "
-                                  "removed. +5 = what Scather primary carries.");
+                ImGui::SetTooltip("-3 vanilla ban, 0 lift, +5 Scather-like.");
         }
         ImGui::TextColored(Runtime::ErrataIsApplied(0) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
                                                        : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
@@ -891,12 +844,7 @@ void RenderPawnAIUI(){
             if (!Runtime::g_errataMagicOn) Runtime::ErrataRestore(1);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("The same construction as the Guardian one, but for "
-                              "casters: Nexus puts -3 and -2 on WpnWandAtk, the "
-                              "main attack of a Mage or Sorcerer. An inclination "
-                              "meant to make her look after a party member ends up "
-                              "telling her not to cast. Untested in combat yet - "
-                              "the rule map is certain, the effect is not measured.");
+            ImGui::SetTooltip("Lift Nexus -3/-2 on wand attacks. Not combat-measured yet.");
         {
             int v = (int)Runtime::g_errataMagicVal;
             ImGui::PushItemWidth(160);
@@ -906,11 +854,25 @@ void RenderPawnAIUI(){
             }
             ImGui::PopItemWidth();
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("-3 = vanilla (the ban). 0 = the ban removed.");
+                ImGui::SetTooltip("-3 vanilla, 0 lift.");
         }
         ImGui::TextColored(Runtime::ErrataIsApplied(1) ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
                                                        : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
                            "%s", Runtime::ErrataStatus(1));
+
+        {
+            PawnAI::WandRange::Status ws = PawnAI::WandRange::Get();
+            bool won = ws.enabled;
+            if (ImGui::Checkbox("Caster AI range -> 15 m (pawns)", &won)) {
+                PawnAI::WandRange::SetEnabled(won);
+                config.setBool("errata", "wandRange", won);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Pawn staff eligibility like a bow. Not the player. IceWalk stays short.");
+            ImGui::TextColored(ws.applied ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
+                                          : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
+                               "%s", ws.why);
+        }
 
         // --- ВЫПОЛОТО В 75.40 -----------------------------------------------
         //
@@ -956,8 +918,7 @@ void RenderPawnAIUI(){
                 rep.threatsInZone, nearestBuf, rep.pawnAnchorDist,
                 rep.zoneEngaged ? "YES" : "no");
         }
-        ImGui::TextDisabled("World units are NOT meters (~cm, scale %.0f/m). Distances shown in meters.",
-            doctrine.worldUnitsPerMeter);
+        ImGui::TextDisabled("Distances in meters (scale %.0f).", doctrine.worldUnitsPerMeter);
 
         if(rep.adviceCount){
             for(int i = 0; i < rep.adviceCount; i++){
@@ -985,13 +946,11 @@ void RenderPawnAIUI(){
         ? ImVec4(0.3f, 1, 0.3f, 1) : ImVec4(0.7f, 0.7f, 0.7f, 1);
     ImGui::TextColored(wcol, "World: %d units  %d enemies  %d critters  %d dead  %u ms",
         world.count, world.enemyCount, world.critterCount, world.deadCount, age);
-    ImGui::TextDisabled("   goblins: %d   cat %d   (critters = hares etc, not a threat)",
-        world.goblinCount, world.dominantCategory);
+    ImGui::TextDisabled("   goblins %d  cat %d", world.goblinCount, world.dominantCategory);
     // Build 62: сигналы трёхсигнального детектора (урон виден в Hits выше).
     ImGui::TextDisabled("   enemyInCombatAction=%d  pawnTarget=%s",
         world.enemyCombatCount, world.pawnEngaged ? "SET" : "none");
-    ImGui::TextDisabled("Modular Orchestration: Stride=%d mStudy@0x%X | Modules: Acquisitor, SmartUtil, Anchors, Tactical",
-        INCL_STRIDE, MSTUDYFLAG_OFFSET);
+    ImGui::TextDisabled("stride %d  mStudy 0x%X", INCL_STRIDE, MSTUDYFLAG_OFFSET);
     ImGui::PopID();
 }
 
@@ -1026,6 +985,7 @@ void Hooks::PawnAI(){
     g_orch.Init();
     PawnAI::Haste::Init();
     PawnAI::DashWatch::Init();
+    PawnAI::WandRange::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
@@ -1051,5 +1011,8 @@ void Hooks::PawnAI_Shutdown(){
     // склонностей наёмных — часть выгрузки, а не забота пользователя.
     HiredInclRestoreAll();
     PawnAI::GuardianLeverRestore();   // склонность обязана вернуться при выгрузке
+    PawnAI::Haste::Shutdown();        // снять множители с тел партии до выгрузки
+    PawnAI::DashWatch::Shutdown();
+    PawnAI::WandRange::Shutdown();
     g_orch.Shutdown();
 }
