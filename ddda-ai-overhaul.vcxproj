@@ -127,6 +127,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\dinput8.cpp" />
     <ClCompile Include="src\runtime\Runtime.cpp" />
     <ClCompile Include="src\runtime\MemProbe.cpp" />
+    <ClCompile Include="src\runtime\AggroWatch.cpp" />
     <ClCompile Include="src\runtime\MonsterTempo.cpp" />
     <ClCompile Include="src\runtime\RuntimeState.cpp" />
     <ClCompile Include="src\runtime\WorldScan.cpp" />
@@ -212,6 +213,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\ModPaths.h" />
     <ClInclude Include="src\runtime\Runtime.h" />
     <ClInclude Include="src\runtime\MemProbe.h" />
+    <ClInclude Include="src\runtime\AggroWatch.h" />
     <ClInclude Include="src\runtime\MonsterTempo.h" />
     <ClInclude Include="src\runtime\RuntimeInternal.h" />
     <ClInclude Include="src\BuildTag.h" />

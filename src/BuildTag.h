@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "75.56-anodyne"
+#define MOD_BUILD_TAG "83.0-focus"

@@ -5,6 +5,7 @@
  */
 
 #include "stdafx.h"
+#include "runtime/AggroWatch.h"
 #include "monsterai/MonsterDirector.h"
 #include "MinHook/MinHook.h"
 #include "D3D9Hook.h"
@@ -49,6 +50,10 @@ void InitHooks()
     // Режиссёр стороны монстров — продуктовый слой, поднимается вместе с
     // рантаймом и до UI: он должен работать и без оверлея.
     MonsterAI::Init();
+
+    // Прибор агра — часть продуктового слоя (читает, не пишет), поэтому
+    // поднимается здесь же и до UI.
+    Runtime::Aggro::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();

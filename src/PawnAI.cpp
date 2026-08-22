@@ -21,6 +21,7 @@
 #include "pawnai/PawnAI_BusOrchestrator.h"
 #include "pawnai/GuardianDoctrine.h"
 #include "monsterai/MonsterDirector.h"
+#include "runtime/AggroWatch.h"
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
@@ -71,6 +72,11 @@ void UpdatePawnAI(){
     // же шину, управляет своими примитивами. Свой SEH — чтобы его ошибка
     // не уронила соседей.
     __try { MonsterAI::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Прибор «на кого смотрит пачка» (docs/AGGRO_RECON.md, этап 1).
+    // Только читает; по умолчанию выключен и стоит ноль.
+    __try { Runtime::Aggro::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Рывок пешки: латаем дыру с отсутствующим спринтом множителем

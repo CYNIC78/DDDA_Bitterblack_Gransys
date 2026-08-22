@@ -15,6 +15,8 @@ struct IniConfigStub {
     bool  getBool(const char*, const char*, bool d) { return d; }
     float getFloat(const char*, const char*, float d) { return d; }
     int   getInt(const char*, const char*, int d) { return d; }
+    int   getEnum(const char*, const char*, int d,
+                  std::pair<int, const char*>[], int) const { return d; }
     void  setBool(const char*, const char*, bool) const {}
     void  setFloat(const char*, const char*, float) const {}
 };

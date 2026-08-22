@@ -33,6 +33,9 @@ $GPP "$T/cordon_t.cpp"
 echo "== 1e/9 DashWatch.cpp =="
 $GPP "$T/dashwatch_t.cpp"
 
+echo "== 1h/9 AggroWatch.cpp =="
+$GPP "$T/aggro_t.cpp"
+
 echo "== 1f/9 GoapProbe.cpp =="
 $GPP "$T/goap_t.cpp"
 

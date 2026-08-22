@@ -10,6 +10,7 @@
 
 #include "stdafx.h"
 #include "monsterai/MonsterDirector.h"
+#include "runtime/AggroWatch.h"
 #include "runtime/MonsterTempo.h"
 #include "EnemyAI.h"
 
@@ -237,6 +238,148 @@ void RenderEnemyAIUI()
                     "  %-8s %-26s %5.1f m  loco x%.2f atk x%.2f",
                     v->kind, v->act[0] ? v->act : "?", v->distM,
                     v->locoFactor, v->atkFactor);
+            }
+            if (n > 8) ImGui::TextDisabled("  ... and %d more", n - 8);
+
+            // Схождение стаи: сколько особей на одном и что с жертвой.
+            ImGui::TextDisabled("pack convergence (>=3 foes on one member):");
+            for (int m = 0; m < 4; ++m) {
+                const Runtime::Aggro::Converge* c = Runtime::Aggro::ConvergeAt(m);
+                if (!c || !c->peak) continue;
+                ImGui::TextColored(c->count >= 3 ? ImVec4(1, 0.5f, 0.4f, 1)
+                                                 : ImVec4(0.7f, 0.7f, 0.7f, 1),
+                    "  %-9s now %d  peak %d  %s",
+                    Runtime::Aggro::MemberName(m), c->count, c->peak,
+                    c->memberAct[0] ? c->memberAct : "");
+            }
+        }
+    }
+
+    // --- Прибор агра (docs/AGGRO_RECON.md, этап 1) --------------------------
+    //
+    // Только читает. Ищет в теле врага слоты, ссылающиеся на членов партии,
+    // и считает, какой из них МЕНЯЕТ члена: цель — это подвижный слот, а
+    // не любой указатель на игрока.
+    {
+        ImGui::Separator();
+        ImGui::TextColored(ImVec4(1, 0.8f, 0.6f, 1), "Aggro watch (read-only)");
+        bool aw = Runtime::Aggro::Enabled();
+        if (ImGui::Checkbox("enable aggro watch", &aw)) {
+            Runtime::Aggro::SetEnabled(aw);
+            config.setBool("aggro", "watch", aw);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("snapshot")) Runtime::Aggro::DumpSnapshot();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("roster diff")) Runtime::Aggro::DumpRoster();
+        // CARDWATCH (79.0): непрерывное слежение за карточками двух особей
+        // с живой дистанцией. Дельта-лог: строка только при изменении.
+        bool cw = Runtime::Aggro::CardWatchOn();
+        if (ImGui::Checkbox("card watch (2 foes, delta log)", &cw)) {
+            Runtime::Aggro::SetCardWatch(cw);
+            config.setBool("aggro", "cardwatch", cw);
+        }
+        ImGui::TextWrapped("%s", Runtime::Aggro::Status());
+
+        // PIN (80.0, AGGRO_RECON §20) — первая мутация трека: штырь
+        // внимания на члене партии. Пишет ТОЛЬКО в карты uEm0200,
+        // нативное значение 300, readback + откат. Сброс = снять штырь,
+        // затухание движка доведёт поле до нуля само.
+        if (aw) {
+            const int pm = Runtime::Aggro::PinMember();
+            const int ps = Runtime::Aggro::PinScope();
+            // 83.0: FOCUS — продуктовая операция одной кнопкой:
+            // pin + suppress + fakehit на выбранном члене. Всё, что
+            // ниже (pin/suppress/fakehit по отдельности) — ручной режим
+            // для A/B-исследований; любое ручное изменение отсоединяет
+            // FOCUS с логом (он не молчит о том, что не правдив).
+            const int fm = Runtime::Aggro::PinFocusMember();
+            static const char* kFocusBtn[4] = {
+                "focus Arisen", "focus Main", "focus H1", "focus H2"
+            };
+            ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.4f, 1),
+                               "FOCUS = pin+suppress+fakehit  (WRITES!)");
+            for (int m = 0; m < 4; ++m) {
+                if (fm == m)
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImVec4(0.60f, 0.42f, 0.20f, 1));
+                if (ImGui::SmallButton(kFocusBtn[m]))
+                    Runtime::Aggro::PinFocusSet(m);
+                if (fm == m) ImGui::PopStyleColor();
+                if (m < 3) ImGui::SameLine();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("release all"))
+                Runtime::Aggro::PinFocusSet(-1);
+            static const char* kPinBtn[4] = {
+                "pin Arisen", "pin Main", "pin H1", "pin H2"
+            };
+            ImGui::TextColored(ImVec4(0.7f, 1.0f, 0.7f, 1),
+                               "aggro pin (manual, WRITES! uEm0200 only)");
+            for (int m = 0; m < 4; ++m) {
+                if (pm == m)
+                    ImGui::PushStyleColor(ImGuiCol_Button,
+                                          ImVec4(0.30f, 0.55f, 0.30f, 1));
+                if (ImGui::SmallButton(kPinBtn[m]))
+                    Runtime::Aggro::PinSet(m, ps);
+                if (pm == m) ImGui::PopStyleColor();
+                if (m < 3) ImGui::SameLine();
+            }
+            ImGui::SameLine();
+            if (ImGui::SmallButton("unpin"))
+                Runtime::Aggro::PinSet(-1, ps);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("scope nearest"))
+                Runtime::Aggro::PinSet(pm, 0);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("scope all"))
+                Runtime::Aggro::PinSet(pm, 1);
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", ps ? "all" : "nearest");
+            // 81.0: гасить чужие карты до 0 -> чистый argmax.
+            bool sp = Runtime::Aggro::PinSuppressOn();
+            if (ImGui::Checkbox("suppress others", &sp)) {
+                Runtime::Aggro::PinSuppressSet(sp);
+                config.setBool("aggro", "pin_suppress", sp);
+            }
+            // 82.0: фейк-хит — пере-заявка «свежего урона» в блоке B
+            // (не сбрасывается восприятием, в отличие от +0x10).
+            bool fh = Runtime::Aggro::PinFakehitOn();
+            if (ImGui::Checkbox("fake hit (block B)", &fh)) {
+                Runtime::Aggro::PinFakehitSet(fh);
+                config.setBool("aggro", "pin_fakehit", fh);
+            }
+            ImGui::SameLine();
+            ImGui::TextDisabled("27c=%.0f", config.getFloat("aggro",
+                                   "pin_fakehit_value", 150.0f));
+            uint32_t pw = 0, pr = 0;
+            Runtime::Aggro::PinStats(&pw, &pr);
+            if (pm >= 0 || pw)
+                ImGui::TextDisabled("pin: writes %u  rollbacks %u", pw, pr);
+        }
+        if (aw) {
+            // Отметки режут лог замера на A и B. Без них две половины
+            // смешаются в одну бесполезную сумму.
+            if (ImGui::SmallButton("MARK: lure ON"))  Runtime::Aggro::MarkEvent("lure ON");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("MARK: lure OFF")) Runtime::Aggro::MarkEvent("lure OFF");
+            ImGui::SameLine();
+            if (ImGui::SmallButton("MARK: taunt"))    Runtime::Aggro::MarkEvent("taunt used");
+
+            const int n = Runtime::Aggro::RowCount();
+            for (int i = 0; i < n && i < 8; ++i) {
+                const Runtime::Aggro::Row* r = Runtime::Aggro::RowAt(i);
+                if (!r) continue;
+                if (r->best < 0) {
+                    ImGui::TextDisabled("  %-8s %-22s  %d slots, none moved",
+                        r->kind, r->act[0] ? r->act : "?", r->nSlots);
+                } else {
+                    const Runtime::Aggro::Slot& sl = r->slot[r->best];
+                    ImGui::Text("  %-8s %-22s  +0x%04X -> %-9s sw %u  held %u ms",
+                        r->kind, r->act[0] ? r->act : "?", sl.off,
+                        Runtime::Aggro::MemberName(sl.member),
+                        sl.switches, sl.holdMs);
+                }
             }
             if (n > 8) ImGui::TextDisabled("  ... and %d more", n - 8);
         }
