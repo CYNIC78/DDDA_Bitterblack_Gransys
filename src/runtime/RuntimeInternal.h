@@ -89,6 +89,7 @@ static const uint32_t kPartyBodySize       = 0x5A10;
 static const uint32_t kCmcBodySize         = 0x58E0;
 static const uint32_t kPawnManagerSize     = 5512;
 static const int      kPartyMaxBodies      = 24;
+static const int      kPartyExactSlots     = 4;  // Arisen + three fixed pawn records
 static const int      kPartyMaxChildren    = 96;
 static const int      kPartyMaxValueHits   = 96;
 static const int      kPartyVtCacheSize    = 8192;
@@ -163,6 +164,9 @@ struct PartyBodyDump {
     // Индекс записи персонажа, на которую ссылается тело: 0 — своя пешка,
     // 1..2 — наёмные, -1 — не определено. Надёжнее любой эвристики.
     int       pawnRecordIdx;
+    // Короткая причина/метод exact identity для автоматического лога.
+    // Нужна, чтобы unresolved не выглядел как безымянный record #-1.
+    char      pawnRecordMatch[32];
     bool      pawnManagerRef;
     bool      hasPawnIntel;
     BYTE      body[kPartyBodySize];
@@ -177,7 +181,7 @@ struct PartyBodyDump {
     bool      actOwnerRef;
 };
 extern PartyBodyDump g_party[kPartyMaxBodies];
-extern PartyBodyDump g_partyChosen[2];
+extern PartyBodyDump g_partyChosen[kPartyExactSlots];
 extern int g_nParty;
 extern int g_partyRawCandidates;
 extern uintptr_t g_partyPawnMgr[8];
@@ -337,16 +341,16 @@ bool ReadLiveAct(uintptr_t body, char* out, int cap);
 //     cEm0100ActDie        — умирает
 //     cEm0100ActDeadBody   — труп
 //     cEm0100ActDieBurn / cEm0100ActDieIce — частные случаи
-// Проверка по подстроке "Die"/"Dead" покрывает все виды сразу: имена
-// состояний единообразны у всех 35 видов (812 состояний в ActMap).
+// Проверка по подстроке "Die"/"Dead" покрывает виды сразу: текущий ActMap
+// содержит 873 состояния в 36 emId-группах.
 // ВНИМАНИЕ на форму имени. Первая версия проверяла только префикс сразу
-// после "Act" — и пропускала 6 состояний из 812, где Die стоит в середине:
+// после "Act" — и пропускала 6 состояний исходной 812-row карты, где Die стоит в середине:
 //     cEm5000ActDownDie      cEm8600ActFlyDie
 //     cEm9100ActGroundDie    cEm0100ActDmgPoisonDie
 // Поэтому ищем "Die"/"Dead" где угодно в имени состояния.
 //
 // Ложных срабатываний нет: слов с этими буквосочетаниями, кроме смерти,
-// среди 812 состояний не встречается (проверено перебором таблицы).
+// среди текущих 872 состояний не встречается (проверено перебором таблицы).
 // "Dive"/"Damage"/"Down" не совпадают — у них другие буквы.
 bool ActNameIsDeath(const char* actName);
 

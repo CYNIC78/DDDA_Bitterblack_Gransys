@@ -17,7 +17,7 @@ uintptr_t g_lastBand = 0x10000000u;
 uint32_t g_actSlotOff  = 0;
 bool     g_actFullScan = false;
 PartyBodyDump g_party[kPartyMaxBodies];
-PartyBodyDump g_partyChosen[2];
+PartyBodyDump g_partyChosen[kPartyExactSlots];
 int            g_nParty = 0;
 int            g_partyRawCandidates = 0;
 uintptr_t      g_partyPawnMgr[8];

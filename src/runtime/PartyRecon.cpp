@@ -399,13 +399,279 @@ bool PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut)
     if (bodyOut) *bodyOut = 0;
     if (!PartyRecordValid(idx, vocOut, lvlOut)) return false;
     if (bodyOut) {
-        for (int i = 0; i < g_nParty; ++i)
-            if (!strcmp(g_party[i].dti, "uCmc") && g_party[i].pawnRecordIdx == idx) {
-                *bodyOut = g_party[i].ptr;
-                break;
-            }
+        uintptr_t unique = 0;
+        int hits = 0;
+        for (int i = 0; i < g_nParty; ++i) {
+            if (strcmp(g_party[i].dti, "uCmc") || g_party[i].pawnRecordIdx != idx)
+                continue;
+            unique = g_party[i].ptr;
+            ++hits;
+        }
+        // Никогда не превращаем порядок списка в identity. Ноль и несколько
+        // тел одинаково означают «этот фиксированный record slot не разрешён».
+        if (hits == 1) *bodyOut = unique;
     }
     return true;
+}
+
+// --- EXACT PAWN RECORD <-> LIVE BODY BRIDGE (session Build 007) ------------
+//
+// В живых замерах уже подтверждены обе стороны одного и того же поля:
+//
+//     character record + 0x96C = current HP
+//     cCmcInfo        + 0x29C = current HP mirror
+//
+// Это сильнее старого эвристического поиска maxHP/stamina по всему uCmc:
+// здесь сравнивается поле с известной семантикой и известным точным offset.
+// Совпадение принимается только если оно единственное среди фиксированных
+// pawn records 0/1/2. Равные HP оставляют body unresolved — scan/list order
+// не используется. Двойное чтение обеих сторон отсекает изменение HP прямо
+// посередине снимка; дешёвый retry позже разрешит временную неоднозначность.
+static uintptr_t PartyPawnInfo(uintptr_t body)
+{
+    if (!body) return 0;
+    uintptr_t info = 0;
+    if (!RdPtr((void*)(body + 0x3DEC), &info) || !info) return 0;
+    char name[48] = {};
+    if (!NameOfLiveObject(info, name, sizeof(name)) || strcmp(name, "cCmcInfo"))
+        return 0;
+    return info;
+}
+
+static bool PartyReadCurrentHpBits(uintptr_t addr, uint32_t* bitsOut)
+{
+    if (bitsOut) *bitsOut = 0;
+    float hp = 0.0f;
+    if (!addr || !bitsOut || !Rd((void*)addr, &hp, sizeof(hp))) return false;
+    if (!(hp == hp) || hp < 0.0f || hp > 200000.0f) return false;
+    memcpy(bitsOut, &hp, sizeof(*bitsOut));
+    return true;
+}
+
+static void PartyMergeDirectPawnEvidence(int found, int hits, const char* method,
+                                         int* candidate, bool* bad,
+                                         char* methodOut, size_t methodOutBytes)
+{
+    if (!candidate || !bad || *bad || hits <= 0) return;
+    if (hits != 1) {
+        *bad = true;
+        lstrcpynA(methodOut, "direct-pointer-ambiguous", (int)methodOutBytes);
+        return;
+    }
+    if (*candidate >= 0 && *candidate != found) {
+        *bad = true;
+        lstrcpynA(methodOut, "direct-pointer-conflict", (int)methodOutBytes);
+        return;
+    }
+    if (*candidate < 0) {
+        *candidate = found;
+        lstrcpynA(methodOut, method, (int)methodOutBytes);
+    }
+}
+
+static bool PartyTryResolvePawnRecordByLiveHp(PartyBodyDump& P)
+{
+    if (strcmp(P.dti, "uCmc")) return false;
+    const uintptr_t info = PartyPawnInfo(P.ptr);
+    if (!info) {
+        lstrcpynA(P.pawnRecordMatch, "cCmcInfo-unavailable",
+                  sizeof(P.pawnRecordMatch));
+        return false;
+    }
+
+    uint32_t liveBefore = 0, liveAfter = 0;
+    uint32_t recBefore[3] = {}, recAfter[3] = {};
+    bool validBefore[3] = {}, validAfter[3] = {};
+    if (!PartyReadCurrentHpBits(info + 0x29C, &liveBefore)) {
+        lstrcpynA(P.pawnRecordMatch, "info-current-hp-invalid",
+                  sizeof(P.pawnRecordMatch));
+        return false;
+    }
+    for (int r = 0; r <= 2; ++r) {
+        const uintptr_t rec = PartyRecordAddr(r);
+        validBefore[r] = PartyRecordValid(r, 0, 0)
+                      && PartyReadCurrentHpBits(rec + 0x96C, &recBefore[r]);
+    }
+    for (int r = 0; r <= 2; ++r) {
+        const uintptr_t rec = PartyRecordAddr(r);
+        validAfter[r] = PartyRecordValid(r, 0, 0)
+                     && PartyReadCurrentHpBits(rec + 0x96C, &recAfter[r]);
+    }
+    if (!PartyReadCurrentHpBits(info + 0x29C, &liveAfter)
+        || liveBefore != liveAfter) {
+        lstrcpynA(P.pawnRecordMatch, "info-current-hp-unstable",
+                  sizeof(P.pawnRecordMatch));
+        return false;
+    }
+
+    int candidate = -1;
+    int hits = 0;
+    for (int r = 0; r <= 2; ++r) {
+        if (validBefore[r] != validAfter[r]
+            || (validBefore[r] && recBefore[r] != recAfter[r])) {
+            lstrcpynA(P.pawnRecordMatch, "record-current-hp-unstable",
+                      sizeof(P.pawnRecordMatch));
+            return false;
+        }
+        if (validBefore[r] && recBefore[r] == liveBefore) {
+            candidate = r;
+            ++hits;
+        }
+    }
+    if (hits != 1) {
+        lstrcpynA(P.pawnRecordMatch,
+                  hits ? "info-current-hp-ambiguous" : "info-current-hp-no-match",
+                  sizeof(P.pawnRecordMatch));
+        return false;
+    }
+
+    P.pawnRecordIdx = candidate;
+    lstrcpynA(P.pawnRecordMatch, "info-current-hp-exact",
+              sizeof(P.pawnRecordMatch));
+    return true;
+}
+
+// --- PartyCombatSnapshot (Build 84 / sessions Build 001-002) --------------
+//
+// Это намеренно узкий слой чтения. Monster Director не знает смещений
+// character record и не лазит в тела партии сам. Не подтверждённые status и
+// downed semantics здесь НЕ угадываются: наружу уходят valid=false и сырой
+// action, которого достаточно для следующего live validation pass.
+static uintptr_t ArisenRecordAddr()
+{
+    if (!pBase || !*pBase) return 0;
+    return (uintptr_t)(*pBase) + 0xA7000;
+}
+
+static bool CombatRecordCore(uintptr_t rec, int* vocOut, int* lvlOut)
+{
+    if (vocOut) *vocOut = 0;
+    if (lvlOut) *lvlOut = 0;
+    if (!rec) return false;
+
+    int32_t voc = 0;
+    uint16_t lvl = 0;
+    float maxHp = 0.0f;
+    if (!Rd((void*)(rec + 0x6E0), &voc, 4)) return false;
+    if (!Rd((void*)(rec + 0xDD0), &lvl, 2)) return false;
+    if (!Rd((void*)(rec + 0x970), &maxHp, 4)) return false;
+    if (voc < 1 || voc > 9 || lvl == 0 || lvl > 250) return false;
+    if (!(maxHp > 0.0f) || maxHp > 200000.0f) return false;
+    if (vocOut) *vocOut = (int)voc;
+    if (lvlOut) *lvlOut = (int)lvl;
+    return true;
+}
+
+static bool CombatFinite(float v, float lo, float hi)
+{
+    // v == v rejects NaN without depending on CRT-specific _finite.
+    return v == v && v >= lo && v <= hi;
+}
+
+static bool CombatReadPosition(uintptr_t body, float* x, float* y, float* z)
+{
+    if (!body || !x || !y || !z || !RegionOk(body, 0x50)) return false;
+    if (!Rd((void*)(body + 0x40), x, 4)
+        || !Rd((void*)(body + 0x44), y, 4)
+        || !Rd((void*)(body + 0x48), z, 4)) return false;
+    return CombatFinite(*x, -10000000.0f, 10000000.0f)
+        && CombatFinite(*y, -10000000.0f, 10000000.0f)
+        && CombatFinite(*z, -10000000.0f, 10000000.0f);
+}
+
+static bool CombatDownedActionHint(const char* act)
+{
+    if (!act || !act[0]) return false;
+    // Candidate NAMES only. Their gameplay meaning is deliberately not
+    // promoted to downedValid until the observer log aligns them with a live
+    // pawn fall/revival sequence.
+    static const char* kCandidate[] = {
+        "cPlActCmcDead", "cPlActDead", "cPlActDmgDown",
+        "cPlActDmgDownDamage", "cPlActDmgDownDead", "cPlReviveCMC"
+    };
+    for (int i = 0; i < (int)(sizeof(kCandidate) / sizeof(kCandidate[0])); ++i)
+        if (!strcmp(act, kCandidate[i])) return true;
+    return false;
+}
+
+const char* PartyCombatSlotName(int slot)
+{
+    switch (slot) {
+    case PARTY_ARISEN: return "Arisen";
+    case PARTY_MAIN:   return "MainPawn";
+    case PARTY_HIRED1: return "Hired1";
+    case PARTY_HIRED2: return "Hired2";
+    default:            return "?";
+    }
+}
+
+bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
+{
+    if (!out) return false;
+    memset(out, 0, sizeof(*out));
+    out->sampledAtMs = GetTickCount();
+
+    for (int slot = 0; slot < PARTY_COMBAT_SLOTS; ++slot) {
+        PartyCombatMember& M = out->member[slot];
+        M.slot = slot;
+        M.pawnRecordIdx = slot == PARTY_ARISEN ? -1 : slot - 1;
+        for (int k = 0; k < 6; ++k) M.equippedSkills[k] = -1;
+
+        if (slot == PARTY_ARISEN) {
+            M.record = ArisenRecordAddr();
+            M.body = ArisenBody();
+            M.recordValid = CombatRecordCore(M.record, &M.vocation, &M.level);
+        } else {
+            M.record = PartyRecordAddr(M.pawnRecordIdx);
+            M.recordValid = PartyRecordInfo(M.pawnRecordIdx, &M.vocation,
+                                            &M.level, &M.body);
+        }
+        if (!M.recordValid) continue;
+        ++out->recordCount;
+
+        M.skillsValid = Rd((void*)(M.record + 0x868), M.equippedSkills,
+                           sizeof(M.equippedSkills));
+
+        // HP has its own validity channel. Build 002 must not lose a valid
+        // current-HP candidate merely because an unrelated core-stat read is
+        // unavailable. maxHp is read for sanity/diagnostics only and is never
+        // used as a percentage by the Director.
+        const bool readHp =
+               Rd((void*)(M.record + 0x96C), &M.currentHp, 4)
+            && Rd((void*)(M.record + 0x970), &M.maxHp, 4);
+        M.hpValid = readHp
+            && CombatFinite(M.currentHp, 0.0f, 200000.0f)
+            && CombatFinite(M.maxHp, 1.0f, 200000.0f);
+
+        // These offsets are confirmed CORE stats, not equipped/loadout totals.
+        // Keep them as explicitly separate diagnostics; Build 002 ignores them.
+        const bool readCoreStats =
+               Rd((void*)(M.record + 0x984), &M.strength, 4)
+            && Rd((void*)(M.record + 0x988), &M.defense, 4)
+            && Rd((void*)(M.record + 0x98C), &M.magick, 4)
+            && Rd((void*)(M.record + 0x990), &M.magickDefense, 4);
+        M.statsValid = readCoreStats
+            && CombatFinite(M.strength, 0.0f, 200000.0f)
+            && CombatFinite(M.defense, 0.0f, 200000.0f)
+            && CombatFinite(M.magick, 0.0f, 200000.0f)
+            && CombatFinite(M.magickDefense, 0.0f, 200000.0f);
+
+        M.bodyValid = M.body && RegionOk(M.body, 0x50);
+        if (M.bodyValid) {
+            M.positionValid = CombatReadPosition(M.body, &M.x, &M.y, &M.z);
+            M.actionValid = ReadLiveAct(M.body, M.liveAct, sizeof(M.liveAct));
+            if (M.actionValid)
+                M.downedHint = CombatDownedActionHint(M.liveAct);
+        }
+
+        // Unknown by contract. Zero bits do NOT mean "healthy"; valid=false
+        // means unavailable. Build 002 ignores this channel completely.
+        M.statusMask = 0;
+        M.statusValid = false;
+        M.downedValid = false;
+        M.downedRevivable = false;
+    }
+    return out->recordCount > 0;
 }
 
 void PartySetExpectedPawns(int n)
@@ -531,106 +797,92 @@ void PartyInspectBody(PartyBodyDump& P)
     P.playerRecordRef = PartyBlockHasPtr(P.body, P.bodySize, playerRecord);
     P.mainPawnRecordRef = PartyBlockHasPtr(P.body, P.bodySize, mainPawnRecord);
 
-    // Чья это пешка: тело несёт указатель на СВОЮ запись персонажа.
+    // Чья это пешка. Все pointer paths остаются более сильным прямым
+    // доказательством. Мы собираем ИХ ВСЕ: разные claims конфликтуют, а
+    // несколько candidates внутри одного path неоднозначны. Ни scan/list,
+    // ни allocation/heap order здесь не участвуют.
     P.pawnRecordIdx = -1;
-    for (int r = 0; r <= 2; ++r) {
-        const uintptr_t rec = PartyRecordAddr(r);
-        if (rec && PartyBlockHasPtr(P.body, P.bodySize, rec)) { P.pawnRecordIdx = r; break; }
-    }
+    lstrcpynA(P.pawnRecordMatch,
+              !strcmp(P.dti, "uCmc") ? "unresolved" : "not-a-pawn",
+              sizeof(P.pawnRecordMatch));
+    if (!strcmp(P.dti, "uCmc")) {
+        int direct = -1;
+        bool directBad = false;
 
-    // ОБРАТНОЕ СОПОСТАВЛЕНИЕ ПО УКАЗАТЕЛЮ. Замер 75.10: ни одно тело не
-    // содержало указателя на свою запись. Пробуем обратную связь —
-    // указатель на ТЕЛО внутри записи.
-    if (P.pawnRecordIdx < 0) {
-        static BYTE rec[0x1660];
-        for (int r = 0; r <= 2; ++r) {
-            const uintptr_t ra = PartyRecordAddr(r);
-            if (!ra || !Rd((void*)ra, rec, sizeof(rec))) continue;
-            if (!PartyBlockHasPtr(rec, sizeof(rec), P.ptr)) continue;
-            P.pawnRecordIdx = r;
-            break;
-        }
-    }
-
-    // ИСКАЛИ НЕ ТАМ: ссылка может лежать в ПОДОБЪЕКТЕ, а не в теле.
-    //
-    // `PartyBlockHasPtr(P.body, ...)` просматривает только сам блок тела
-    // (0x58E0 байт). Но данные пешки живут в `cCmcInfo` — отдельном
-    // объекте на 5728 байт, который телу лишь принадлежит. Указатель на
-    // запись персонажа естественнее искать именно там.
-    if (P.pawnRecordIdx < 0) {
-        const uintptr_t info = FindChildByClass(P.ptr, P.bodySize, "cCmcInfo", 0);
-        if (info) {
-            static BYTE blob[5728];
-            if (Rd((void*)info, blob, sizeof(blob))) {
-                for (int r = 0; r <= 2; ++r) {
-                    const uintptr_t ra = PartyRecordAddr(r);
-                    if (ra && PartyBlockHasPtr(blob, sizeof(blob), ra)) {
-                        P.pawnRecordIdx = r;
-                        break;
-                    }
-                }
-            }
-        }
-    }
-
-    // СОПОСТАВЛЕНИЕ ПО ЗДОРОВЬЮ. Замер 75.11: указателя нет НИ В ОДНУ
-    // сторону — тело и запись связаны как-то иначе (индексом, таблицей,
-    // чем угодно). Но связь можно установить по данным: у записи есть
-    // максимальное HP (+0x970), и это же число живёт в теле, в зеркале
-    // `cCmcInfo`.
-    //
-    // Метод честен ровно настолько, насколько уникально число. Поэтому
-    // совпадение принимается ТОЛЬКО если запись такая одна: две пешки с
-    // одинаковым максимумом HP оставят обеих неопознанными, и это лучше,
-    // чем уверенно назвать не того.
-    if (P.pawnRecordIdx < 0 && P.bodyOk) {
         int candidate = -1, hits = 0;
         for (int r = 0; r <= 2; ++r) {
-            const uintptr_t ra = PartyRecordAddr(r);
-            if (!ra) continue;
-            float maxHp = 0.0f;
-            if (!Rd((void*)(ra + 0x970), &maxHp, 4)) continue;
-            if (!(maxHp > 0.0f)) continue;
-
-            // Уникальна ли эта величина среди записей партии.
-            int sameValue = 0;
-            for (int q = 0; q <= 2; ++q) {
-                const uintptr_t qa = PartyRecordAddr(q);
-                if (!qa) continue;
-                float v = 0.0f;
-                if (Rd((void*)(qa + 0x970), &v, 4) && v == maxHp) ++sameValue;
-            }
-            if (sameValue != 1) continue;
-
-            // Одного числа мало: максимум HP может совпасть случайно.
-            // Требуем ПАРУ — максимум HP и максимум выносливости (+0x97C)
-            // рядом друг с другом, в пределах 0x40 байт. Такая пара
-            // случайно не встречается.
-            float maxSt = 0.0f;
-            if (!Rd((void*)(ra + 0x97C), &maxSt, 4) || !(maxSt > 0.0f)) continue;
-
-            for (uint32_t off = 0; off + 4 <= P.bodySize; off += 4) {
-                float v = 0.0f;
-                memcpy(&v, P.body + off, 4);
-                if (v != maxHp) continue;
-
-                bool pair = false;
-                const uint32_t lo = (off > 0x40) ? off - 0x40 : 0;
-                const uint32_t hi = (off + 0x40 + 4 <= P.bodySize) ? off + 0x40 : P.bodySize - 4;
-                for (uint32_t q = lo; q + 4 <= hi && !pair; q += 4) {
-                    float w = 0.0f;
-                    memcpy(&w, P.body + q, 4);
-                    if (w == maxSt) pair = true;
-                }
-                if (!pair) continue;
+            const uintptr_t rec = PartyRecordAddr(r);
+            if (rec && PartyBlockHasPtr(P.body, P.bodySize, rec)) {
                 candidate = r;
                 ++hits;
-                break;
             }
         }
-        if (hits == 1) P.pawnRecordIdx = candidate;
+        PartyMergeDirectPawnEvidence(candidate, hits, "body-record-pointer",
+                                     &direct, &directBad, P.pawnRecordMatch,
+                                     sizeof(P.pawnRecordMatch));
+
+        // Обратная связь: указатель на тело внутри fixed record.
+        static BYTE recBlob[0x1660];
+        candidate = -1;
+        hits = 0;
+        for (int r = 0; r <= 2; ++r) {
+            const uintptr_t ra = PartyRecordAddr(r);
+            if (!ra || !Rd((void*)ra, recBlob, sizeof(recBlob))) continue;
+            if (!PartyBlockHasPtr(recBlob, sizeof(recBlob), P.ptr)) continue;
+            candidate = r;
+            ++hits;
+        }
+        PartyMergeDirectPawnEvidence(candidate, hits, "record-body-pointer",
+                                     &direct, &directBad, P.pawnRecordMatch,
+                                     sizeof(P.pawnRecordMatch));
+
+        // Direct record pointer может лежать в принадлежащем телу cCmcInfo.
+        const uintptr_t info = PartyPawnInfo(P.ptr);
+        if (info) {
+            static BYTE infoBlob[5728];
+            if (Rd((void*)info, infoBlob, sizeof(infoBlob))) {
+                candidate = -1;
+                hits = 0;
+                for (int r = 0; r <= 2; ++r) {
+                    const uintptr_t ra = PartyRecordAddr(r);
+                    if (ra && PartyBlockHasPtr(infoBlob, sizeof(infoBlob), ra)) {
+                        candidate = r;
+                        ++hits;
+                    }
+                }
+                PartyMergeDirectPawnEvidence(candidate, hits,
+                                             "info-record-pointer", &direct,
+                                             &directBad, P.pawnRecordMatch,
+                                             sizeof(P.pawnRecordMatch));
+            }
+        }
+
+        if (directBad) {
+            P.pawnRecordIdx = -1;
+        } else if (direct >= 0) {
+            // Подтверждённый HP match не имеет права противоречить более
+            // сильному pointer evidence. Неприменимая HP-проверка (например,
+            // одинаковые HP) не ослабляет однозначный direct pointer.
+            PartyBodyDump hpProbe = {};
+            hpProbe.ptr = P.ptr;
+            hpProbe.pawnRecordIdx = -1;
+            lstrcpynA(hpProbe.dti, P.dti, sizeof(hpProbe.dti));
+            if (PartyTryResolvePawnRecordByLiveHp(hpProbe)
+                && hpProbe.pawnRecordIdx != direct) {
+                P.pawnRecordIdx = -1;
+                lstrcpynA(P.pawnRecordMatch, "pointer-current-hp-conflict",
+                          sizeof(P.pawnRecordMatch));
+            } else {
+                P.pawnRecordIdx = direct;
+            }
+        } else {
+            // Build 006 искал неподтверждённые maxHP/maxSt внутри наружного
+            // uCmc blob. Build 007 вместо этого использует validated mirror:
+            // record+0x96C == cCmcInfo+0x29C, bit-exact и stable twice.
+            PartyTryResolvePawnRecordByLiveHp(P);
+        }
     }
+
     PartyScanKnownValues(P, P.body, P.bodySize, P.dti, 0);
 
     int bestActScore = -1;
@@ -701,49 +953,52 @@ int PartyCountValueHits(const PartyBodyDump& P, const char* prefix)
     return n;
 }
 
+static bool PartyIsRecordBackedArisen(const PartyBodyDump& P)
+{
+    // DTI alone is not identity. Live-list snapshots can expose multiple
+    // class-valid uPlayer subobjects/candidates at once. Only the body whose
+    // inspected graph contains the exact fixed player record may claim Arisen.
+    return !strcmp(P.dti, "uPlayer") && P.playerRecordRef;
+}
+
 void PartySelectWorkingPair()
 {
-    if (g_nParty <= 2) return;
-
-    int arisen = -1, pawn = -1;
-    int bestArisen = 0, bestPawn = 0;
+    // Legacy research code used scores and kept the first/best uCmc. With a
+    // full party that made heap order an identity oracle. Keep only evidence
+    // that already names a fixed slot: one unique record-backed uPlayer and
+    // one unique body for each pawn record. Active unresolved bodies may be
+    // adopted by the live-list bridge and retried; they are never promoted by
+    // discovery order or DTI alone.
+    int player = -1, playerHits = 0;
+    int pawn[3] = {-1, -1, -1};
+    int pawnHits[3] = {0, 0, 0};
     for (int i = 0; i < g_nParty; ++i) {
-        PartyBodyDump& P = g_party[i];
-        bool pawnEvidence = P.mainPawnRecordRef || P.pawnManagerRef || P.hasPawnIntel;
-
-        int a = !strcmp(P.dti, "uPlayer") ? 500 : 0;
-        if (P.playerRecordRef) a += 2000;
-        a += PartyCountValueHits(P, "player_") * 20;
-        if (pawnEvidence) a -= 1000;
-        if (a > bestArisen) { bestArisen = a; arisen = i; }
-
-        int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
-        if (P.mainPawnRecordRef) p += 2000;
-        if (P.pawnManagerRef) p += 2000;
-        if (P.hasPawnIntel) p += 2000;
-        p += PartyCountValueHits(P, "pawn_") * 20;
-        if (p > bestPawn) { bestPawn = p; pawn = i; }
-    }
-
-    // A body cannot fill both roles. If that happened, keep the stronger role
-    // and look for the next-best distinct candidate.
-    if (arisen >= 0 && pawn == arisen) {
-        pawn = -1; bestPawn = 0;
-        for (int i = 0; i < g_nParty; ++i) {
-            if (i == arisen) continue;
-            PartyBodyDump& P = g_party[i];
-            int p = !strcmp(P.dti, "uCmc") ? 1 : 0;
-            if (P.mainPawnRecordRef) p += 2000;
-            if (P.pawnManagerRef) p += 2000;
-            if (P.hasPawnIntel) p += 2000;
-            p += PartyCountValueHits(P, "pawn_") * 20;
-            if (p > bestPawn) { bestPawn = p; pawn = i; }
+        if (PartyIsRecordBackedArisen(g_party[i])) {
+            player = i;
+            ++playerHits;
+        }
+        const int r = g_party[i].pawnRecordIdx;
+        if (!strcmp(g_party[i].dti, "uCmc") && r >= 0 && r <= 2) {
+            pawn[r] = i;
+            ++pawnHits[r];
         }
     }
 
+    // Preserve a known duplicate-claim set verbatim. Pruning it down to the
+    // other exact slots would erase the anomaly and let the live-list bridge
+    // re-adopt one claimant first, briefly turning discovery order into
+    // identity. Role assignment/ArisenBody will keep the duplicate unresolved.
+    bool duplicateFixedClaim = playerHits > 1;
+    for (int r = 0; r <= 2; ++r)
+        if (pawnHits[r] > 1) duplicateFixedClaim = true;
+    if (duplicateFixedClaim) return;
+
     int keep = 0;
-    if (arisen >= 0) g_partyChosen[keep++] = g_party[arisen];
-    if (pawn >= 0 && pawn != arisen && keep < 2) g_partyChosen[keep++] = g_party[pawn];
+    if (playerHits == 1) g_partyChosen[keep++] = g_party[player];
+    for (int r = 0; r <= 2; ++r)
+        if (pawnHits[r] == 1 && keep < kPartyExactSlots)
+            g_partyChosen[keep++] = g_party[pawn[r]];
+
     if (!keep) return;
     for (int i = 0; i < keep; ++i) g_party[i] = g_partyChosen[i];
     g_nParty = keep;
@@ -751,26 +1006,29 @@ void PartySelectWorkingPair()
 
 void PartyAssignRoles()
 {
-    int pawn = -1, arisen = -1;
+    int playerHits = 0;
+    int pawnHits[3] = {0, 0, 0};
     for (int i = 0; i < g_nParty; ++i) {
-        bool cmcBody = !strcmp(g_party[i].dti, "uCmc");
-        bool playerBody = !strcmp(g_party[i].dti, "uPlayer");
-        bool pawnEvidence = cmcBody
-                         || g_party[i].mainPawnRecordRef
-                         || g_party[i].pawnManagerRef
-                         || g_party[i].hasPawnIntel;
-        if (pawnEvidence && pawn < 0) pawn = i;
-        if ((playerBody || g_party[i].playerRecordRef) && !pawnEvidence && arisen < 0)
-            arisen = i;
+        if (PartyIsRecordBackedArisen(g_party[i])) ++playerHits;
+        const int r = g_party[i].pawnRecordIdx;
+        if (!strcmp(g_party[i].dti, "uCmc") && r >= 0 && r <= 2)
+            ++pawnHits[r];
     }
-    if (g_nParty == 2) {
-        if (pawn >= 0 && arisen < 0) arisen = 1 - pawn;
-        if (arisen >= 0 && pawn < 0) pawn = 1 - arisen;
-    }
+
     for (int i = 0; i < g_nParty; ++i) {
-        if (i == arisen) lstrcpynA(g_party[i].role, "Arisen", sizeof(g_party[i].role));
-        else if (i == pawn) lstrcpynA(g_party[i].role, "Main Pawn", sizeof(g_party[i].role));
-        else sprintf_s(g_party[i].role, sizeof(g_party[i].role), "Candidate %c", 'A' + i);
+        PartyBodyDump& P = g_party[i];
+        if (PartyIsRecordBackedArisen(P) && playerHits == 1) {
+            lstrcpynA(P.role, "Arisen", sizeof(P.role));
+        } else if (!strcmp(P.dti, "uCmc")
+                   && P.pawnRecordIdx >= 0 && P.pawnRecordIdx <= 2
+                   && pawnHits[P.pawnRecordIdx] == 1) {
+            static const char* kPawnRole[3] = {
+                "Main Pawn", "Hired Pawn 1", "Hired Pawn 2"
+            };
+            lstrcpynA(P.role, kPawnRole[P.pawnRecordIdx], sizeof(P.role));
+        } else {
+            sprintf_s(P.role, sizeof(P.role), "Unresolved %c", 'A' + i);
+        }
     }
 }
 
@@ -914,6 +1172,37 @@ static bool PartyRescanDue()
     return true;
 }
 
+// HP может измениться ровно в момент первого adoption или совпасть у двух
+// пешек. Полный повтор PartyInspectBody дорог и не нужен: раз в 1000 ms читаем
+// только cCmcInfo+0x29C и три fixed records. Успешный exact match фиксируется
+// на lifetime текущего live body; порядок обхода не участвует.
+static void PartyRetryUnresolvedPawnIdentity()
+{
+    static DWORD last = 0;
+    const DWORD now = MsNow();
+    if (last && now - last < 1000u) return;
+    last = now;
+
+    bool changed = false;
+    for (int i = 0; i < g_nParty; ++i) {
+        PartyBodyDump& P = g_party[i];
+        if (strcmp(P.dti, "uCmc") || P.pawnRecordIdx >= 0) continue;
+        // A weaker HP retry must never erase unresolved stronger evidence.
+        if (!strcmp(P.pawnRecordMatch, "direct-pointer-ambiguous")
+            || !strcmp(P.pawnRecordMatch, "direct-pointer-conflict")
+            || !strcmp(P.pawnRecordMatch, "pointer-current-hp-conflict"))
+            continue;
+        if (!PartyTryResolvePawnRecordByLiveHp(P)) continue;
+        changed = true;
+        char l[220];
+        sprintf_s(l, "PartyRecon: exact pawn identity body=0x%08X -> record #%d"
+                     " via %s", (unsigned)P.ptr, P.pawnRecordIdx,
+                  P.pawnRecordMatch);
+        logFile << l << std::endl;
+    }
+    if (changed) PartyAssignRoles();
+}
+
 // Есть ли это тело уже в списке партии. Нужно и здесь, и в WorldScan.
 // Принять тело в список партии, минуя скан памяти.
 //
@@ -943,9 +1232,20 @@ void PartyAdoptBody(uintptr_t body, const char* dti)
     PartyInspectBody(P);
     PartyAssignRoles();
 
-    char l[180];
-    sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
-                 " (record #%d)", dti, (unsigned)body, P.pawnRecordIdx);
+    char l[220];
+    if (!strcmp(dti, "uCmc")) {
+        sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
+                     " (record #%d via %s)", dti, (unsigned)body,
+                  P.pawnRecordIdx, P.pawnRecordMatch);
+    } else if (PartyIsRecordBackedArisen(P)) {
+        sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
+                     " (fixed slot Arisen via player-record-pointer)",
+                  dti, (unsigned)body);
+    } else {
+        sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
+                     " (unresolved: no player-record-pointer)",
+                  dti, (unsigned)body);
+    }
     logFile << l << std::endl;
 }
 
@@ -982,6 +1282,9 @@ void PartyPositionsTick()
             if (g_nParty > 0) PartyReadPositions();
             return;
         }
+        // Дешёвый exact-identity retry идёт до чтения ролей/позиций: если
+        // временная HP-неоднозначность исчезла, уже этот тик увидит MainPawn.
+        PartyRetryUnresolvedPawnIdentity();
         PartyReadPositions(); // тела валидны — читаем (даже если неполный набор)
 
         // СОСТАВ СВЕРЯЕМ С ЗАПИСЯМИ, А НЕ СО СПИСКОМ АКТЁРОВ.
@@ -1108,7 +1411,9 @@ void PartyCapture(bool forceFind)
                 << std::dec << " children=" << g_party[i].nChild
                 << " knownValueHits=" << g_party[i].nValueHit
                 << " pawnIntel=" << (g_party[i].hasPawnIntel ? 1 : 0)
-                << " pawnMgr=" << (g_party[i].pawnManagerRef ? 1 : 0) << std::endl;
+                << " pawnMgr=" << (g_party[i].pawnManagerRef ? 1 : 0)
+                << " record=" << g_party[i].pawnRecordIdx
+                << " identity=" << g_party[i].pawnRecordMatch << std::endl;
     }
     // Build 40 snapshots the upper AI graph on demand. The old dense CSV
     // remains available via '-' but is no longer started automatically.
@@ -1141,24 +1446,20 @@ bool GetArisenWorldPos(float* x, float* y, float* z)
     return true;
 }
 
-// СНАЧАЛА ПО DTI, ПОТОМ ПО РОЛИ.
-//
-// Роль присваивается позже самого разбора, и в логе тестера видно окно,
-// где тела уже найдены, а роли ещё пустые:
-//
-//     [0] role='' dti='uPlayer' body=0x10d60060
-//     [1] role='' dti='uCmc'    body=0x10d65ac0
-//
-// Поиск по роли в этот момент возвращал ноль, панель писала «pawn
-// unresolved», а следующее нажатие приходилось уже на другое состояние.
-// Имя класса от игры доступно сразу и не зависит от нашего этапа разбора.
+// Arisen имеет отдельный DTI uPlayer, но DTI не является identity: live-list
+// может одновременно показать несколько class-valid candidates/subobjects.
+// Exact4 принимает только одного claimant, чьё инспектированное тело/child graph
+// содержит точный fixed player record. Zero/multiple claims fail closed.
 uintptr_t ArisenBody()
 {
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].dti, "uPlayer")) return g_party[i].ptr;
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].role, "Arisen")) return g_party[i].ptr;
-    return 0;
+    uintptr_t body = 0;
+    int hits = 0;
+    for (int i = 0; i < g_nParty; ++i) {
+        if (!PartyIsRecordBackedArisen(g_party[i])) continue;
+        body = g_party[i].ptr;
+        ++hits;
+    }
+    return hits == 1 ? body : 0;
 }
 
 // ГЛАВНАЯ ПЕШКА ОПОЗНАЁТСЯ ПО ЗАПИСИ ПЕРСОНАЖА, А НЕ ПО ПОРЯДКУ В ПАМЯТИ.
@@ -1166,80 +1467,45 @@ uintptr_t ArisenBody()
 // Раньше здесь стояло «первое тело класса uCmc». Пока пешка одна, это
 // верно всегда. Наёмные пешки — тоже `uCmc`, и порядок обхода памяти
 // решал бы, кого мы считаем своей: ускорение, доктрина и все замеры
-// молча уехали бы на чужую пешку.
-//
-// Надёжный признак у нас уже собирается: тело главной пешки ссылается на
-// её запись персонажа (`Arisen record + 0x7F0`, SOURCE_OF_TRUTH §1) —
-// поле `mainPawnRecordRef`. Порядок предпочтений:
-//   1. тело с признаком записи главной пешки;
-//   2. тело с уже присвоенной ролью «Main Pawn»;
-//   3. единственный `uCmc` в партии (наёмных нет — двусмысленности нет);
-//   4. первый `uCmc` + ПРЕДУПРЕЖДЕНИЕ в лог: дальше числа могут врать.
+// молча уехали бы на чужую пешку. Build 007 разрешает MainPawn только как
+// единственное тело, доказанно связанное с fixed pawn record #0.
 uintptr_t MainPawnBody()
 {
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].dti, "uCmc") && g_party[i].mainPawnRecordRef)
-            return g_party[i].ptr;
-
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].role, "Main Pawn")) return g_party[i].ptr;
-
-    int nCmc = 0, first = -1;
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].dti, "uCmc")) { ++nCmc; if (first < 0) first = i; }
-    if (first < 0) return 0;
-    if (nCmc == 1) return g_party[first].ptr;
-
-    static int s_warned = 0;
-    if (s_warned < 3) {
-        ++s_warned;
-        char l[200];
-        sprintf_s(l, "PartyRecon: %d uCmc bodies and none carries the main-pawn"
-                     " record - falling back to the first one (0x%08X). Numbers"
-                     " taken from it may belong to a hired pawn.",
-                  nCmc, (unsigned)g_party[first].ptr);
-        logFile << l << std::endl;
-    }
-    return g_party[first].ptr;
+    uintptr_t body = 0;
+    PartyRecordInfo(0, 0, 0, &body); // also enforces exactly one claimant
+    return body;
 }
 
 // --- наёмные пешки: перечисление (read-only) --------------------------------
 //
-// Продукту они пока не нужны, но замер по ним нужен уже сейчас: пока мы не
-// знаем, общий ли у пешек ресурс приоритетов, нельзя ответить на вопрос
-// «наши правки весов действуют на чужих пешек или нет».
+// Общие pawn-модули обходят этот компактный список только как множество.
+// Модуль, которому нужен конкретный fixed record, обязан вызывать
+// PartyRecordInfo(): ordinal ниже может сжаться, если один slot unresolved.
 int PawnBodyCount()
 {
     int n = 0;
-    for (int i = 0; i < g_nParty; ++i)
-        if (!strcmp(g_party[i].dti, "uCmc")) ++n;
+    for (int rec = 0; rec <= 2; ++rec) {
+        uintptr_t body = 0;
+        PartyRecordInfo(rec, 0, 0, &body);
+        if (body) ++n;
+    }
     return n;
 }
 
 uintptr_t PawnBodyAt(int idx, bool* isMainOut)
 {
     if (isMainOut) *isMainOut = false;
-    // Порядок стабильный: сначала своя пешка (запись 0), затем наёмные по
-    // номеру записи. Порядок обхода памяти для этого не годится — он
-    // меняется от запуска к запуску.
+    // Порядок fixed records стабилен; каждый record возвращается только при
+    // единственном claimant. Дубликаты и unresolved тела не превращаются в
+    // identity через порядок перечисления.
     int seen = 0;
     for (int rec = 0; rec <= 2; ++rec) {
-        for (int i = 0; i < g_nParty; ++i) {
-            if (strcmp(g_party[i].dti, "uCmc")) continue;
-            if (g_party[i].pawnRecordIdx != rec) continue;
-            if (seen++ != idx) continue;
-            if (isMainOut) *isMainOut = (rec == 0);
-            return g_party[i].ptr;
-        }
-    }
-    // Тела без опознанной записи — в конец, чтобы не потерялись совсем.
-    for (int i = 0; i < g_nParty; ++i) {
-        if (strcmp(g_party[i].dti, "uCmc")) continue;
-        if (g_party[i].pawnRecordIdx >= 0) continue;
+        uintptr_t body = 0;
+        PartyRecordInfo(rec, 0, 0, &body);
+        if (!body) continue;
         if (seen++ != idx) continue;
-        if (isMainOut) *isMainOut = g_party[i].mainPawnRecordRef
-                                 || !strcmp(g_party[i].role, "Main Pawn");
-        return g_party[i].ptr;
+        if (isMainOut) *isMainOut = (rec == 0);
+        return body;
     }
     return 0;
 }

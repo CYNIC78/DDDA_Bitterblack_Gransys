@@ -31,6 +31,14 @@ static char  s_bandNm[12][40];
 static int   s_nBand = 0;
 static char s_why[96] = "off";
 
+// Build 008 bounded logging: ephemeral cCmc action objects may force many
+// legitimate re-applies. Keep counters, but print only the first proof and
+// the first waiting state; the footer preserves the session totals.
+static bool     s_firstApplyLogged = false;
+static bool     s_firstWaitLogged = false;
+static uint32_t s_applyEvents = 0;
+static uint32_t s_waitRetries = 0;
+
 struct Patch {
     uintptr_t addr;
     float     was;
@@ -246,6 +254,10 @@ void Restore(const char* why)
 void Init()
 {
     s_enabled = config.getBool("errata", "wandRange", false);
+    s_firstApplyLogged = false;
+    s_firstWaitLogged = false;
+    s_applyEvents = 0;
+    s_waitRetries = 0;
     logFile << "WandRange: " << (s_enabled ? "enabled" : "disabled")
             << " (all caster cCmc + Anodyne/Cure/Circle, IceWalk off, 1-10 m -> 15 m)"
             << std::endl;
@@ -312,10 +324,18 @@ void Tick()
     s_applied = n > 0;
 
     if (s_applied) {
+        ++s_applyEvents;
         sprintf_s(s_why, "APPLIED live cCmc %d (seen %d)", n, s_nSeen);
-        logFile << "WandRange: " << s_why << std::endl;
-        LogBands("applied");
-    } else if (nCtrl == 0) {
+        if (!s_firstApplyLogged) {
+            s_firstApplyLogged = true;
+            logFile << "WandRange: first " << s_why << std::endl;
+            LogBands("first applied");
+        }
+        return;
+    }
+
+    ++s_waitRetries;
+    if (nCtrl == 0) {
         lstrcpynA(s_why, "cAICtrl not resolved", sizeof(s_why));
     } else if (nIface == 0) {
         lstrcpynA(s_why, "cAIActionInterfaceCtrl not on cAICtrl", sizeof(s_why));
@@ -323,13 +343,27 @@ void Tick()
         lstrcpynA(s_why, "no cCmc range block yet (draw the staff / enter combat)",
                   sizeof(s_why));
     } else {
-        sprintf_s(s_why, "saw %d cCmc ranges, none patchable (see log)", s_nSeen);
-        logFile << "WandRange: " << s_why << std::endl;
-        LogBands("seen");
+        sprintf_s(s_why, "saw %d cCmc ranges, none patchable", s_nSeen);
+    }
+
+    if (!s_firstWaitLogged) {
+        s_firstWaitLogged = true;
+        logFile << "WandRange: waiting: " << s_why
+                << " (further unchanged retries counted silently)" << std::endl;
+        if (s_nSeen) LogBands("first seen");
     }
 }
 
-void Shutdown() { Restore("shutdown"); }
+void Shutdown()
+{
+    const bool report = s_enabled || s_applyEvents || s_waitRetries;
+    Restore("shutdown");
+    if (report)
+        logFile << "WandRange: shutdown summary applyEvents=" << s_applyEvents
+                << " waitRetries=" << s_waitRetries
+                << " firstApply=" << (s_firstApplyLogged ? 1 : 0)
+                << std::endl;
+}
 
 Status Get()
 {

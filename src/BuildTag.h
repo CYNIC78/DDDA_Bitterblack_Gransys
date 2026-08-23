@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "83.0-focus"
+#define MOD_BUILD_TAG "84.9-pilot012-urgency-mobilization"

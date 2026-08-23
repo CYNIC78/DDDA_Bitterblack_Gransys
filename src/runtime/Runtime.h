@@ -77,8 +77,11 @@ uintptr_t ArisenBody();
 // --- пешки партии целиком (главная + наёмные) -------------------------------
 //
 // Наёмная пешка — тоже тело класса `uCmc`, поэтому «первый uCmc» больше не
-// является определением главной. Здесь перечисление всех, с пометкой, кто
-// свой: главная опознаётся ссылкой на запись персонажа (Arisen + 0x7F0).
+// является определением главной. Здесь компактно перечисляются только тела,
+// которые однозначно связаны с fixed records 0..2, в порядке этих records.
+// Unresolved/duplicate тела исключены; поэтому ordinal `idx` нельзя считать
+// номером record slot. Для адресации конкретного record использовать
+// PartyRecordInfo().
 //
 // Продуктовые модули по-прежнему работают с главной пешкой. Наёмные пешки
 // принадлежат другому игроку: их запись персонажа (вокация, склонности,
@@ -101,6 +104,66 @@ bool      PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut)
 // Имя класса текущего действия существа через DTI (+0x2DC8). Работает и
 // для тел партии: у Аризена там cPlAct*, у пешки — тоже.
 bool ReadLiveAct(uintptr_t body, char* out, int cap);
+
+// --- Узкий read-only combat snapshot партии ------------------------------
+//
+// Поля записи — подтверждённая карта SOURCE_OF_TRUTH/FIELD_MAP. Живое тело
+// и действие прикрепляются только если PartyRecon уверенно связал их с
+// записью. Неизвестная семантика объявлена явно: statusValid/downedValid
+// остаются false до живой валидации. downedHint означает лишь совпадение
+// сырого имени action с исследуемым кандидатом и НИКОГДА не участвует в
+// расчёте цели.
+enum PartyCombatSlot {
+    PARTY_ARISEN = 0,
+    PARTY_MAIN   = 1,
+    PARTY_HIRED1 = 2,
+    PARTY_HIRED2 = 3,
+    PARTY_COMBAT_SLOTS = 4
+};
+
+struct PartyCombatMember {
+    int       slot;              // PartyCombatSlot
+    int       pawnRecordIdx;     // -1 Arisen, иначе 0..2
+    uintptr_t record;
+    uintptr_t body;
+
+    bool      recordValid;
+    bool      hpValid;            // confirmed current/max HP record reads
+    bool      statsValid;         // core STR/DEF/MAG/MDEF reads; not loadout totals
+    bool      skillsValid;
+    bool      bodyValid;
+    bool      positionValid;
+    bool      actionValid;
+
+    int       vocation;
+    int       level;
+    int32_t   equippedSkills[6];
+    float     currentHp;
+    float     maxHp;             // только диагностика; %HP в targeting нет
+    // Подтверждены как CORE stats записи, а не итоговые loadout totals.
+    // Build 002 помечает их CORE/UNVALIDATED и не использует в решении.
+    float     strength;
+    float     defense;
+    float     magick;
+    float     magickDefense;
+    float     x, y, z;
+    char      liveAct[48];
+
+    uint64_t  statusMask;
+    bool      statusValid;
+    bool      downedValid;
+    bool      downedRevivable;
+    bool      downedHint;        // raw action hint; neutral in scoring
+};
+
+struct PartyCombatSnapshot {
+    uint32_t          sampledAtMs;
+    int               recordCount;
+    PartyCombatMember member[PARTY_COMBAT_SLOTS];
+};
+
+bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out);
+const char* PartyCombatSlotName(int slot);
 
 // --- Планировщик пешки: код текущего приоритета (только чтение) ----------
 //

@@ -136,6 +136,9 @@ static const int kMaxTracked = 32;   // столько же, сколько ак
 extern "C" {
     TempoEntry g_tempoTable[kMaxTracked] = {};
     int        g_tempoCount = 0;      // 0 = хукам делать нечего
+    // Враги всегда идут префиксом. Голый хук сравнивает адрес строки с
+    // этой границей и не считает тела пешек из слоя переопределений.
+    uintptr_t  g_tempoEnemyEnd = 0;
 }
 
 // --- настройки -------------------------------------------------------------
@@ -214,6 +217,28 @@ static const int kMaxOverrides = 16;
 static Override  g_ovr[kMaxOverrides] = {};
 static int       g_nOvr = 0;
 
+// Build 012 keeps Director mobilization separate from generic multiplicative
+// overrides. The envelope interpolates absolute immutable endpoints, so neither
+// PawnHaste nor a transitional live factor can be captured as a new baseline.
+static const int   kMaxDirectorMobilizations = 16;
+static const DWORD kDirectorDecayMs = 1400;
+static const float kWolfRageLocoLo = 1.20f;
+static const float kWolfRageLocoHi = 1.25f;
+static const float kWolfRageAnimLo = 1.20f;
+static const float kWolfRageAnimHi = 1.26f;
+struct DirectorMob {
+    uintptr_t body;
+    float stableLoco, stableAnim;
+    float rageLoco, rageAnim;
+    float level;
+    float urgency;
+    DWORD lastMs;
+    DWORD until;
+    bool holding;
+};
+static DirectorMob g_directorMob[kMaxDirectorMobilizations] = {};
+static int         g_nDirectorMob = 0;
+
 static void OverrideFor(uintptr_t body, float* loco, float* atk)
 {
     *loco = 1.0f; *atk = 1.0f;
@@ -239,6 +264,54 @@ static void OverridesExpire()
     g_nOvr = w;
 }
 
+static void UpdateDirectorMob(DirectorMob& m, DWORD now)
+{
+    if (!m.body) return;
+    if (m.holding) {
+        // Missing controller refresh is unsafe, not ordinary evidence release.
+        if (m.until && (LONG)(now - m.until) >= 0) {
+            memset(&m, 0, sizeof(m));
+            return;
+        }
+        m.level = m.urgency;
+        m.lastMs = now;
+        return;
+    }
+
+    const DWORD elapsed = now - m.lastMs;
+    m.lastMs = now;
+    const float step = (float)elapsed / (float)kDirectorDecayMs;
+    m.level -= step;
+    if (!(m.level > 0.0f)) memset(&m, 0, sizeof(m));
+}
+
+static void DirectorMobilizationsAdvance()
+{
+    const DWORD now = MsNow();
+    int w = 0;
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        UpdateDirectorMob(g_directorMob[i], now);
+        if (!g_directorMob[i].body) continue;
+        if (w != i) g_directorMob[w] = g_directorMob[i];
+        ++w;
+    }
+    for (int i = w; i < g_nDirectorMob; ++i)
+        memset(&g_directorMob[i], 0, sizeof(g_directorMob[i]));
+    g_nDirectorMob = w;
+}
+
+static void DirectorMobilizationFor(uintptr_t body, float* loco, float* atk)
+{
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        const DirectorMob& m = g_directorMob[i];
+        if (m.body != body) continue;
+        const float level = m.level < 0.0f ? 0.0f : (m.level > 1.0f ? 1.0f : m.level);
+        if (loco) *loco = m.stableLoco + (m.rageLoco - m.stableLoco) * level;
+        if (atk)  *atk  = m.stableAnim + (m.rageAnim - m.stableAnim) * level;
+        return;
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Классификация действия: атака или нет.
 //
@@ -248,6 +321,41 @@ static void OverridesExpire()
 struct ActClass { uintptr_t vt; bool isAttack; };
 static ActClass g_actClass[64] = {};
 static int      g_nActClass = 0;
+
+// Диагностическая эвристика НИКОГДА не участвует в классификации. Она лишь
+// решает, стоит ли неизвестное имя показать человеку для пополнения ActMap.
+static bool LooksAttackLikeForDiagnostics(const char* nm)
+{
+    if (!nm || !nm[0]) return false;
+    static const char* kHints[] = {
+        "Attack", "Atk", "Bite", "Claw", "Strike", "Slash", "Thrust",
+        "Punch", "Kick", "Tackle", "Charge", "Shot", "Missile", "Breath",
+        "Throw", "Trample"
+    };
+    for (size_t i = 0; i < sizeof(kHints) / sizeof(kHints[0]); ++i)
+        if (strstr(nm, kHints[i])) return true;
+    return false;
+}
+
+static const int kAttackProofDetailLimit = 12;
+static uintptr_t s_attackProofSeen[64] = {};
+static int       s_nAttackProofSeen = 0;
+static uint32_t  s_attackEntries = 0;
+static uint32_t  s_unknownAttackLike = 0;
+static uint32_t  s_unknownAttackLikeLogged = 0;
+
+static bool FirstProofForAttackEntry(uintptr_t vt)
+{
+    ++s_attackEntries;
+    for (int i = 0; i < s_nAttackProofSeen; ++i)
+        if (s_attackProofSeen[i] == vt) return false;
+    if (s_nAttackProofSeen < 64) s_attackProofSeen[s_nAttackProofSeen++] = vt;
+    if (s_nAttackProofSeen <= kAttackProofDetailLimit) return true;
+    if (s_nAttackProofSeen == kAttackProofDetailLimit + 1)
+        logFile << "Tempo: attack-scope proof detail limit reached; further unique"
+                   " mapped attack classes are counted silently" << std::endl;
+    return false;
+}
 
 static bool ActIsAttackByVt(uintptr_t act, uintptr_t vt)
 {
@@ -262,7 +370,7 @@ static bool ActIsAttackByVt(uintptr_t act, uintptr_t vt)
     if (Mem::NameOfLiveObjectSafe((const void*)act, nm, sizeof(nm)) && nm[0]) {
         // СУДИМ ПО ТАБЛИЦЕ, А НЕ ПО ПОДСТРОКАМ.
         //
-        // В ActMap.Generated.h лежат все 812 действий 35 видов с
+        // В ActMap.Generated.h лежат 873 состояния 36 emId-групп с
         // категориями. Подстроки годились для гоблина и разваливались на
         // остальных: у крупных монстров в именах атак нет слова Attack
         // вовсе (AtkBite, ClawCyclone, Trample), а у магов — MgcMissile.
@@ -271,12 +379,24 @@ static bool ActIsAttackByVt(uintptr_t act, uintptr_t vt)
         const ActMap::Act* a = ActMap::FindByName(nm);
         known = (a != 0);
         isAtk = ActMap::NameIsAttack(nm);
-        if (g_nActClass < 64) {
-            char l[180];
-            sprintf_s(l, "Tempo: act class %s -> %s%s", nm,
-                      isAtk ? "ATTACK" : "other",
-                      known ? "" : " (NOT IN ActMap - treated as non-attack)");
-            logFile << l << std::endl;
+
+        // Известные классы не засоряют лог: фактическое применение к атаке
+        // доказывается отдельной строкой на первом входе в каждый класс.
+        // Неизвестные показываем только если имя похоже на атаку, и всё
+        // равно считаем non-attack: эвристика здесь лишь поисковый фонарь.
+        if (!known && LooksAttackLikeForDiagnostics(nm)) {
+            ++s_unknownAttackLike;
+            if (s_unknownAttackLikeLogged < 8) {
+                ++s_unknownAttackLikeLogged;
+                char l[220];
+                sprintf_s(l, "Tempo: unmapped attack-like action %s; diagnostic only, gameplay=other (#%u)",
+                          nm, (unsigned)s_unknownAttackLike);
+                logFile << l << std::endl;
+            } else if (s_unknownAttackLikeLogged == 8) {
+                ++s_unknownAttackLikeLogged;
+                logFile << "Tempo: unmapped attack-like detail limit reached; further"
+                           " classes are counted silently" << std::endl;
+            }
         }
     }
     if (g_nActClass < 64) {
@@ -287,10 +407,22 @@ static bool ActIsAttackByVt(uintptr_t act, uintptr_t vt)
     return isAtk;
 }
 
-// --- наблюдение за спринтом -------------------------------------------------
-// Кто прошёл через хук спринта последним. Пишется из asm, читается тиком.
+// --- квитанции локомоции и наблюдение за спринтом ---------------------------
+// Голые хуки только обновляют заранее выделенные POD-ячейки. Имена DTI,
+// роли и лог разрешает продуктовый тик — ни CRT, ни логирования в asm нет.
 static volatile uintptr_t g_lastSprintBody = 0;
+static volatile uintptr_t g_lastLocoGeneralEnemyBody = 0;
+static volatile uintptr_t g_lastLocoSprintEnemyBody = 0;
+static volatile uint32_t  g_lastLocoGeneralFactorBits = 0;
+static volatile uint32_t  g_lastLocoSprintFactorBits = 0;
+static volatile uint32_t  g_locoGeneralReceiptSeq = 0;
+static volatile uint32_t  g_locoSprintReceiptSeq = 0;
+static volatile uint32_t  g_locoGeneralEnemyHits = 0;
+static volatile uint32_t  g_locoSprintEnemyHits = 0;
+static bool s_locoGeneralProofLogged = false;
+static bool s_locoSprintProofLogged = false;
 static SprintStats g_sprint = {};
+static void LocomotionProofTick();
 
 // Цена работы: измеряем, а не заявляем.
 static uint32_t g_animLastUs = 0, g_animMaxUs = 0, g_animAvgUs = 0, g_animTicks = 0;
@@ -424,6 +556,7 @@ static float     g_animCoupling = 0.0f;
 
 // Разрешение применять ряд анимации к телам с переопределением (пешки).
 static bool      g_animForOverrides = false;
+static uint32_t  g_animEnrolls = 0;    // новые тела, поставленные на учёт
 static uint32_t  g_animRestores = 0;   // сколько раз снимали переопределение
 
 void SetAnimForOverrides(bool on) { g_animForOverrides = on; }
@@ -479,8 +612,13 @@ static LPBYTE pHkSprint = nullptr, oHkSprint = nullptr;
 static int    g_walkMatches = 0, g_sprintMatches = 0;
 static float  g_minSeen = 1.0f, g_maxSeen = 1.0f;
 
+// Portable builds provide no-op definitions below; declarations here also keep
+// static call-order/link audits independent of the _MSC_VER branch parser.
+static void HMoveWalk();
+static void HMoveSprint();
+
 // ---------------------------------------------------------------------------
-// Хук обычного движения.
+// Хук общей локомоции (dash/track, run и walk).
 //
 // Оригинал: movss xmm6,[esp+30]   (F3 0F 10 74 24 30, 6 байт)
 //   esi           — тело движущейся сущности
@@ -490,6 +628,7 @@ static float  g_minSeen = 1.0f, g_maxSeen = 1.0f;
 // а Z в [esp+68]. Y (вертикаль) НЕ трогаем: это падение и прыжки, там
 // множитель означал бы изменение гравитации.
 // ---------------------------------------------------------------------------
+#ifdef _MSC_VER
 static void __declspec(naked) HMoveWalk()
 {
     __asm
@@ -522,6 +661,18 @@ static void __declspec(naked) HMoveWalk()
         movss xmm1, dword ptr [esp + 0x68]   // Z
         mulss xmm1, xmm0
         movss dword ptr [esp + 0x68], xmm1
+
+        // Путь этой сигнатуры обслуживает общую локомоцию: dash/track,
+        // run и walk. Умножение уже выполнено; ниже — только POD-квитанция
+        // для врага из префикса таблицы, без вызовов и без логирования.
+        cmp  eax, [g_tempoEnemyEnd]
+        jae  walkRestore
+        inc  dword ptr [g_locoGeneralReceiptSeq]
+        mov  edx, [eax + 4]
+        mov  [g_lastLocoGeneralFactorBits], edx
+        mov  [g_lastLocoGeneralEnemyBody], esi
+        inc  dword ptr [g_locoGeneralEnemyHits]
+        inc  dword ptr [g_locoGeneralReceiptSeq]
 
     walkRestore:
         movdqu xmm1, [esp + 0x10]
@@ -573,6 +724,17 @@ static void __declspec(naked) HMoveSprint()
         mulss xmm2, xmm0
         mulss xmm6, xmm0
 
+        // Отдельная, необязательная квитанция sprint-пути. Успех общей
+        // локомоции от неё не зависит: dash/run/walk идут через HMoveWalk.
+        cmp  eax, [g_tempoEnemyEnd]
+        jae  sprintRestore
+        inc  dword ptr [g_locoSprintReceiptSeq]
+        mov  ecx, [eax + 4]
+        mov  [g_lastLocoSprintFactorBits], ecx
+        mov  [g_lastLocoSprintEnemyBody], edi
+        inc  dword ptr [g_locoSprintEnemyHits]
+        inc  dword ptr [g_locoSprintReceiptSeq]
+
     sprintRestore:
         // НАБЛЮДЕНИЕ ЗА СПРИНТОМ.
         //
@@ -592,6 +754,11 @@ static void __declspec(naked) HMoveSprint()
         jmp  oHkSprint
     }
 }
+#else
+// Portable syntax/logic fixtures do not execute game hooks.
+static void HMoveWalk() {}
+static void HMoveSprint() {}
+#endif
 
 // ---------------------------------------------------------------------------
 // Множитель конкретного монстра.
@@ -759,22 +926,22 @@ void AnimTick()
             const uintptr_t act = ActObjectOf(t.body);
             uintptr_t vt = 0;
             if (act) Mem::RdPtr((void*)act, &vt);
-            if (vt != t.actVt) {
+            const bool actionChanged = (vt != t.actVt);
+            if (actionChanged) {
                 t.actVt = vt;
                 t.actIsAttack = ActIsAttackByVt(act, vt);
             }
             if (!t.actIsAttack) factor = 1.0f;   // вне атаки — ваниль
 
-            // Доказательство, а не обещание: первые применения пишем
-            // в лог с именем действия. Если строк нет — гейт не срабатывал,
-            // и разговор про «ускоряет всё» становится проверяемым.
-            static int s_proof = 0;
-            if (t.actIsAttack && s_proof < 12 && factor != 1.0f) {
-                ++s_proof;
+            // Доказательство, а не покадровый спам: одна строка на первый
+            // ФАКТИЧЕСКИЙ вход в каждый отображённый класс атаки. Повторные
+            // кадры и повторные входы в уже доказанный класс только считаются.
+            if (actionChanged && t.actIsAttack && factor != 1.0f
+                    && FirstProofForAttackEntry(vt)) {
                 char nm[48] = {};
                 Mem::NameOfLiveObjectSafe((const void*)act, nm, sizeof(nm));
-                char l[200];
-                sprintf_s(l, "Tempo: attack scope applied 0x%08X %s x%.3f",
+                char l[220];
+                sprintf_s(l, "Tempo: attack scope applied on entry 0x%08X %s x%.3f",
                           (unsigned)t.body, nm[0] ? nm : "?", factor);
                 logFile << l << std::endl;
             }
@@ -814,6 +981,7 @@ void RefreshTable()
     // Ряд анимации живёт отдельно от хуков передвижения: его можно
     // включить и при выключенном [monsterTempo] enabled.
     OverridesExpire();
+    DirectorMobilizationsAdvance();
 
     if (g_animEnabled || g_animForOverrides) {
         AnimTrack fresh[kMaxTracked] = {};
@@ -828,10 +996,12 @@ void RefreshTable()
 
             AnimTrack& t = fresh[m];
             t.body = body;
-            {   // итог = база × переопределение контроллера, затем зажим
+            {   // immutable baseline -> Director envelope -> generic override
                 float ol = 1.0f, oa = 1.0f;
                 OverrideFor(body, &ol, &oa);
-                float f = AnimFactorFor(body) * oa;
+                float f = AnimFactorFor(body);
+                DirectorMobilizationFor(body, 0, &f);
+                f *= oa;
                 if (f < kAnimMin) f = kAnimMin;
                 if (f > kAnimMax) f = kAnimMax;
                 t.factor = f;
@@ -846,8 +1016,10 @@ void RefreshTable()
             // Состояние по этому телу переносим: база и наши записи
             // не должны обнуляться каждые 150 мс, иначе движок и мы
             // будем гонять значение по кругу.
+            bool wasTracked = false;
             for (int k = 0; k < g_animCount; ++k) {
                 if (g_animTrack[k].body != body) continue;
+                wasTracked = true;
                 t.init = g_animTrack[k].init;
                 t.actVt = g_animTrack[k].actVt;
                 t.actIsAttack = g_animTrack[k].actIsAttack;
@@ -857,14 +1029,20 @@ void RefreshTable()
                 }
                 break;
             }
-            if (!t.init) {
-                // Постановка на учёт — событие, которое стоит видеть в логе
-                // с временем: именно её задержка выглядела в игре как
-                // «гоблин внезапно взбесился посреди боя».
-                char l[160];
-                sprintf_s(l, "Tempo: anim enrolled 0x%08X %s factor %.3f (t=%u ms)",
-                          (unsigned)body, t.kind, t.factor, (unsigned)MsNow());
-                logFile << l << std::endl;
+            if (!wasTracked) {
+                // Только реальный вход тела в таблицу, а не каждый refresh до
+                // первого AnimTick. Три примера сохраняют инструментальность.
+                ++g_animEnrolls;
+                if (g_animEnrolls <= 3) {
+                    char l[180];
+                    sprintf_s(l, "Tempo: anim enrolled 0x%08X %s factor %.3f (t=%u ms, #%u)",
+                              (unsigned)body, t.kind, t.factor, (unsigned)MsNow(),
+                              (unsigned)g_animEnrolls);
+                    logFile << l << std::endl;
+                } else if (g_animEnrolls == 4) {
+                    logFile << "Tempo: anim enrollment detail limit reached; further"
+                               " enrollments are counted silently" << std::endl;
+                }
             }
             ++m;
             if (t.factor < alo) alo = t.factor;
@@ -965,17 +1143,17 @@ void RefreshTable()
             // и в этом была вся диагностика: дорожка ставилась и снималась
             // каждые 150 мс, то есть ускорение мигало. Само по себе
             // мигание чинится в слое пешек (гистерезис), а здесь строка
-            // становится счётчиком: первые пять подробно, дальше число.
+            // становится счётчиком: первые два подробно, дальше число.
             ++g_animRestores;
-            if (g_animRestores <= 5) {
+            if (g_animRestores <= 2) {
                 char l[180];
                 sprintf_s(l, "Tempo: anim restored on 0x%08X %s (override ended, #%u)",
                           (unsigned)old.body, old.kind[0] ? old.kind : "?",
                           g_animRestores);
                 logFile << l << std::endl;
-            } else if (g_animRestores == 6) {
-                logFile << "Tempo: anim restore is repeating - further ones are"
-                           " counted silently (see the panel)" << std::endl;
+            } else if (g_animRestores == 3) {
+                logFile << "Tempo: anim restore detail limit reached; further restores"
+                           " are counted silently (see the panel)" << std::endl;
             }
         }
 
@@ -1001,7 +1179,9 @@ void RefreshTable()
 
         float ol = 1.0f, oa = 1.0f;
         OverrideFor(body, &ol, &oa);
-        float f = FactorFor(body) * ol;
+        float f = FactorFor(body);
+        DirectorMobilizationFor(body, &f, 0);
+        f *= ol;
         if (f < kFactorMin) f = kFactorMin;
         if (f > kFactorMax) f = kFactorMax;
         union { float f32; uint32_t u32; } cv;
@@ -1013,6 +1193,10 @@ void RefreshTable()
         if (f < lo) lo = f;
         if (f > hi) hi = f;
     }
+
+    // Граница записывается до добавления пешек/союзников. Хуки продолжают
+    // применять их множители, но квитанции Build 005 считают только врагов.
+    g_tempoEnemyEnd = (uintptr_t)&g_tempoTable[n];
 
     // ТЕЛА ИЗ ПЕРЕОПРЕДЕЛЕНИЙ — даже если это не монстры.
     //
@@ -1049,13 +1233,39 @@ void RefreshTable()
 
 void Init()
 {
-    g_enabled    = config.getBool("monsterTempo", "enabled", false);
-    g_factorLo   = config.getFloat("monsterTempo", "factorMin", 0.85f);
-    g_factorHi   = config.getFloat("monsterTempo", "factorMax", 1.15f);
-    g_hookWalk   = config.getBool("monsterTempo", "hookWalk", true);
-    g_hookSprint = config.getBool("monsterTempo", "hookSprint", true);
+    memset(g_actClass, 0, sizeof(g_actClass));
+    g_nActClass = 0;
+    memset(s_attackProofSeen, 0, sizeof(s_attackProofSeen));
+    s_nAttackProofSeen = 0;
+    s_attackEntries = 0;
+    s_unknownAttackLike = 0;
+    s_unknownAttackLikeLogged = 0;
+    g_animEnrolls = 0;
+    g_animRestores = 0;
+    memset(g_directorMob, 0, sizeof(g_directorMob));
+    g_nDirectorMob = 0;
+    g_tempoCount = 0;
+    g_tempoEnemyEnd = 0;
+    g_lastLocoGeneralEnemyBody = 0;
+    g_lastLocoSprintEnemyBody = 0;
+    g_lastLocoGeneralFactorBits = 0;
+    g_lastLocoSprintFactorBits = 0;
+    g_locoGeneralReceiptSeq = 0;
+    g_locoSprintReceiptSeq = 0;
+    g_locoGeneralEnemyHits = 0;
+    g_locoSprintEnemyHits = 0;
+    s_locoGeneralProofLogged = false;
+    s_locoSprintProofLogged = false;
 
-    g_animEnabled = config.getBool("monsterTempo", "animEnabled", false);
+    // Build 008: the live-accepted profile is also the fresh-install
+    // fallback. Explicit values already present in a user's INI win.
+    g_enabled    = config.getBool("monsterTempo", "enabled", true);
+    g_factorLo   = config.getFloat("monsterTempo", "factorMin", 1.05f);
+    g_factorHi   = config.getFloat("monsterTempo", "factorMax", 1.20f);
+    g_hookWalk   = config.getBool("monsterTempo", "hookWalk", true);
+    g_hookSprint = config.getBool("monsterTempo", "hookSprint", false);
+
+    g_animEnabled = config.getBool("monsterTempo", "animEnabled", true);
     // ПО УМОЛЧАНИЮ — ТОЛЬКО АТАКИ.
     //
     // Множитель воспроизведения глобален для существа, поэтому без этого
@@ -1064,7 +1274,7 @@ void Init()
     // «быстро ходит / медленно бьёт» стало бы невозможно.
     g_animScope   = config.getBool("monsterTempo", "animAttacksOnly", true)
                   ? kScopeAttack : kScopeAll;
-    g_animLo      = config.getFloat("monsterTempo", "animFactorMin", 0.90f);
+    g_animLo      = config.getFloat("monsterTempo", "animFactorMin", 1.05f);
     g_animHi      = config.getFloat("monsterTempo", "animFactorMax", 1.15f);
     if (g_animLo < kAnimMin) g_animLo = kAnimMin;
     if (g_animHi > kAnimMax) g_animHi = kAnimMax;
@@ -1082,13 +1292,16 @@ void Init()
     // «что в поставляемом ini» и «что в ini у тестера» стоила итерации.
     // Больше не гадаем: печатаем то, с чем модуль реально стартовал.
     {
-        char l[220];
+        char l[320];
         sprintf_s(l, "Tempo: effective config: loco %s %.2f..%.2f | anim %s %.2f..%.2f"
-                     " scope=%s coupling=%.2f",
+                     " scope=%s coupling=%.2f | Director uEm0200 rage loco %.2f..%.2f"
+                     " anim %.2f..%.2f decay=%lums",
                   g_enabled ? "on" : "off", g_factorLo, g_factorHi,
                   g_animEnabled ? "on" : "off", g_animLo, g_animHi,
                   (g_animScope == kScopeAttack) ? "ATTACKS-ONLY" : "everything",
-                  g_animCoupling);
+                  g_animCoupling, kWolfRageLocoLo, kWolfRageLocoHi,
+                  kWolfRageAnimLo, kWolfRageAnimHi,
+                  (unsigned long)kDirectorDecayMs);
         logFile << l << std::endl;
     }
 
@@ -1098,13 +1311,15 @@ void Init()
     if (g_factorHi > kFactorMax) g_factorHi = kFactorMax;
     if (g_factorLo > g_factorHi) { const float s = g_factorLo; g_factorLo = g_factorHi; g_factorHi = s; }
 
-    // Хуки передвижения нужны не только монстрам. Слой пешек ускоряет
-    // пешку тем же примитивом (docs/PAWN_SPRINT_RECON.md, вариант В),
-    // поэтому ставим их, если этого хочет ЛЮБОЙ потребитель.
-    const bool wantHooks = g_enabled
-                         || config.getBool("pawnHaste", "enabled", false);
+    // Build 008: install every configured movement path independently of
+    // the current consumer state. With no table entries the hook is a cheap,
+    // harmless no-op; keeping it installed is what makes the F12 movement
+    // switch reliable after a restart whose persisted setting began OFF.
+    // Ordinary enemies still enter the table only while g_enabled is true;
+    // PawnHaste and Director-owned overrides retain independent ownership.
+    const bool wantHooks = g_hookWalk || g_hookSprint;
     if (!wantHooks) {
-        logFile << "MonsterTempo: disabled" << std::endl;
+        logFile << "MonsterTempo: movement hooks disabled by config" << std::endl;
         return;
     }
 
@@ -1116,7 +1331,7 @@ void Init()
 
     BYTE* siteSprint = ResolveSite("sprint", sigSprint, sizeof(sigSprint),
                                    false, &g_sprintMatches);
-    BYTE* siteWalk   = ResolveSite("walk", sigWalk, sizeof(sigWalk),
+    BYTE* siteWalk   = ResolveSite("general locomotion", sigWalk, sizeof(sigWalk),
                                    true, &g_walkMatches);
 
     if (g_hookWalk && siteWalk) {
@@ -1131,8 +1346,10 @@ void Init()
     }
 
     logFile << "MonsterTempo: range " << g_factorLo << ".." << g_factorHi
-            << " walk=" << (pHkWalk ? 1 : 0) << "/" << g_walkMatches << " matches"
-            << " sprint=" << (pHkSprint ? 1 : 0) << "/" << g_sprintMatches << " matches"
+            << " general(dash/run/walk)=" << (pHkWalk ? 1 : 0)
+            << "/" << g_walkMatches << " matches"
+            << " sprint(optional)=" << (pHkSprint ? 1 : 0)
+            << "/" << g_sprintMatches << " matches"
             << std::endl;
 
     // ПРИБОР ВРАЛ, И ЭТО ВИДНО В ЛОГЕ 73.27.
@@ -1151,9 +1368,9 @@ void Init()
     // Отключённый в ini хук — не авария, поэтому жалуемся только на то,
     // что хотели поставить и не смогли.
     if ((g_hookWalk && !pHkWalk) || (g_hookSprint && !pHkSprint)) {
-        logFile << "MonsterTempo: wanted hook NOT installed (walk "
+        logFile << "MonsterTempo: wanted hook NOT installed (general locomotion "
                 << (g_hookWalk ? (pHkWalk ? "ok" : "FAILED") : "off")
-                << ", sprint "
+                << ", optional sprint "
                 << (g_hookSprint ? (pHkSprint ? "ok" : "FAILED") : "off")
                 << ") - that part runs vanilla." << std::endl;
     }
@@ -1161,11 +1378,44 @@ void Init()
 
 void Shutdown()
 {
+    DumpLocomotionDiagnostics("shutdown");
+
+    // Один итог вместо повторяющихся строк в бою. Proof classes считаются
+    // только на переходах в mapped attack при реально неванильном factor.
+    if (s_attackEntries || s_unknownAttackLike || g_animEnrolls || g_animRestores) {
+        char l[260];
+        const uint32_t unknownDetails = s_unknownAttackLikeLogged > 8
+                                      ? 8 : s_unknownAttackLikeLogged;
+        sprintf_s(l, "Tempo: diagnostics summary attackEntries=%u proofClasses=%d"
+                     " unknownAttackLike=%u(details=%u) animEnrolls=%u animRestores=%u",
+                  (unsigned)s_attackEntries, s_nAttackProofSeen,
+                  (unsigned)s_unknownAttackLike, (unsigned)unknownDetails,
+                  (unsigned)g_animEnrolls, (unsigned)g_animRestores);
+        logFile << l << std::endl;
+    }
+
     // Снимаем множители до отцепления хуков: если кто-то из монстров
-    // движется прямо сейчас, он доедет с ванильной скоростью.
+    // движется прямо сейчас, он доедет со своей стабильной мутацией.
+    HardResetAllDirectorMobilization();
     g_tempoCount = 0;
     if (pHkWalk)   Hooks::SwitchHook("TempoWalk", pHkWalk, false);
     if (pHkSprint) Hooks::SwitchHook("TempoSprint", pHkSprint, false);
+}
+
+void SetEnabled(bool on)
+{
+    if (g_enabled == on) return;
+    g_enabled = on;
+    if (!on) HardResetAllDirectorMobilization();
+
+    // Refresh immediately: OFF removes only ordinary global-enrolment rows.
+    // Independently owned PawnHaste/Director overrides are rebuilt below by
+    // RefreshTable and therefore are neither stolen nor cleared here.
+    RefreshTable();
+
+    logFile << "Tempo: movement " << (on ? "enabled" : "disabled")
+            << " live; generalHook=" << (pHkWalk ? 1 : 0)
+            << " tracked=" << g_tempoCount << std::endl;
 }
 
 void SetRange(float lo, float hi)
@@ -1207,6 +1457,153 @@ Status GetStatus()
     return s;
 }
 
+DirectorReadiness GetDirectorReadiness()
+{
+    DirectorReadiness r;
+    r.movementEnabled = g_enabled;
+    r.generalHookInstalled = pHkWalk != nullptr;
+    r.animationEnabled = g_animEnabled;
+    r.attacksOnly = (g_animScope == kScopeAttack);
+    return r;
+}
+
+bool DirectorReady(const char** reasonOut)
+{
+    const DirectorReadiness r = GetDirectorReadiness();
+    const char* reason = "ready";
+    if (!r.movementEnabled) reason = "tempo-movement-disabled";
+    else if (!r.generalHookInstalled) reason = "tempo-general-hook-missing";
+    else if (!r.animationEnabled) reason = "tempo-animation-disabled";
+    else if (!r.attacksOnly) reason = "tempo-animation-scope-not-attacks-only";
+    if (reasonOut) *reasonOut = reason;
+    return reason[0] == 'r';
+}
+
+static void FillDirectorReceipt(const DirectorMob& m,
+                                DirectorMobilizationReceipt* receipt)
+{
+    if (!receipt) return;
+    memset(receipt, 0, sizeof(*receipt));
+    receipt->body = m.body;
+    receipt->urgency = m.urgency;
+    receipt->level = m.level;
+    receipt->stableLoco = m.stableLoco;
+    receipt->stableAnim = m.stableAnim;
+    receipt->rageLoco = m.rageLoco;
+    receipt->rageAnim = m.rageAnim;
+    receipt->effectiveLoco = m.stableLoco
+                           + (m.rageLoco - m.stableLoco) * m.level;
+    receipt->effectiveAnim = m.stableAnim
+                           + (m.rageAnim - m.stableAnim) * m.level;
+    receipt->holding = m.holding;
+    receipt->decaying = !m.holding && m.level > 0.0f;
+}
+
+bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
+                               float urgency, uint32_t ttlMs,
+                               DirectorMobilizationReceipt* receipt,
+                               const char** reasonOut)
+{
+    if (receipt) memset(receipt, 0, sizeof(*receipt));
+    const char* reason = "director-mobilization-ready";
+    if (!body) reason = "director-mobilization-body-invalid";
+    else if (!exactKind || strcmp(exactKind, "uEm0200"))
+        reason = "director-mobilization-species-unvalidated";
+    else if (!(urgency == urgency) || urgency < 0.0f || urgency > 1.0f)
+        reason = "director-mobilization-urgency-invalid";
+    else if (!ttlMs)
+        reason = "director-mobilization-ttl-required";
+    if (reason[0] != 'd' || strcmp(reason, "director-mobilization-ready")) {
+        if (reasonOut) *reasonOut = reason;
+        return false;
+    }
+
+    DirectorMobilizationsAdvance();
+    const DWORD now = MsNow();
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        DirectorMob& m = g_directorMob[i];
+        if (m.body != body) continue;
+        if (urgency > m.level) m.level = urgency;
+        if (urgency > m.urgency) m.urgency = urgency;
+        m.holding = true;
+        m.lastMs = now;
+        m.until = now + ttlMs;
+        FillDirectorReceipt(m, receipt);
+        if (reasonOut) *reasonOut = reason;
+        return true;
+    }
+
+    if (g_nDirectorMob >= kMaxDirectorMobilizations) {
+        if (reasonOut) *reasonOut = "director-mobilization-table-full";
+        return false;
+    }
+
+    DirectorMob fresh;
+    memset(&fresh, 0, sizeof(fresh));
+    fresh.body = body;
+    fresh.stableLoco = FactorFor(body);
+    fresh.stableAnim = AnimFactorFor(body);
+    fresh.rageLoco = kWolfRageLocoLo
+                   + (kWolfRageLocoHi - kWolfRageLocoLo)
+                     * HashUnit(body, kSaltLoco);
+    fresh.rageAnim = kWolfRageAnimLo
+                   + (kWolfRageAnimHi - kWolfRageAnimLo)
+                     * HashUnit(body, kSaltAtk);
+    // A configured baseline above the validated first profile must not be
+    // silently slowed, clamped into a false endpoint, or used to ratchet it.
+    if (!(fresh.rageLoco > fresh.stableLoco)
+        || !(fresh.rageAnim > fresh.stableAnim)) {
+        if (reasonOut) *reasonOut = "director-mobilization-baseline-outside-profile";
+        return false;
+    }
+    fresh.level = urgency;              // emergency command rises immediately
+    fresh.urgency = urgency;
+    fresh.lastMs = now;
+    fresh.until = now + ttlMs;
+    fresh.holding = true;
+    g_directorMob[g_nDirectorMob++] = fresh;
+    FillDirectorReceipt(fresh, receipt);
+    if (reasonOut) *reasonOut = reason;
+    return true;
+}
+
+void ReleaseDirectorMobilization(uintptr_t body)
+{
+    if (!body) return;
+    DirectorMobilizationsAdvance();
+    const DWORD now = MsNow();
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        DirectorMob& m = g_directorMob[i];
+        if (m.body != body) continue;
+        m.holding = false;
+        m.until = 0;
+        m.lastMs = now;
+        return;
+    }
+}
+
+void HardResetDirectorMobilization(uintptr_t body)
+{
+    if (!body) return;
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        if (g_directorMob[i].body != body) continue;
+        for (int k = i + 1; k < g_nDirectorMob; ++k)
+            g_directorMob[k - 1] = g_directorMob[k];
+        --g_nDirectorMob;
+        memset(&g_directorMob[g_nDirectorMob], 0,
+               sizeof(g_directorMob[g_nDirectorMob]));
+        return;
+    }
+}
+
+void HardResetAllDirectorMobilization()
+{
+    memset(g_directorMob, 0, sizeof(g_directorMob));
+    g_nDirectorMob = 0;
+}
+
+int DirectorMobilizationCount() { return g_nDirectorMob; }
+
 void SetAnimRange(float lo, float hi)
 {
     if (lo > hi) { const float t = lo; lo = hi; hi = t; }
@@ -1227,6 +1624,7 @@ void SetAnimEnabled(bool on)
     if (g_animEnabled == on) return;
     g_animEnabled = on;
     if (!on) {
+        HardResetAllDirectorMobilization();
         // Возвращаем движку его значения, иначе монстры останутся с нашим
         // коэффициентом до перезагрузки карты.
         for (int i = 0; i < g_animCount; ++i) {
@@ -1243,6 +1641,7 @@ bool GetAnimEnabled() { return g_animEnabled; }
 void SetAnimAttacksOnly(bool on)
 {
     if ((g_animScope == kScopeAttack) == on) return;
+    if (!on) HardResetAllDirectorMobilization();
     // При смене области возвращаем движку базу: иначе монстр, пойманный
     // на переходе, останется с нашим коэффициентом вне атаки.
     for (int i = 0; i < g_animCount; ++i) {
@@ -1265,9 +1664,9 @@ void  SetAnimCoupling(float v)
 float GetAnimCoupling() { return g_animCoupling; }
 
 // --- API для контроллера мутаций --------------------------------------------
-void SetOverride(uintptr_t body, float loco, float atk, uint32_t ttlMs)
+bool SetOverride(uintptr_t body, float loco, float atk, uint32_t ttlMs)
 {
-    if (!body) return;
+    if (!body) return false;
     // Санитария: контроллер не должен уметь выйти за пределы системы.
     if (!(loco == loco) || loco < 0.25f || loco > 4.0f) loco = 1.0f;
     if (!(atk  == atk)  || atk  < 0.25f || atk  > 4.0f) atk  = 1.0f;
@@ -1276,14 +1675,15 @@ void SetOverride(uintptr_t body, float loco, float atk, uint32_t ttlMs)
     for (int i = 0; i < g_nOvr; ++i) {
         if (g_ovr[i].body != body) continue;
         g_ovr[i].loco = loco; g_ovr[i].atk = atk; g_ovr[i].until = until;
-        return;
+        return true;
     }
-    if (g_nOvr >= kMaxOverrides) return;
+    if (g_nOvr >= kMaxOverrides) return false;
     g_ovr[g_nOvr].body = body;
     g_ovr[g_nOvr].loco = loco;
     g_ovr[g_nOvr].atk  = atk;
     g_ovr[g_nOvr].until = until;
     ++g_nOvr;
+    return true;
 }
 
 void ClearOverride(uintptr_t body)
@@ -1305,13 +1705,17 @@ bool GetFactors(uintptr_t body, float* loco, float* atk)
     float ol = 1.0f, oa = 1.0f;
     OverrideFor(body, &ol, &oa);
     if (loco) {
-        float f = FactorFor(body) * ol;
+        float f = FactorFor(body);
+        DirectorMobilizationFor(body, &f, 0);
+        f *= ol;
         if (f < kFactorMin) f = kFactorMin;
         if (f > kFactorMax) f = kFactorMax;
         *loco = f;
     }
     if (atk) {
-        float f = AnimFactorFor(body) * oa;
+        float f = AnimFactorFor(body);
+        DirectorMobilizationFor(body, 0, &f);
+        f *= oa;
         if (f < kAnimMin) f = kAnimMin;
         if (f > kAnimMax) f = kAnimMax;
         *atk = f;
@@ -1328,9 +1732,93 @@ void AnimCost(uint32_t* lastUs, uint32_t* avgUs, uint32_t* maxUs)
 
 static void AnimRowWatchTick();   // определение ниже, рядом с самим наблюдателем
 
+static void LogFirstLocomotionProof(const char* path, uintptr_t body,
+                                      uint32_t bits, uint32_t hitCount)
+{
+    const char* kind = "unresolved";
+    const char* act = "-";
+    for (int i = 0; i < g_nAct; ++i) {
+        if (g_act[i].ptr != body) continue;
+        kind = g_act[i].kind[0] ? g_act[i].kind : "?";
+        act = g_act[i].liveAct[0] ? g_act[i].liveAct : "?";
+        break;
+    }
+
+    union { uint32_t u32; float f32; } cv;
+    cv.u32 = bits;
+    char l[320];
+    sprintf_s(l, "Tempo: locomotion applied first path=%s enemyHit=%u body=0x%08X"
+                 " kind=%s tickAct=%s factor=x%.6f bits=0x%08X",
+              path, (unsigned)hitCount, (unsigned)body, kind, act,
+              cv.f32, (unsigned)bits);
+    logFile << l << std::endl;
+}
+
+static bool ReadLocomotionReceipt(volatile uint32_t& seq,
+                                  volatile uintptr_t& bodySlot,
+                                  volatile uint32_t& factorSlot,
+                                  uintptr_t* bodyOut, uint32_t* bitsOut)
+{
+    // Короткий seqlock: не склеиваем body одного применения с factor другого,
+    // если хук попал ровно между двумя чтениями продуктового тика.
+    for (int tries = 0; tries < 4; ++tries) {
+        const uint32_t before = seq;
+        if (before & 1u) continue;
+        const uintptr_t body = bodySlot;
+        const uint32_t bits = factorSlot;
+        const uint32_t after = seq;
+        if (before != after || (after & 1u) || !body) continue;
+        *bodyOut = body;
+        *bitsOut = bits;
+        return true;
+    }
+    return false;
+}
+
+static void LocomotionProofTick()
+{
+    uintptr_t body = 0;
+    uint32_t bits = 0;
+    if (!s_locoGeneralProofLogged &&
+        ReadLocomotionReceipt(g_locoGeneralReceiptSeq,
+                              g_lastLocoGeneralEnemyBody,
+                              g_lastLocoGeneralFactorBits, &body, &bits)) {
+        LogFirstLocomotionProof("GENERAL(dash/run/walk)", body, bits,
+                                  g_locoGeneralEnemyHits);
+        s_locoGeneralProofLogged = true;
+    }
+
+    body = 0; bits = 0;
+    if (!s_locoSprintProofLogged &&
+        ReadLocomotionReceipt(g_locoSprintReceiptSeq,
+                              g_lastLocoSprintEnemyBody,
+                              g_lastLocoSprintFactorBits, &body, &bits)) {
+        LogFirstLocomotionProof("SPRINT(optional)", body, bits,
+                                  g_locoSprintEnemyHits);
+        s_locoSprintProofLogged = true;
+    }
+}
+
+void DumpLocomotionDiagnostics(const char* reason)
+{
+    // Manual/shutdown summary first drains a receipt that may have arrived
+    // after the latest normal product tick.
+    LocomotionProofTick();
+    char l[240];
+    sprintf_s(l, "Tempo: locomotion summary reason=%s generalEnemyHits=%u"
+                 " sprintEnemyHits=%u firstGeneral=%d firstSprint=%d",
+              (reason && reason[0]) ? reason : "manual",
+              (unsigned)g_locoGeneralEnemyHits,
+              (unsigned)g_locoSprintEnemyHits,
+              s_locoGeneralProofLogged ? 1 : 0,
+              s_locoSprintProofLogged ? 1 : 0);
+    logFile << l << std::endl;
+}
+
 void SprintWatchTick()
 {
     AnimRowWatchTick();   // наблюдение за рядом идёт от того же общего тика
+    LocomotionProofTick();
 
     const uintptr_t b = g_lastSprintBody;
     if (!b) return;

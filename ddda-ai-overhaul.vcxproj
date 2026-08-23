@@ -150,6 +150,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\devtools\AnimProbe.cpp" />
     <ClCompile Include="src\devtools\GoapProbe.cpp" />
     <ClCompile Include="src\monsterai\MonsterDirector.cpp" />
+    <ClCompile Include="src\monsterai\TacticalCues.cpp" />
     <ClCompile Include="src\pawnai\PawnHaste.cpp" />
     <ClCompile Include="src\pawnai\VocationCordon.cpp" />
     <ClCompile Include="src\pawnai\DashWatch.cpp" />
@@ -197,6 +198,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\devtools\AnimProbe.h" />
     <ClInclude Include="src\devtools\GoapProbe.h" />
     <ClInclude Include="src\monsterai\MonsterDirector.h" />
+    <ClInclude Include="src\monsterai\TacticalCues.h" />
     <ClInclude Include="src\pawnai\PawnHaste.h" />
     <ClInclude Include="src\pawnai\VocationCordon.h" />
     <ClInclude Include="src\pawnai\DashWatch.h" />

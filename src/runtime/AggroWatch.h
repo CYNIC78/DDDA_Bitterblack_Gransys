@@ -2,7 +2,9 @@
 /**
  * Runtime::Aggro — прибор «на кого смотрит пачка».
  *
- * ЧИТАЕТ. НЕ ПИШЕТ НИКОГДА. Это этап 1 по docs/AGGRO_RECON.md.
+ * Observer path reads only. Historical manual PIN/FOCUS research controls
+ * can write, but are gated by explicit [aggro] watch and are never used by
+ * Monster Director's quiet observer demand.
  *
  * ЗАЧЕМ. У режиссёра монстров есть только темп — это физика. Чтобы дать
  * ему тактический рычаг (вектор атаки пачки), надо сначала научиться
@@ -169,6 +171,39 @@ void Tick();
 
 bool Enabled();
 void SetEnabled(bool on);
+
+// Product observer lease. It keeps native target rows current even when the
+// verbose research watch is off. The lease alone remains read-only; the
+// separate explicit Director target lease is below.
+void SetObserverDemand(bool on);
+bool ObserverDemanded();
+
+// Deterministic record-slot -> live-body bridge. Pawn labels come from the
+// confirmed character-record index (0 Main, 1 Hired1, 2 Hired2), never from
+// PawnBodyAt() order. Unresolved means false; callers must not guess.
+bool ResolveMemberBody(int member, uintptr_t* bodyOut);
+// Same bridge with a stable, slot-specific diagnostic string. Returns one of
+// identity-<slot>-exact / record-unavailable / body-unresolved-or-duplicate.
+// This is for automatic Director logs; it performs no writes.
+const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut);
+
+// Product response lease for Monster Director (uEm0200 only). ALERT reapplies
+// only the validated attention pin: free packmates turn their target toward the
+// acting pawn without fake-hit attack pressure. ALARM uses the already tested
+// pin+suppress+fakehit bundle. The caller supplies the exact fixed-slot body;
+// Aggro re-resolves it here and before every write. member < 0 releases. The
+// optional exact restrained body receives no Aggro mutation.
+enum DirectorResponse {
+    DIRECTOR_RESPONSE_NONE = 0,
+    DIRECTOR_RESPONSE_ALERT = 1,
+    DIRECTOR_RESPONSE_ALARM = 2
+};
+bool     DirectorFocusSet(int member, uintptr_t expectedBody,
+                          uintptr_t excludedEnemyBody = 0,
+                          int response = DIRECTOR_RESPONSE_ALARM);
+int      DirectorFocusMember();
+int      DirectorResponseLevel();
+uint32_t DirectorWriteCount();
 
 // Текущее схождение по каждому члену партии (индекс = Member).
 const Converge* ConvergeAt(int member);

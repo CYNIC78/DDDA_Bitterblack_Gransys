@@ -1,6 +1,9 @@
 // Runtime::Aggro — прибор «на кого смотрит пачка». См. AggroWatch.h.
 //
-// Ни одной записи в память игры в этом файле нет и быть не должно.
+// Observer demand itself is read-only. Legacy manual PIN/FOCUS research writes
+// remain gated by [aggro] watch. The Director owns a separate response-aware
+// wolf target lease with exact record-slot/body validation before each mutation;
+// it never treats observer demand as write permission.
 
 #include "stdafx.h"
 #include "AggroWatch.h"
@@ -24,11 +27,14 @@ static const uint32_t kScanBytes    = 0x6800;
 static const uint32_t kChunk        = 0x400;
 static const uint32_t kRediscoverMs = 5000;   // как часто пересматривать тело
 
-static bool  s_enabled = false;
+static bool  s_enabled = false;         // explicit research/watch toggle
+static bool  s_directorObserver = false;// quiet, read-only product demand
+static bool  s_logEvents = false;       // verbose research events are opt-in
 static Row   s_row[kMaxRows];
 static int   s_nRow = 0;
 static char  s_status[192] = "aggro watch: off";
 static DWORD s_lastTick = 0;
+static int   s_lastIdentityMask = -1; // log only fixed-slot availability changes
 
 // Сводная статистика замера — то, ради чего прибор существует. Считаем,
 // сколько тиков каждый член партии продержался целью в подвижных слотах.
@@ -47,7 +53,7 @@ static int       s_convLogged[kMemberSlots];
 // Две особи, у которых найден ростер, ведутся непрерывно: кандидаты в
 // поля карточки + живая дистанция до члена карточки в одной строке.
 // Тело — не индексы строк (ForgetMissing сдвигает их), а адреса.
-static bool      s_cardWatch = true;
+static bool      s_cardWatch = false;
 static uintptr_t s_cardBody[2];
 static int       s_nCard = 0;
 
@@ -85,13 +91,26 @@ static int      s_pinMember = -1;   // Member, -1 = выключен
 static int      s_pinScope  = 0;    // 0 = ближайший волк, 1 = все
 static bool     s_pinSuppress = false; // 81.0: гасить чужие карты до 0
 static bool     s_pinFakehit = false;  // 82.0: пере-заявлять блок B
-static int      s_pinFocus = MEMBER_NONE; // 83.0: член под FOCUS
+static int      s_pinFocus = MEMBER_NONE; // 83.0: член под ручным FOCUS
+
+// Продуктовая response-aware аренда цели для Monster Director. Она не включает
+// research watch и не зависит от порядка тел пешек. Director передаёт ожидаемое
+// тело своей record-slot цели; перед каждой записью мы заново разрешаем тот же
+// слот через PartyRecordInfo и требуем точное равенство.
+static int       s_directorFocus = MEMBER_NONE;
+static uintptr_t s_directorExpectedBody = 0;
+static uintptr_t s_directorExcludedBody = 0;
+static int       s_directorResponse = DIRECTOR_RESPONSE_NONE;
+static uint32_t  s_directorWrites = 0;
+static bool      s_directorIdentityBlockLogged = false;
 static float    s_pinFakehitValue = 150.0f;
 static uint32_t s_pinWrites = 0;
 static uint32_t s_pinSuppWrites = 0;
 static uint32_t s_pinFakehitWrites = 0;
 static uint32_t s_pinRollbacks = 0;
+static uint32_t s_pinUnsafeSkips = 0;
 static uint32_t s_pinLastLog = 0;
+static uint32_t s_pinLastAnomaly = 0;
 static const float kPinValue = 300.0f;   // нативный потолок (линия при 0 м)
 static const float kSuppValue = 0.0f;    // нативное «полностью затухшее»
 
@@ -134,34 +153,95 @@ struct PartyRef {
     int       member;
 };
 
-// Собрать живые тела партии с номерами. Главная пешка отличается от
-// наёмных флагом isMain — «первый uCmc» главной больше не является
-// (HIRED_PAWNS_SCOPE §2).
+// Собрать живые тела партии с ДЕТЕРМИНИРОВАННЫМИ номерами.
+//
+// Старый путь назначал Hired1/Hired2 по порядку PawnBodyAt(). Для ручного
+// прибора это было терпимо, для автоматического Director — нет: перестановка
+// тел могла направить стаю на другую пешку. Теперь каждый pawn member выводится
+// только из подтверждённого character-record index: record 0 = MainPawn,
+// record 1 = Hired1, record 2 = Hired2. Если PartyRecon не связал запись с
+// телом, слот просто отсутствует — никаких догадок по порядку.
 static int CollectParty(PartyRef* out, int cap)
 {
     int n = 0;
     const uintptr_t ar = ArisenBody();
-    if (ar && n < cap) { out[n].body = ar; out[n].member = MEMBER_ARISEN; ++n; }
+    if (ar && n < cap) {
+        out[n].body = ar;
+        out[n].member = MEMBER_ARISEN;
+        ++n;
+    }
 
-    int hired = 0;
-    const int np = PawnBodyCount();
-    for (int i = 0; i < np && n < cap; ++i) {
-        bool isMain = false;
-        const uintptr_t b = PawnBodyAt(i, &isMain);
-        if (!b) continue;
-        int m;
-        if (isMain) {
-            m = MEMBER_MAIN;
-        } else {
-            m = MEMBER_HIRED1 + hired;
-            ++hired;
-            if (m > MEMBER_HIRED2) continue;   // больше двух наёмных не бывает
-        }
-        out[n].body = b;
-        out[n].member = m;
+    for (int recordIdx = 0; recordIdx < 3 && n < cap; ++recordIdx) {
+        uintptr_t body = 0;
+        if (!PartyRecordInfo(recordIdx, 0, 0, &body) || !body) continue;
+        out[n].body = body;
+        out[n].member = MEMBER_MAIN + recordIdx;
         ++n;
     }
     return n;
+}
+
+static const char* MemberIdentityStatus(int member, int state)
+{
+    // state: 0 exact, 1 record unavailable, 2 body unresolved/duplicate.
+    static const char* kStatus[4][3] = {
+        { "identity-Arisen-exact",   "identity-Arisen-record-unavailable",
+          "identity-Arisen-body-unresolved-or-duplicate" },
+        { "identity-MainPawn-exact", "identity-MainPawn-record-unavailable",
+          "identity-MainPawn-body-unresolved-or-duplicate" },
+        { "identity-Hired1-exact",   "identity-Hired1-record-unavailable",
+          "identity-Hired1-body-unresolved-or-duplicate" },
+        { "identity-Hired2-exact",   "identity-Hired2-record-unavailable",
+          "identity-Hired2-body-unresolved-or-duplicate" }
+    };
+    if (member < MEMBER_ARISEN || member > MEMBER_HIRED2)
+        return "identity-invalid-slot";
+    if (state < 0 || state > 2) state = 2;
+    return kStatus[member][state];
+}
+
+const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut)
+{
+    if (bodyOut) *bodyOut = 0;
+    if (member < MEMBER_ARISEN || member > MEMBER_HIRED2)
+        return "identity-invalid-slot";
+
+    uintptr_t body = 0;
+    if (member == MEMBER_ARISEN) {
+        body = ArisenBody();
+        if (!body) return MemberIdentityStatus(member, 2);
+    } else {
+        const int recordIdx = member - MEMBER_MAIN;
+        if (!PartyRecordInfo(recordIdx, 0, 0, &body))
+            return MemberIdentityStatus(member, 1);
+        // PartyRecordInfo returns a body only for exactly one claimant.
+        if (!body) return MemberIdentityStatus(member, 2);
+    }
+    if (bodyOut) *bodyOut = body;
+    return MemberIdentityStatus(member, 0);
+}
+
+bool ResolveMemberBody(int member, uintptr_t* bodyOut)
+{
+    const char* status = ResolveMemberBodyStatus(member, bodyOut);
+    return status && strstr(status, "-exact") != 0;
+}
+
+static void LogIdentityAvailabilityIfChanged()
+{
+    int mask = 0;
+    for (int member = MEMBER_ARISEN; member <= MEMBER_HIRED2; ++member) {
+        uintptr_t body = 0;
+        if (ResolveMemberBody(member, &body) && body) mask |= 1 << member;
+    }
+    if (mask == s_lastIdentityMask) return;
+    s_lastIdentityMask = mask;
+    logFile << "Aggro: fixed-slot identity availability"
+            << " Arisen=" << ((mask & (1 << MEMBER_ARISEN)) ? "exact" : "unresolved")
+            << " MainPawn=" << ((mask & (1 << MEMBER_MAIN)) ? "exact" : "unresolved")
+            << " Hired1=" << ((mask & (1 << MEMBER_HIRED1)) ? "exact" : "unresolved")
+            << " Hired2=" << ((mask & (1 << MEMBER_HIRED2)) ? "exact" : "unresolved")
+            << std::endl;
 }
 
 const char* MemberName(int member)
@@ -430,25 +510,42 @@ static void CardWatchRow(Row& R, const PartyRef* party, int nParty, DWORD now)
 // по проверенному имени/форме, а не по совпадению смещения).
 static bool IsPinnableKind(const char* kind)
 {
-    return kind && strncmp(kind, "uEm0200", 7) == 0;
+    // The card layout is admitted for this exact live DTI species only.
+    // Prefix matching could silently write an unverified subtype/layout.
+    return kind && strcmp(kind, "uEm0200") == 0;
 }
 
-// Аномалии не лопатим в лог: одна строка за 2 с, без записей.
+// Genuine unsafe-write evidence stays automatic, but repeated instances are
+// represented by the bounded summary rather than one line every two seconds.
 static void PinAnomaly(uintptr_t body, const char* what)
 {
-    static DWORD s_last = 0;
+    ++s_pinUnsafeSkips;
     const DWORD now = GetTickCount();
-    if (now - s_last < 2000) return;
-    s_last = now;
+    if (s_pinLastAnomaly && now - s_pinLastAnomaly < 10000) return;
+    s_pinLastAnomaly = now;
     logFile << "Aggro: PIN anomaly @" << std::hex << body << std::dec
             << "  " << what << "  (skipped, no write)" << std::endl;
+}
+
+static bool DirectorIdentityExactNow()
+{
+    if (s_directorFocus < 0 || !s_directorExpectedBody) return false;
+    uintptr_t resolved = 0;
+    return ResolveMemberBody(s_directorFocus, &resolved)
+        && resolved == s_directorExpectedBody;
 }
 
 // Одна карта: форма -> диапазон -> запись -> readback -> откат.
 // want = kPinValue (300, штырь) или kSuppValue (0, подавление, 81.0).
 // who — фактический владелец карты (по пере-читанному указателю).
-static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now)
+static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now, bool director)
 {
+    // Tick-level validation is not a reusable permission: resolve the fixed
+    // record slot immediately before every Director card mutation.
+    if (director && !DirectorIdentityExactNow()) {
+        DirectorFocusSet(MEMBER_NONE, 0);
+        return -3;
+    }
     const uintptr_t card = R.body + S.off;
 
     // Форма карты перед записью: живая (+0x08=1) и «наша» (+0x0C=4 —
@@ -494,6 +591,12 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now)
         return 2;
     }
     if (want == kPinValue) ++s_pinWrites; else ++s_pinSuppWrites;
+    if (director) ++s_directorWrites;
+
+    // Successful per-card readbacks are research telemetry, not product
+    // evidence. Quiet Director operation keeps transitions and summaries;
+    // [aggro] logEvents=on explicitly restores this detail.
+    if (!s_logEvents) return 0;
 
     // Дельта-лог: одна строка на карточку, и только когда значение
     // ушло дальше полутора единиц от прошлого записанного.
@@ -538,8 +641,12 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now)
 // прилипнуть. Тот же контракт: нативный диапазон -> write -> readback ->
 // откат. Дельта-лог в отдельном «пространстве» PinLog (off | 0x1000000),
 // чтобы не мешать штырю на той же карточке.
-static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now)
+static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, bool director)
 {
+    if (director && !DirectorIdentityExactNow()) {
+        DirectorFocusSet(MEMBER_NONE, 0);
+        return;
+    }
     const uintptr_t card = R.body + S.off;
 
     // Флаг 274: живое целое 0/1.
@@ -592,6 +699,10 @@ static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now)
     }
     if (!wrote) return;
     ++s_pinFakehitWrites;
+    if (director) ++s_directorWrites;
+
+    // Detailed successful card telemetry is opt-in research verbosity.
+    if (!s_logEvents) return;
 
     PinLog* pl = 0;
     const uint32_t fhOff = S.off | 0x1000000u;   // отдельное пространство
@@ -637,6 +748,10 @@ static int        s_nShapeW = 0;
 
 static void PinShapeDump(Row& R, const PartyRef* party, int nParty, DWORD now)
 {
+    // Full card-shape censuses are useful in explicit research sessions but
+    // duplicate the automatic bounded anomaly/unsafe-skip evidence otherwise.
+    if (!s_logEvents) return;
+
     ShapeWatch* sw = 0;
     for (int i = 0; i < s_nShapeW; ++i) {
         if (s_shapeW[i].body != R.body) continue;
@@ -680,11 +795,12 @@ static void PinShapeDump(Row& R, const PartyRef* party, int nParty, DWORD now)
 // на остальных живых картах той же особи. Классификация по ПЕРЕ-ЧИТАННОМУ
 // указателю: ротация кэша между тиками не должна перепутать «чужую»
 // и «свою» карту.
-static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now)
+static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
+                   int targetMember, bool suppress, bool fakehit, bool director)
 {
     uintptr_t mBody = 0;
     for (int p = 0; p < nParty; ++p) {
-        if (party[p].member != s_pinMember) continue;
+        if (party[p].member != targetMember) continue;
         mBody = party[p].body;
         break;
     }
@@ -706,47 +822,59 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now)
         if (actual == MEMBER_NONE) continue;   // мёртвая карта — не трогаем
         const char* who = MemberName(actual);
 
-        if (actual == s_pinMember) {
+        if (actual == targetMember) {
             // Фейк-хит — только если штырь реально прошёл (форма карты
             // валидна, запись и readback ок): на аномальной карте ни
             // один член формулы не трогаем.
-            const int rc = PinWriteCard(R, S, who, kPinValue, now);
+            const int rc = PinWriteCard(R, S, who, kPinValue, now, director);
             if (rc == 0) {
-                if (s_pinFakehit)
-                    PinFakehitCard(R, S, who, now);
+                if (fakehit)
+                    PinFakehitCard(R, S, who, now, director);
             } else {
                 // Запись не прошла — смотрим, что там с формой (5 с троттл).
                 PinShapeDump(R, party, nParty, now);
             }
-        } else if (s_pinSuppress) {
-            const int rc = PinWriteCard(R, S, who, kSuppValue, now);
+        } else if (suppress) {
+            const int rc = PinWriteCard(R, S, who, kSuppValue, now, director);
             if (rc != 0)
                 PinShapeDump(R, party, nParty, now);
         }
     }
 }
 
-static void PinSummary(int nWolves, DWORD now)
+static void PinSummary(int nWolves, DWORD now, int targetMember, int scope,
+                       bool suppress, bool fakehit, bool director)
 {
-    if (now - s_pinLastLog < 5000) return;
+    // First summary is immediate; unchanged leases then report at most once
+    // per ten seconds. Engagement/release transitions are logged elsewhere.
+    if (s_pinLastLog && now - s_pinLastLog < 10000) return;
     s_pinLastLog = now;
     // held: сколько особей ДЕРЖАТ заштыренного в текущей цели прямо сейчас
     // (метрика «прилипло» в лог — глазу больше не приходится гадать).
     int held = 0;
     for (int i = 0; i < s_nRow; ++i) {
         if (!IsPinnableKind(s_row[i].kind)) continue;
-        if (s_row[i].targetMember == s_pinMember) ++held;
+        if (director && s_row[i].body == s_directorExcludedBody) continue;
+        if (s_row[i].targetMember == targetMember) ++held;
     }
-    logFile << "Aggro: PIN " << MemberName(s_pinMember)
-            << " scope=" << (s_pinScope ? "all" : "nearest")
-            << (s_pinSuppress ? " SUPPRESS" : "")
-            << (s_pinFakehit ? " FAKEHIT" : "")
-            << (s_pinFocus >= 0 ? " FOCUS" : "")
-            << "  wolves " << nWolves
-            << "  held " << held
+    logFile << "Aggro: " << (director ? "DIRECTOR" : "PIN") << " "
+            << MemberName(targetMember)
+            << " scope=" << (scope ? "all" : "nearest")
+            << (suppress ? " SUPPRESS" : "")
+            << (fakehit ? " FAKEHIT" : "");
+    if (director)
+        logFile << (s_directorResponse == DIRECTOR_RESPONSE_ALERT
+                    ? " ALERT" : " ALARM");
+    else if (s_pinFocus >= 0)
+        logFile << " FOCUS";
+    logFile << "  wolves " << nWolves;
+    if (director && s_directorExcludedBody)
+        logFile << "  excluded 0x" << std::hex << s_directorExcludedBody << std::dec;
+    logFile << "  held " << held
             << "  writes " << s_pinWrites
             << "  supp " << s_pinSuppWrites
             << "  fakehit " << s_pinFakehitWrites
+            << "  unsafeSkips " << s_pinUnsafeSkips
             << "  rollbacks " << s_pinRollbacks << std::endl;
 }
 
@@ -755,7 +883,16 @@ static void PinSummary(int nWolves, DWORD now)
 void Init()
 {
     s_enabled = config.getBool("aggro", "watch", false);
-    s_cardWatch = config.getBool("aggro", "cardwatch", true);
+    s_cardWatch = config.getBool("aggro", "cardwatch", false);
+    s_logEvents = config.getBool("aggro", "logEvents", false);
+    s_directorObserver = false;
+    s_directorFocus = MEMBER_NONE;
+    s_directorExpectedBody = 0;
+    s_directorExcludedBody = 0;
+    s_directorResponse = DIRECTOR_RESPONSE_NONE;
+    s_directorWrites = 0;
+    s_directorIdentityBlockLogged = false;
+    s_lastIdentityMask = -1;
     // Не const: сигнатура getEnum принимает неконстантный массив
     // (инициализаторы — строковые литералы, указатели в парах const).
     static std::pair<int, LPCSTR> kPinMap[] = {
@@ -784,7 +921,9 @@ void Init()
     s_pinSuppWrites = 0;
     s_pinFakehitWrites = 0;
     s_pinRollbacks = 0;
+    s_pinUnsafeSkips = 0;
     s_pinLastLog = 0;
+    s_pinLastAnomaly = 0;
     s_switchTotal = 0;
     for (int i = 0; i < kMemberSlots; ++i) s_holdTicks[i] = 0;
     memset(s_conv, 0, sizeof(s_conv));
@@ -793,7 +932,7 @@ void Init()
     lstrcpynA(s_status, s_enabled ? "aggro watch: armed" : "aggro watch: off",
               sizeof(s_status));
     logFile << "Aggro: watch " << (s_enabled ? "enabled" : "disabled")
-            << " (read-only instrument, never writes)"
+            << "  event-log " << (s_logEvents ? "on" : "off")
             << "  cardwatch " << (s_cardWatch ? "on" : "off")
             << "  pin " << MemberName(s_pinMember)
             << std::endl;
@@ -801,12 +940,118 @@ void Init()
 
 void Shutdown()
 {
+    // One bounded footer keeps the automatic mutation evidence available
+    // even when successful per-card research lines were intentionally quiet.
+    logFile << "Aggro: shutdown summary directorWrites=" << s_directorWrites
+            << " pin=" << s_pinWrites
+            << " supp=" << s_pinSuppWrites
+            << " fakehit=" << s_pinFakehitWrites
+            << " unsafeSkips=" << s_pinUnsafeSkips
+            << " rollbacks=" << s_pinRollbacks
+            << " targetSwitches=" << s_switchTotal << std::endl;
+
     // Штырь снимается молча: процесс завершается, а поле и так затухнет.
     s_pinMember = MEMBER_NONE;
+    s_directorFocus = MEMBER_NONE;
+    s_directorExpectedBody = 0;
+    s_directorExcludedBody = 0;
+    s_directorResponse = DIRECTOR_RESPONSE_NONE;
     s_nRow = 0;
 }
 
 bool Enabled() { return s_enabled; }
+
+void SetObserverDemand(bool on)
+{
+    if (s_directorObserver == on) return;
+    s_directorObserver = on;
+    if (!on) DirectorFocusSet(MEMBER_NONE, 0);
+    if (!s_enabled) {
+        s_nRow = 0;
+        s_nCard = 0;
+        s_switchTotal = 0;
+        for (int i = 0; i < kMemberSlots; ++i) s_holdTicks[i] = 0;
+        memset(s_conv, 0, sizeof(s_conv));
+        memset(s_convLogged, 0, sizeof(s_convLogged));
+        for (int i = 0; i < kMemberSlots; ++i) s_conv[i].member = i;
+        lstrcpynA(s_status, on ? "aggro observer: Director read-only"
+                              : "aggro watch: off", sizeof(s_status));
+    }
+}
+
+bool ObserverDemanded() { return s_directorObserver; }
+
+bool DirectorFocusSet(int member, uintptr_t expectedBody,
+                      uintptr_t excludedEnemyBody, int response)
+{
+    if (member < 0) {
+        if (s_directorFocus >= 0)
+            logFile << "Aggro: DIRECTOR "
+                    << (s_directorResponse == DIRECTOR_RESPONSE_ALERT
+                        ? "ALERT" : "ALARM")
+                    << " released: " << MemberName(s_directorFocus)
+                    << "  (native decay takes over)" << std::endl;
+        s_directorFocus = MEMBER_NONE;
+        s_directorExpectedBody = 0;
+        s_directorExcludedBody = 0;
+        s_directorResponse = DIRECTOR_RESPONSE_NONE;
+        s_directorIdentityBlockLogged = false;
+        return true;
+    }
+    if (member > MEMBER_HIRED2 || !expectedBody
+        || (response != DIRECTOR_RESPONSE_ALERT
+            && response != DIRECTOR_RESPONSE_ALARM))
+        return false;
+
+    uintptr_t resolved = 0;
+    if (!ResolveMemberBody(member, &resolved) || resolved != expectedBody) {
+        if (!s_directorIdentityBlockLogged) {
+            logFile << "Aggro: DIRECTOR response blocked: slot="
+                    << MemberName(member)
+                    << " expected=0x" << std::hex << expectedBody
+                    << " resolved=0x" << resolved << std::dec
+                    << " identity=AMBIGUOUS no-write" << std::endl;
+            s_directorIdentityBlockLogged = true;
+        }
+        s_directorFocus = MEMBER_NONE;
+        s_directorExpectedBody = 0;
+        s_directorExcludedBody = 0;
+        s_directorResponse = DIRECTOR_RESPONSE_NONE;
+        return false;
+    }
+
+    if (s_directorFocus != member || s_directorExpectedBody != expectedBody
+        || s_directorExcludedBody != excludedEnemyBody
+        || s_directorResponse != response) {
+        // Product response owns the actuator exclusively. Do not let an old
+        // research PIN silently resume when the Director later releases.
+        s_pinMember = MEMBER_NONE;
+        s_pinFocus = MEMBER_NONE;
+        s_pinSuppress = false;
+        s_pinFakehit = false;
+        s_nPinLog = 0;
+        s_pinLastLog = 0;
+        logFile << "Aggro: DIRECTOR "
+                << (response == DIRECTOR_RESPONSE_ALERT ? "ALERT " : "ALARM ")
+                << MemberName(member)
+                << " expected=0x" << std::hex << expectedBody
+                << " excludedEnemy=0x" << excludedEnemyBody << std::dec
+                << " identity=EXACT scope=free-wolves "
+                << (response == DIRECTOR_RESPONSE_ALERT
+                    ? "pin-only" : "pin+suppress+fakehit")
+                << std::endl;
+    }
+    s_directorFocus = member;
+    s_directorExpectedBody = expectedBody;
+    s_directorExcludedBody = excludedEnemyBody;
+    s_directorResponse = response;
+    s_directorIdentityBlockLogged = false;
+    return true;
+}
+
+int DirectorFocusMember() { return s_directorFocus; }
+int DirectorResponseLevel() { return s_directorResponse; }
+uint32_t DirectorWriteCount() { return s_directorWrites; }
 
 void SetEnabled(bool on)
 {
@@ -829,12 +1074,17 @@ void SetEnabled(bool on)
     s_pinFocus = MEMBER_NONE;
     logFile << "Aggro: watch " << (on ? "ON" : "OFF") << " (counters reset)"
             << std::endl;
-    lstrcpynA(s_status, on ? "aggro watch: armed" : "aggro watch: off",
+    lstrcpynA(s_status, on ? "aggro watch: armed"
+                            : (s_directorObserver
+                                ? "aggro observer: Director read-only"
+                                : "aggro watch: off"),
               sizeof(s_status));
 }
 
 void PinSet(int member, int scope)
 {
+    if (s_directorFocus >= 0) return;  // product lease owns the actuator
+
     if (scope < 0) scope = 0;
     if (scope > 1) scope = 1;
     if (member >= kMemberSlots) member = MEMBER_NONE;
@@ -866,6 +1116,8 @@ void PinStats(uint32_t* writesOut, uint32_t* rollbacksOut)
 
 void PinSuppressSet(bool on)
 {
+    if (s_directorFocus >= 0) return;  // product lease owns the actuator
+
     if (s_pinSuppress == on) return;
     s_pinSuppress = on;
     logFile << "Aggro: PIN suppress " << (on ? "ON" : "OFF")
@@ -878,6 +1130,8 @@ bool PinSuppressOn() { return s_pinSuppress; }
 
 void PinFakehitSet(bool on)
 {
+    if (s_directorFocus >= 0) return;  // product lease owns the actuator
+
     if (s_pinFakehit == on) return;
     s_pinFakehit = on;
     logFile << "Aggro: PIN fakehit " << (on ? "ON" : "OFF")
@@ -892,6 +1146,8 @@ bool PinFakehitOn() { return s_pinFakehit; }
 
 void PinFocusSet(int member)
 {
+    if (s_directorFocus >= 0) return;  // product lease owns the actuator
+
     if (member >= kMemberSlots) member = MEMBER_NONE;
     if (member == s_pinFocus) return;
     if (member >= 0) {
@@ -944,12 +1200,17 @@ void MarkEvent(const char* tag)
 
 void Tick()
 {
-    if (!s_enabled) return;
+    if (!s_enabled && !s_directorObserver) return;
 
+    // Director's demand is intentionally silent: it needs the native target
+    // channel, not the historical research transcript. Manual diagnostics
+    // (MARK/snapshot/roster) remain available regardless of this gate.
+    const bool emitEvents = s_enabled && s_logEvents;
     const DWORD now = GetTickCount();
     if (s_lastTick && (now - s_lastTick) < 120) return;
     s_lastTick = now;
 
+    LogIdentityAvailabilityIfChanged();
     PartyRef party[kMaxParty];
     const int nParty = CollectParty(party, kMaxParty);
     if (nParty <= 0) {
@@ -1011,17 +1272,18 @@ void Tick()
                 if (S.member != MEMBER_NONE || m != MEMBER_NONE) {
                     ++S.switches;
                     ++s_switchTotal;
-                    // Адрес тела в строке обязателен: без него историю
-                    // конкретной особи из лога не восстановить, а доли
-                    // приманки надо считать на той, что дралась (§15.5).
-                    logFile << "Aggro: " << R->kind
-                            << " @" << std::hex << R->body << std::dec
-                            << (S.kind == SLOT_ROSTER ? " [roster]" : " [target]")
-                            << " +0x" << std::hex << S.off << std::dec
-                            << "  " << MemberName(S.member)
-                            << " -> " << MemberName(m)
-                            << "  held " << (now - S.sinceMs) << " ms"
-                            << "  act " << R->act << std::endl;
+                    // High-volume research line: opt-in. Counters and target
+                    // resolution still update in quiet observer mode.
+                    if (emitEvents) {
+                        logFile << "Aggro: " << R->kind
+                                << " @" << std::hex << R->body << std::dec
+                                << (S.kind == SLOT_ROSTER ? " [roster]" : " [target]")
+                                << " +0x" << std::hex << S.off << std::dec
+                                << "  " << MemberName(S.member)
+                                << " -> " << MemberName(m)
+                                << "  held " << (now - S.sinceMs) << " ms"
+                                << "  act " << R->act << std::endl;
+                    }
                 }
                 S.member = m;
                 S.sinceMs = now;
@@ -1098,11 +1360,12 @@ void Tick()
                 // сорок одинаковых строк.
                 if (tally[m] > s_convLogged[m]) {
                     s_convLogged[m] = tally[m];
-                    logFile << "Aggro: CONVERGE " << tally[m] << " foes -> "
-                            << MemberName(m)
-                            << "  victim act " << (s_conv[m].memberAct[0]
-                                                   ? s_conv[m].memberAct : "?")
-                            << std::endl;
+                    if (emitEvents)
+                        logFile << "Aggro: CONVERGE " << tally[m] << " foes -> "
+                                << MemberName(m)
+                                << "  victim act " << (s_conv[m].memberAct[0]
+                                                       ? s_conv[m].memberAct : "?")
+                                << std::endl;
                 }
                 // Таймлайн внутри эпизода: каждые 750 мс — что СЕЙЧАС
                 // делает жертва. На догпайле именно тут ловим QTE/вал:
@@ -1111,25 +1374,27 @@ void Tick()
                 // тестер видел глазами.
                 if (now - s_conv[m].lastHoldMs >= 750) {
                     s_conv[m].lastHoldMs = now;
-                    logFile << "Aggro: CONVHOLD " << tally[m]
-                            << " foes on " << MemberName(m)
-                            << "  victim " << (s_conv[m].memberAct[0]
-                                               ? s_conv[m].memberAct : "?")
-                            << "  +" << (now - s_conv[m].sinceMs)
-                            << " ms" << std::endl;
+                    if (emitEvents)
+                        logFile << "Aggro: CONVHOLD " << tally[m]
+                                << " foes on " << MemberName(m)
+                                << "  victim " << (s_conv[m].memberAct[0]
+                                                   ? s_conv[m].memberAct : "?")
+                                << "  +" << (now - s_conv[m].sinceMs)
+                                << " ms" << std::endl;
                 }
             } else {
                 // Эпизод закончился: закрываем строкой-итогом. memberAct
                 // ещё держит последнее увиденное действие жертвы — оно и
                 // есть «чем кончилось схождение».
                 if (s_conv[m].sinceMs) {
-                    logFile << "Aggro: CONVENDED " << MemberName(m)
-                            << "  peak " << s_conv[m].episodePeak
-                            << "  dur " << (now - s_conv[m].sinceMs)
-                            << " ms  last victim "
-                            << (s_conv[m].memberAct[0]
-                                 ? s_conv[m].memberAct : "?")
-                            << std::endl;
+                    if (emitEvents)
+                        logFile << "Aggro: CONVENDED " << MemberName(m)
+                                << "  peak " << s_conv[m].episodePeak
+                                << "  dur " << (now - s_conv[m].sinceMs)
+                                << " ms  last victim "
+                                << (s_conv[m].memberAct[0]
+                                     ? s_conv[m].memberAct : "?")
+                                << std::endl;
                     s_conv[m].sinceMs = 0;
                     s_conv[m].episodePeak = 0;
                     s_conv[m].lastHoldMs = 0;
@@ -1146,7 +1411,7 @@ void Tick()
     // см. CardWatchState). Полный census не делаем: только карточки этих
     // двух тел + позиция волка и позиция члена карточки (652 байта не
     // читаем целиком — двенадцать точечных чтений по 4 байта).
-    if (s_cardWatch) {
+    if (s_enabled && s_cardWatch && emitEvents) {
         // Умершие/вышедшие особи выбрасываем, место добровольно пустует.
         for (int i = 0; i < s_nCard; ++i)
             if (!FindRow(s_cardBody[i])) {
@@ -1173,34 +1438,66 @@ void Tick()
         s_nCard = 0;
     }
 
-    // --- PIN: штырь внимания (80.0) -------------------------------------
-    //
-    // Единственное место в рантайме, где этот модуль ПИШЕТ. Всё по
-    // контракту: проверенный вид (uEm0200), проверенная форма карты,
-    // нативный диапазон, readback, откат. Аргументы «за» и «против» —
-    // в AGGRO_RECON §20.
-    if (s_pinMember >= 0 && s_pinMember < kMemberSlots) {
+    // --- PIN / DIRECTOR FOCUS actuator ----------------------------------
+    // Manual PIN still requires watch=on. The product lease is separate and
+    // may run under the quiet observer, but only while its record-slot body
+    // still resolves to the exact expected pointer. Any ambiguity releases it
+    // before a card write.
+    bool directorActive = false;
+    if (s_directorFocus >= 0 && s_directorFocus <= MEMBER_HIRED2) {
+        uintptr_t resolved = 0;
+        if (ResolveMemberBody(s_directorFocus, &resolved)
+            && resolved == s_directorExpectedBody) {
+            directorActive = true;
+            s_directorIdentityBlockLogged = false;
+        } else {
+            if (!s_directorIdentityBlockLogged) {
+                logFile << "Aggro: DIRECTOR FOCUS lost identity: slot="
+                        << MemberName(s_directorFocus)
+                        << " expected=0x" << std::hex << s_directorExpectedBody
+                        << " resolved=0x" << resolved << std::dec
+                        << " released before write" << std::endl;
+                s_directorIdentityBlockLogged = true;
+            }
+            s_directorFocus = MEMBER_NONE;
+            s_directorExpectedBody = 0;
+            s_directorExcludedBody = 0;
+            s_directorResponse = DIRECTOR_RESPONSE_NONE;
+        }
+    }
+
+    const bool manualActive = !directorActive && s_enabled
+                           && s_pinMember >= 0 && s_pinMember < kMemberSlots;
+    if (directorActive || manualActive) {
+        const int activeMember = directorActive ? s_directorFocus : s_pinMember;
+        const int activeScope = directorActive ? 1 : s_pinScope;
+        const bool directorAlarm = directorActive
+                                && s_directorResponse == DIRECTOR_RESPONSE_ALARM;
+        const bool activeSuppress = directorActive ? directorAlarm : s_pinSuppress;
+        const bool activeFakehit = directorActive ? directorAlarm : s_pinFakehit;
         uintptr_t mBody = 0;
         for (int p = 0; p < nParty; ++p) {
-            if (party[p].member != s_pinMember) continue;
+            if (party[p].member != activeMember) continue;
             mBody = party[p].body;
             break;
         }
         if (mBody) {
-            if (s_pinScope == 1) {
+            if (activeScope == 1) {
                 int nW = 0;
                 for (int i = 0; i < s_nRow; ++i) {
                     if (!IsPinnableKind(s_row[i].kind)) continue;
-                    PinRow(s_row[i], party, nParty, now);
+                    if (directorActive && s_row[i].body == s_directorExcludedBody)
+                        continue;
+                    PinRow(s_row[i], party, nParty, now, activeMember,
+                           activeSuppress, activeFakehit, directorActive);
                     ++nW;
                 }
-                PinSummary(nW, now);
+                PinSummary(nW, now, activeMember, activeScope,
+                           activeSuppress, activeFakehit, directorActive);
             } else {
                 // Ближайший к заштыренному члену волк: «приведи к нему».
                 float mp[3] = {};
-                if (!ReadBodyPos(mBody, mp)) {
-                    // Без позиции некуда мерить — тихо пропускаем тик.
-                } else {
+                if (ReadBodyPos(mBody, mp)) {
                     Row* best = 0;
                     float bestD = 1.0e9f;
                     for (int i = 0; i < s_nRow; ++i) {
@@ -1211,12 +1508,14 @@ void Tick()
                         const float dx = wp[0] - mp[0];
                         const float dy = wp[1] - mp[1];
                         const float dz = wp[2] - mp[2];
-                        const float d =
-                            sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
+                        const float d = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
                         if (d < bestD) { bestD = d; best = &R; }
                     }
-                    if (best) PinRow(*best, party, nParty, now);
-                    PinSummary(best ? 1 : 0, now);
+                    if (best)
+                        PinRow(*best, party, nParty, now, activeMember,
+                               activeSuppress, activeFakehit, directorActive);
+                    PinSummary(best ? 1 : 0, now, activeMember, activeScope,
+                               activeSuppress, activeFakehit, directorActive);
                 }
             }
         }

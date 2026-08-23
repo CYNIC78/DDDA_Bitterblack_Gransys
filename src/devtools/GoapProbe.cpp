@@ -81,52 +81,51 @@ static bool InclFingerprintOk(uintptr_t body, int idx)
     return d <= 200.0f;      // склонности дрейфуют, но не на сотни за бой
 }
 
-// Тело выбранной пешки, ПРОВЕРЕННОЕ. Если разбор партии промахнулся,
-// перебираем остальные места партии и берём то, чей отпечаток сошёлся.
-// О подмене говорим вслух — один раз на находку.
+// Тело выбранной пешки, ПРОВЕРЕННОЕ. Build 007 адресует именно fixed record,
+// а не ordinal компактного списка. Если exact bridge или независимый
+// inclination fingerprint не сошёлся, probe fail closed: чужое тело читать
+// нельзя даже с предупреждающей меткой.
 static uintptr_t s_probeVerified = 0;
 static int       s_probeVerifiedFor = -1;
+static uintptr_t s_probeRejected = 0;
+static int       s_probeRejectedFor = -1;
 
 static uintptr_t ProbeBody()
 {
-    bool isMain = false;
-    uintptr_t b = Runtime::PawnBodyAt(s_probePawn, &isMain);
-    if (!b) b = Runtime::MainPawnBody();
+    uintptr_t b = 0;
+    Runtime::PartyRecordInfo(s_probePawn, 0, 0, &b);
 
-    // Уже проверенное тело того же места партии — берём без работы.
-    if (s_probeVerified && s_probeVerifiedFor == s_probePawn
-        && InclFingerprintOk(s_probeVerified, s_probePawn))
-        return s_probeVerified;
+    // Кэш годится только пока fixed record по-прежнему указывает на то же
+    // тело; один похожий inclination fingerprint не имеет права пережить
+    // замену pawn body.
+    if (b && s_probeVerified == b && s_probeVerifiedFor == s_probePawn
+        && InclFingerprintOk(b, s_probePawn))
+        return b;
 
     if (b && InclFingerprintOk(b, s_probePawn)) {
         s_probeVerified = b;
         s_probeVerifiedFor = s_probePawn;
+        s_probeRejected = 0;
+        s_probeRejectedFor = -1;
         return b;
     }
 
-    for (int i = 0; i < 3; ++i) {
-        bool m = false;
-        const uintptr_t c = Runtime::PawnBodyAt(i, &m);
-        if (!c || c == b) continue;
-        if (!InclFingerprintOk(c, s_probePawn)) continue;
-        char l[220];
-        sprintf_s(l, "GoapProbe: probe target CORRECTED - the party list gave"
-                     " body 0x%08X for slot %d, but the inclination fingerprint"
-                     " matches body 0x%08X (party slot %d). Reading the latter.",
-                  (unsigned)b, s_probePawn, (unsigned)c, i);
+    if (b && (s_probeRejected != b || s_probeRejectedFor != s_probePawn)) {
+        char l[200];
+        sprintf_s(l, "GoapProbe: fixed record slot %d resolved body 0x%08X,"
+                     " but inclination fingerprint disagrees; probe blocked.",
+                  s_probePawn, (unsigned)b);
         logFile << l << std::endl;
-        s_probeVerified = c;
-        s_probeVerifiedFor = s_probePawn;
-        s_planner = 0;
-        s_tableReady = false;
-        return c;
+        s_probeRejected = b;
+        s_probeRejectedFor = s_probePawn;
     }
-
-    // Не сошлось ни одно тело. Возвращаем что есть, но метку ставим:
-    // ProbeLabel() и гистограмма обязаны сказать об этом первыми.
     s_probeVerified = 0;
     s_probeVerifiedFor = -1;
-    return b;
+    if (!b) {
+        s_probeRejected = 0;
+        s_probeRejectedFor = -1;
+    }
+    return 0;
 }
 
 // Сошёлся ли отпечаток у того тела, которое мы читаем прямо сейчас.

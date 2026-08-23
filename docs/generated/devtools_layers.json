@@ -1,6 +1,6 @@
 {
   "file": "src/devtools/DevTools.cpp",
-  "total_lines": 5172,
+  "total_lines": 5155,
   "functions": [
     {
       "name": "IsRepeatTag",
@@ -1836,9 +1836,9 @@
       "name": "RenderDevToolsUI",
       "qualifier": "",
       "line_start": 4248,
-      "line_end": 5099,
+      "line_end": 5082,
       "off_start": 169374,
-      "off_end": 213969,
+      "off_end": 211455,
       "calls": [
         "DeadCount",
         "DumpAnatomy",
@@ -1927,16 +1927,16 @@
         "g_sel",
         "g_tree"
       ],
-      "lines": 852,
+      "lines": 835,
       "layer": "DEVTOOLS"
     },
     {
       "name": "ResearchOnSnapshotEarly",
       "qualifier": "",
-      "line_start": 5099,
-      "line_end": 5108,
-      "off_start": 213969,
-      "off_end": 214346,
+      "line_start": 5082,
+      "line_end": 5091,
+      "off_start": 211455,
+      "off_end": 211832,
       "calls": [
         "PartyWriteJson"
       ],
@@ -1949,10 +1949,10 @@
     {
       "name": "ResearchOnSnapshotFull",
       "qualifier": "",
-      "line_start": 5108,
-      "line_end": 5114,
-      "off_start": 214346,
-      "off_end": 214505,
+      "line_start": 5091,
+      "line_end": 5097,
+      "off_start": 211832,
+      "off_end": 211991,
       "calls": [
         "PartyIntentTraceStart",
         "PartyWriteAiBridgeJson"
@@ -1967,10 +1967,10 @@
     {
       "name": "ResearchOnTick",
       "qualifier": "",
-      "line_start": 5114,
-      "line_end": 5120,
-      "off_start": 214505,
-      "off_end": 214589,
+      "line_start": 5097,
+      "line_end": 5103,
+      "off_start": 211991,
+      "off_end": 212075,
       "calls": [
         "PartyIntentTraceTick",
         "PartyTraceTick"
@@ -1982,10 +1982,10 @@
     {
       "name": "ResearchOnWorldUnload",
       "qualifier": "",
-      "line_start": 5120,
-      "line_end": 5125,
-      "off_start": 214589,
-      "off_end": 214682,
+      "line_start": 5103,
+      "line_end": 5108,
+      "off_start": 212075,
+      "off_end": 212168,
       "calls": [
         "PartyIntentTraceStop"
       ],
@@ -1996,10 +1996,10 @@
     {
       "name": "DevTools",
       "qualifier": "Hooks",
-      "line_start": 5125,
-      "line_end": 5164,
-      "off_start": 214682,
-      "off_end": 216333,
+      "line_start": 5108,
+      "line_end": 5147,
+      "off_start": 212168,
+      "off_end": 213819,
       "calls": [
         "BuildWatch"
       ],
@@ -2014,10 +2014,10 @@
     {
       "name": "DevTools_Shutdown",
       "qualifier": "Hooks",
-      "line_start": 5164,
-      "line_end": 5171,
-      "off_start": 216333,
-      "off_end": 216542,
+      "line_start": 5147,
+      "line_end": 5154,
+      "off_start": 213819,
+      "off_end": 214028,
       "calls": [
         "PartyIntentTraceStop"
       ],

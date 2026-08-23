@@ -111,6 +111,14 @@ static const float kExitSlackFar  = 5.0f;
 
 void Init()
 {
+    memset(s_slot, 0, sizeof(s_slot));
+    s_nSlots = 0;
+    s_active = false;
+    s_applied = 0;
+    s_actLogged = 0;
+    s_burstsWeapon = 0;
+    s_burstsDetector = 0;
+
     s_enabled = config.getBool("pawnHaste", "enabled", false);
     s_factor  = config.getFloat("pawnHaste", "factor", 1.20f);
     s_minDist = config.getFloat("pawnHaste", "minDistanceM", 5.0f);
@@ -147,7 +155,17 @@ void Init()
     logFile << l << std::endl;
 }
 
-void Shutdown() { ReleaseAll("shutdown"); }
+void Shutdown()
+{
+    ReleaseAll("shutdown");
+    if (s_applied > 0) {
+        char l[180];
+        const int details = s_actLogged > 3 ? 3 : s_actLogged;
+        sprintf_s(l, "PawnHaste: session summary bursts=%d weapon=%d detector=%d details=%d",
+                  s_applied, s_burstsWeapon, s_burstsDetector, details);
+        logFile << l << std::endl;
+    }
+}
 
 void SetEnabled(bool on)
 {
@@ -282,17 +300,21 @@ static void TickPawn(Slot& S, const WorldReport& w, const CombatReport& rep)
     if (!S.active) {
         ++s_applied;
         if (weaponOut) ++s_burstsWeapon; else ++s_burstsDetector;
-        if (s_actLogged < 8) {
+        if (s_actLogged < 3) {
             ++s_actLogged;
             const Runtime::Tempo::Status ts = Runtime::Tempo::GetStatus();
             char l[280];
             sprintf_s(l, "PawnHaste: burst on %s pawn at %.1f m, x%.2f, act %s"
-                         " (weapon %s), anim coupling %s, anim writes so far %u",
+                         " (weapon %s), anim coupling %s, anim writes so far %u (#%d)",
                       S.isMain ? "MAIN" : "hired", best, use, act[0] ? act : "?",
                       weaponOut ? "OUT" : "not detected",
                       Runtime::Tempo::GetAnimForOverrides() ? "ON" : "OFF",
-                      ts.animOurWrites);
+                      ts.animOurWrites, s_actLogged);
             logFile << l << std::endl;
+        } else if (s_actLogged == 3) {
+            ++s_actLogged;
+            logFile << "PawnHaste: burst detail limit reached; further bursts are"
+                       " counted silently (panel and shutdown summary)" << std::endl;
         }
     }
     S.active = true;

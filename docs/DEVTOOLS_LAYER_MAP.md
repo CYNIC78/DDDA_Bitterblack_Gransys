@@ -2,7 +2,7 @@
 
 > Сгенерировано `tools/analyze_devtools_layers.py`. Руками не править.
 
-Файл: **5172 строк**, разобрано **112 функций** верхнего уровня (**4720 строк** в телах), **107 файловых статиков**.
+Файл: **5155 строк**, разобрано **112 функций** верхнего уровня (**4703 строк** в телах), **107 файловых статиков**.
 
 ## Слои
 
@@ -14,7 +14,7 @@
 | `PROBE-API` | research-кнопка в продуктовом UI → вырезать из `PawnAI.cpp` | 0 | 0 |
 | `PROBE-DEP` | живёт только ради проб → уйдёт вместе с ними | 0 | 0 |
 | `RESEARCH` | пробы/аудиты/дампы → под `researchDump` или под нож | 30 | 2064 |
-| `DEVTOOLS` | инфраструктура DevTools → остаётся в `src/devtools/` | 82 | 2656 |
+| `DEVTOOLS` | инфраструктура DevTools → остаётся в `src/devtools/` | 82 | 2639 |
 
 > **Слои чистые.** Продуктового кода в `DevTools.cpp` нет: продукт живёт в `src/runtime/` и работает при `[devtools] enabled = off`. Этот файл — исследовательский инструмент, его можно отключить целиком.
 
@@ -152,13 +152,13 @@
 | 4097–4216 | 120 | `RESEARCH` | `DumpAnatomy` | `BuildWatch`, `BytesInImage`, `Consider`, `DumpHeader`, `DumpWindow` +7 | 48 |
 | 4224–4242 | 19 | `RESEARCH` | `HexDump` | — | 0 |
 | 4242–4248 | 7 | `DEVTOOLS` | `SetInspect` | — | 2 |
-| 4248–5099 | 852 | `DEVTOOLS` | `RenderDevToolsUI` | `DeadCount`, `DumpAnatomy`, `HexDump`, `HuntLive`, `KindName` +7 | 72 |
-| 5099–5108 | 10 | `DEVTOOLS` | `ResearchOnSnapshotEarly` | `PartyWriteJson` | 1 |
-| 5108–5114 | 7 | `DEVTOOLS` | `ResearchOnSnapshotFull` | `PartyIntentTraceStart`, `PartyWriteAiBridgeJson` | 2 |
-| 5114–5120 | 7 | `DEVTOOLS` | `ResearchOnTick` | `PartyIntentTraceTick`, `PartyTraceTick` | 0 |
-| 5120–5125 | 6 | `DEVTOOLS` | `ResearchOnWorldUnload` | `PartyIntentTraceStop` | 0 |
-| 5125–5164 | 40 | `DEVTOOLS` | `Hooks::DevTools` | `BuildWatch` | 3 |
-| 5164–5171 | 8 | `DEVTOOLS` | `Hooks::DevTools_Shutdown` | `PartyIntentTraceStop` | 0 |
+| 4248–5082 | 835 | `DEVTOOLS` | `RenderDevToolsUI` | `DeadCount`, `DumpAnatomy`, `HexDump`, `HuntLive`, `KindName` +7 | 72 |
+| 5082–5091 | 10 | `DEVTOOLS` | `ResearchOnSnapshotEarly` | `PartyWriteJson` | 1 |
+| 5091–5097 | 7 | `DEVTOOLS` | `ResearchOnSnapshotFull` | `PartyIntentTraceStart`, `PartyWriteAiBridgeJson` | 2 |
+| 5097–5103 | 7 | `DEVTOOLS` | `ResearchOnTick` | `PartyIntentTraceTick`, `PartyTraceTick` | 0 |
+| 5103–5108 | 6 | `DEVTOOLS` | `ResearchOnWorldUnload` | `PartyIntentTraceStop` | 0 |
+| 5108–5147 | 40 | `DEVTOOLS` | `Hooks::DevTools` | `BuildWatch` | 3 |
+| 5147–5154 | 8 | `DEVTOOLS` | `Hooks::DevTools_Shutdown` | `PartyIntentTraceStop` | 0 |
 
 ## Предлагаемая раскладка `src/runtime/`
 

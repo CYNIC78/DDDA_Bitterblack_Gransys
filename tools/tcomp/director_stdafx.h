@@ -19,5 +19,6 @@ struct IniConfigStub {
                   std::pair<int, const char*>[], int) const { return d; }
     void  setBool(const char*, const char*, bool) const {}
     void  setFloat(const char*, const char*, float) const {}
+    void  setInt(const char*, const char*, int) const {}
 };
 extern IniConfigStub config;

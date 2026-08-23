@@ -88,7 +88,7 @@ interfaceId 8, `ProvokeAction`, 1 premise, classHash `0x13D83225`).
 
 ### Сторона монстров (для симметрии)
 
-`ActMap` уже классифицирует 812 действий, категория `taunt` существует:
+`ActMap` уже классифицирует 873 состояния в 36 emId-группах, категория `taunt` существует:
 `cEm0100ActThreatHowl`, `cEm0100ActArmUpHowl`, `cEm0400ActFriendHowl`,
 `cEm0400ActThreatHowl`, `cEmWightActProvoke`. Отдельно —
 `cEm5300_00ActDmgHate` (категория `damage`; `uEm5200` = Chimera по
@@ -1415,3 +1415,72 @@ Aggro: PIN shape @10e17570  Hired2 f8=1 fC=2 10=484.6 w=0.2  MainPawn f8=1 fC=4 
 (штырь 300, подавление 0, фейк-хит 1/150 — нативные значения, тот же
 readback/откат). `pin_suppress`/`pin_fakehit` по-прежнему off по
 умолчанию; FOCUS включает их только по кнопке.
+
+## 27. Builds 009–011 — bounded Director response lease и exclusion
+
+Build 011 Product API принимает `(member, expectedBody, excludedEnemyBody,
+response)`. Exact party body повторно разрешается внутри Aggro перед каждым
+циклом записи. Карта остаётся строго `strcmp(kind, "uEm0200")`; похожий DTI
+prefix не допускается. Exact excluded wolf пропускается до `PinRow`, поэтому на
+него не попадает ни один Director write, а summary считает только свободных
+responders.
+
+`response=ALERT` применяет только проверенный pin row к exact acting pawn:
+`suppress=false`, `fakehit=false`. Это слабая превентивная смена target priority,
+не принудительная атака. `response=ALARM` сохраняет прежний полный bundle:
+pin + suppress + bounded fake-hit. Смена response является ownership boundary;
+старый lease освобождается до reacquire.
+
+Director хранит Aggro responders отдельно от Tempo-owned bodies. Поэтому
+GrabStart ALERT имеет `responders=N tempoOwned=0`, а ground/lift ALARM —
+`responders=N tempoOwned=N`. Exact pinned body исключён из обеих множеств.
+Смена target/response/exclusion/topology, потеря identity, evidence end и hard
+timeout очищают lease; далее работает только native decay.
+
+Ground pin в Build 011 допускается universal cue table: exact
+`cPlActGrabStart` даёт ALERT до 750 ms, exact acting-pawn
+`cPlActHagaijime4Feet` напрямую даёт ALARM до 4000 ms и не требует наблюдения
+precursor. Literal lift/carry остаётся отдельным ALARM recipe до 2500 ms.
+
+Допуск других видов не наследуется. Каждый новый kind требует собственной
+проверки card base, stride, shape, native values, readback и rollback. До этого
+даже правильно распознанный universal cue fail-closed на actuator admission.
+
+## 28. Build 012 — Aggro потребляет target, Tempo владеет mobilization
+
+Build 012 не меняет доказанный формат wolf card и не расширяет species write
+admission. Aggro Product API по-прежнему принимает exact
+`(member, expectedBody, excludedEnemyBody, response)` и повторно разрешает
+fixed-slot body до каждой записи. Новое разделение ответственности находится
+выше card layer:
+
+```text
+Director order {exact target body, urgency 0..1}
+    Aggro <- target + ALERT/ALARM response
+    Tempo <- exact free responder bodies + urgency
+```
+
+Aggro больше не является частью старого ALARM-only Tempo bundle. Он ничего не
+знает о `m`, stable mutation или rage endpoint. ALERT остаётся pin-only, ALARM —
+pin+suppress+bounded fake-hit. Поэтому тактическая разница сохраняется, хотя
+оба текущих response tier мобилизуют pack с urgency `1.0`.
+
+Build 011 diagnostic `ALERT tempoOwned=0` теперь намеренно устарел. В Build 012
+любой успешно actuated emergency order обязан показывать:
+
+```text
+responders=N tempoOwned=N urgency=1 mobilization=HOLD
+```
+
+Exact excluded wolf отсутствует в обоих множествах. Если Tempo readiness,
+capacity или admission одного responder не прошли, Director hard-reset-ит всю
+частичную policy до установки/продолжения Aggro lease. Если downstream
+`DirectorFocusSet()` отклонил exact target, уже созданные Tempo rows также
+немедленно hard-reset-ятся. Таким образом target и mobilization не могут
+остаться наполовину применёнными.
+
+Ordinary evidence/strategic completion снимает Aggro lease сразу, а owned Tempo
+rows переводит в bounded decay. Identity/body/species/readiness/topology loss,
+stale world, timeout, rollback, disable и shutdown снимают Aggro и делают
+immediate hard reset Director Tempo state. Generic Tempo overrides при этом не
+принадлежат Director и не очищаются.

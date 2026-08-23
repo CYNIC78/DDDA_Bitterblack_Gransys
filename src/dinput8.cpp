@@ -47,13 +47,14 @@ void InitHooks()
     // при отвале оверлея молча умирал и продукт.
     Runtime::Init();
 
+    // Aggro must initialize before the Director: Build 007 establishes its
+    // observer/focus leases from MonsterAI::Init(), and Aggro::Init() must not
+    // reset those leases afterward.
+    Runtime::Aggro::Init();
+
     // Режиссёр стороны монстров — продуктовый слой, поднимается вместе с
     // рантаймом и до UI: он должен работать и без оверлея.
     MonsterAI::Init();
-
-    // Прибор агра — часть продуктового слоя (читает, не пишет), поэтому
-    // поднимается здесь же и до UI.
-    Runtime::Aggro::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();
@@ -128,6 +129,10 @@ void Unitialize()
     // Потоки сами завершатся после флага. DevTools performs only a guarded
     // four-byte priority rollback before hooks are disabled.
     Hooks::DevTools_Shutdown();
+    // Release synchronized wolf policy before Aggro/Tempo teardown. Both
+    // calls are bounded guarded cleanup only: no waits, joins, or allocations.
+    MonsterAI::Shutdown();
+    Runtime::Aggro::Shutdown();
     Runtime::Shutdown();
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();

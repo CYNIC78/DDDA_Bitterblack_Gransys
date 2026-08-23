@@ -4,9 +4,30 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** Build 75.56 — **дальность посоха пешки (15 м)**.
-Кастер без даша и брони получает луковую eligibility каста. Игрока не
-трогаем. Референс — радиус чародея в DDON. Подробно: [`docs/WAND_RANGE.md`](docs/WAND_RANGE.md).
+**Текущий milestone:** Build 012 / tag `84.9-pilot012-urgency-mobilization` —
+**интегрированные target + urgency + mobilization**. Каждый допущенный приказ
+Director хранит точное тело цели и нормализованную срочность `0..1`; все текущие
+emergency-рецепты запрашивают `1.0`. Aggro потребляет цель, сохраняя разную силу
+ALERT/ALARM, а Tempo держит ровно одну ограниченную оболочку на каждом exact
+свободном responder.
+
+`m=0` — неизменная в рамках приказа личная стабильная пара locomotion/attack,
+`m=1` — детерминированный personal rage endpoint того же тела (`uEm0200`:
+locomotion `1.20..1.25`, attack-only animation `1.20..1.26`). При сигнале
+responder быстро попадает в `m=1`, удерживается там, затем после обычного конца
+свидетельства линейно возвращается за 1400 ms. Повторные сигналы только
+refresh/maximize одну оболочку: не умножают boost, не снимают baseline с
+переходного кадра и не ratchet endpoints. Небезопасная потеря identity, species,
+readiness, topology/world state, timeout, rollback, disable или shutdown делает
+немедленный hard reset.
+
+Build 011 cue model сохранён: `GrabStart` остаётся слабым превентивным ALERT,
+`Hagaijime4Feet` — независимо достаточным ground-pin ALARM, а literal lift —
+отдельным рецептом. Exact pinned `uEm0200` исключается; после строгого допуска
+continuation приклеен к исходной exact holder/victim паре. Новых F12 controls
+нет. Absolute-current-HP PackMark, Guardian, принятый стабильный Tempo profile,
+HP/damage/stagger/immunity/inclinations и native combat вне приказа не изменены.
+Подробно: [`docs/MONSTER_TARGETING_PROTOTYPE.md`](docs/MONSTER_TARGETING_PROTOTYPE.md).
 
 ## Что уже работает
 
@@ -31,14 +52,17 @@ Priority profiles не запускают действие насильно. О�
 
 | Ручка | Что меняет | Как | Пределы |
 |---|---|---|---|
-| скорость передвижения | как быстро монстр сближается и уклоняется | два asm-хука на покадровое смещение координат | 0.75…1.30 |
+| скорость передвижения | как быстро монстр сближается и уклоняется | общий asm-hook dash/run/walk + отдельный optional sprint path | 0.75…1.30 |
 | темп атаки | замах, удар, восстановление | запись в ряд из пяти множителей воспроизведения (`тело +0x0EE4…+0x0EF4`) | 0.70…1.40 |
 
 - множитель у каждой особи **свой**, детерминирован от адреса тела: стая
   сближается вразнобой, выученный ритм боя не работает;
 - темп атаки применяется **только во время атак** (класс действия берётся
-  из `ActMap`, 812 действий 35 видов), поэтому ходьба остаётся ванильной и
-  две ручки не дублируют друг друга;
+  из `ActMap`: 873 состояния, 36 emId-групп, 216 атак), поэтому ходьба
+  остаётся ванильной и две ручки не дублируют друг друга;
+- пять live-validated legacy wolf actions (`AttackRun`, `Bite`,
+  `ContinueBite`, `JumpBite`, `DownBite`) внесены явным allowlist без опасного расширения
+  общего regex; proof-лог печатается на входе в mapped attack, а не каждый кадр;
 - `animCoupling` связывает ручки: 0 — четыре характера (увалень,
   наскок-отскок, засадный, берсерк), 1 — цельные существа;
 - правки **мультипликативные**: торпор и захват продолжают работать поверх;
@@ -52,10 +76,79 @@ Priority profiles не запускают действие насильно. О�
 ### Monster director
 
 `src/monsterai/MonsterDirector.{h,cpp}` — сторона монстров, симметричная
-оркестратору пешек. Обе стороны читают **одну шину** (`CombatBus`) и
-управляют своими примитивами. Режиссёр не пишет в память игры никогда:
-только читает бой и раздаёт указания через `Tempo::SetOverride`.
-Пока наблюдатель, гейт `[monsterAI] enabled`.
+оркестратору пешек. Обе стороны читают **одну шину** (`CombatBus`). Стратегия
+сохраняет принятую momentary absolute-HP priority и hysteresis-held `PackMark`:
+`isolation` определяет NONE/BIAS/FOCUS-WINDOW, а `targetDepth` остаётся
+диагностикой.
+
+Отдельный `TacticalCues` — маленький универсальный table-driven matcher, а не
+wolf-условие внутри Director. Таблица сохраняет три независимые рецепта:
+
+- `cPlActGrabStart` → `PACK-GRAB-ALERT`, priority 100, pin-only focus, lease до
+  750 ms;
+- `cPlActHagaijime4Feet` → `PACK-GROUND-PIN-ALARM`, priority 200, полный alarm,
+  lease до 4000 ms;
+- `cPlActLift* + cEm0200Lifted` → отдельный `PACK-LIFT-RESCUE`, priority 150,
+  lease до 2500 ms.
+
+Ground pin — это прижатие волка/завра весом тела к земле, не lift. Для ground
+rules exact party action доказывает holder role, exact kind и одна уникальная
+пространственная пара не дальше 2 m определяют pinned body. Literal lift
+сохраняет более строгую глобальную уникальность victim action. Сильный rule
+не зависит от precursor: `Hagaijime4Feet` допускается напрямую. Priority
+гарантирует, что ALARM вытесняет ALERT в ближайшем 150 ms scan.
+
+Тактический intent временно обгоняет стратегический PackMark, но не стирает его
+память. Приказ переносит exact target body и urgency через policy. Aggro отвечает
+только за цель: ALERT арендует pin row, ALARM — pin+suppress+fake-hit. Tempo
+отдельно мобилизует всех exact свободных responders до личных rage endpoints;
+оба response tier запрашивают `urgency=1.0`, но сохраняют разные Aggro bundle и
+lease. Exact restrained body не получает ни Aggro write, ни Director envelope.
+
+Одна bounded Tempo row на body держит immutable `L0/A0/L1/A1`. Refresh только
+продлевает TTL/максимизирует уровень. Ordinary command/evidence completion
+переводит текущих owners в 1400 ms decay. Любая небезопасная потеря или rollback
+вызывает `HardResetAllDirectorMobilization()`; generic overrides не очищаются.
+Композиция: stable baseline → Director envelope → generic override → final clamp.
+
+Обе существующие галки `[monsterAI] enabled` и `wolfActuator` по умолчанию
+выключены; новых элементов F12 нет. Exact-four party identity, свежесть world
+snapshot, exact `uEm0200`, уникальность body/pair, bounded lease, downstream
+readback и rollback продолжают fail closed. Для Arisen одного имени DTI
+`uPlayer` недостаточно: claim обязан содержать точный fixed player-record pointer
+в теле или проверенном child graph. Один такой claim принимается, ноль или
+несколько остаются unresolved без fallback по адресу, live-list или порядку
+скана. Поэтому transient второй class-valid `uPlayer` больше не выключает
+actuator и не может перехватить fixed slot.
+
+#### Полезная диагностика интегрированной policy
+
+Автоматический лог рассчитан на редкие snapshots, а не на отслеживание быстрых
+чисел вручную:
+
+- `policy ENGAGED` — доказательство реально принятой команды: exact `targetBody`,
+  `response=ALERT|ALARM`, `urgency`, exact `excluded`, количество `responders` и
+  `tempoOwned`, а также неизменные диапазоны endpoints `L0/A0/L1/A1`;
+- `policy RELEASED ... mobilization=DECAY` — обычный конец приказа;
+  `HARD-RESET` — небезопасная потеря topology/identity/readiness, timeout,
+  rollback, disable или shutdown;
+- `policy FAIL-CLOSED ... HARD-RESET-ONCE` печатается один раз на длительный
+  неактивный unsafe episode. Повторные NONE/BIAS/identity evaluations без owned
+  state не изображают новые release transitions. `policy RECOVERED` сообщает
+  первую успешную команду и число `coalesced` повторов;
+- `PartyRecon: adopted uPlayer ... player-record-pointer` доказывает точный
+  Arisen claim; `unresolved: no player-record-pointer` — безопасно
+  проигнорированный class-only candidate;
+- Aggro summary сохраняет bundle (`pin-only` для ALERT,
+  `pin+suppress+fakehit` для ALARM), writes и rollback count.
+
+`writes` — накопительный счётчик подтверждённых Tempo/Aggro операций, не уровень
+ускорения. При refresh он закономерно растёт пропорционально числу responders;
+отсутствие ratchet доказывают стабильные `L0/A0/L1/A1`, а не маленькое значение
+`writes`. Live replay двух wolf fights подтвердил exact exclusion, ALERT→ALARM,
+9→8 hard-reset/re-admission, no-spatial rejection, ordinary decay, timeout reset
+и нулевые Aggro rollbacks; обнаруженный class-only `uPlayer` outage закрыт
+fixed-record gate и отдельным duplicate-claim regression.
 
 ### Pawn tempo compensation (`[pawnHaste]`)
 
@@ -186,12 +279,18 @@ src/devtools/   исследование: выключается целиком 
 ## Проверки перед сборкой
 
 MSVC есть не у всех, а каждая ошибка компиляции стоит целой итерации
-(сборка → запуск игры → лог). Поэтому три проверки запускаются локально:
+(сборка → запуск игры → лог). Поэтому проверки запускаются локально:
 
 ```bash
-python3 tools/check_link_sanity.py        # «линкер бедняка»: 8+ видов проверок
-python3 tools/analyze_devtools_layers.py  # страж слоёв, код возврата 1 при регрессе
-sh      tools/syntax_check.sh             # g++ по ключевым модулям + ASCII в UI
+python3 tools/check_link_sanity.py          # «линкер бедняка»: 8+ видов проверок
+python3 tools/analyze_devtools_layers.py    # страж слоёв, код возврата 1 при регрессе
+bash    tools/test_monster_director_hp_only.sh   # Build 012 urgency/mobilization lifecycle
+bash    tools/test_build004_contracts.sh         # retained identity/ownership contracts
+bash    tools/test_build005_locomotion_proof.sh # retained hook-side locomotion receipts
+bash    tools/test_build008_qol.sh                # profile/toggle/bounded-log contracts
+bash    tools/test_act_map_build004.sh           # determinism + five wolf attacks
+python3 tools/check_cpp_literals.py               # malformed C++ string/char literals
+bash    tools/syntax_check.sh                    # g++ modules + ASCII UI
 ```
 
 `syntax_check.sh` компилирует `AnimProbe`, `MonsterDirector` и `PawnHaste`

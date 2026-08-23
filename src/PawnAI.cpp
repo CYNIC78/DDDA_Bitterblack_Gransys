@@ -172,6 +172,17 @@ static bool HiredRecordOk(int idx, int* vocOut, int* lvlOut)
     return true;
 }
 
+// idx здесь — fixed pawn record (0 main, 1/2 hired), а не ordinal в
+// компактном PawnBodyAt(). При временно unresolved предыдущем record нельзя
+// дать следующему телу «съехать» в этот слот: live write обязан fail closed.
+static uintptr_t ExactPawnBodyForRecord(int idx)
+{
+    uintptr_t body = 0;
+    if (idx < 0 || idx > 2
+        || !Runtime::PartyRecordInfo(idx, 0, 0, &body)) return 0;
+    return body;
+}
+
 static void HiredInclCapture(int idx)
 {
     if (idx < 0 || idx > 3 || g_hiCaptured[idx]) return;
@@ -249,8 +260,7 @@ void HiredInclSelfTestStart(int idx)
     g_hst.probe = 999.0f;
 
     ReadAllIncl(g_hst.recBase, idx);
-    bool isMain = false;
-    const uintptr_t body = Runtime::PawnBodyAt(idx, &isMain);
+    const uintptr_t body = ExactPawnBodyForRecord(idx);
     g_hst.bodyBaseOk = body && Runtime::PawnInclinationsLive(body, g_hst.bodyBase);
 
     float v[I_COUNT];
@@ -276,8 +286,7 @@ void HiredInclSelfTestTick()
         ReadAllIncl(rec, g_hst.idx);
         if (rec[g_hst.inclId] == g_hst.probe) ++g_hst.recHeld; else ++g_hst.recReverted;
 
-        bool isMain = false;
-        const uintptr_t body = Runtime::PawnBodyAt(g_hst.idx, &isMain);
+        const uintptr_t body = ExactPawnBodyForRecord(g_hst.idx);
         float live[9] = {};
         if (body && Runtime::PawnInclinationsLive(body, live)) {
             if (live[g_hst.inclId] == g_hst.probe) ++g_hst.bodyHeld;
@@ -293,8 +302,7 @@ void HiredInclSelfTestTick()
 
     // Откат и вердикт.
     WriteAllIncl(g_hst.recBase, g_hst.idx);
-    bool isMain = false;
-    const uintptr_t body = Runtime::PawnBodyAt(g_hst.idx, &isMain);
+    const uintptr_t body = ExactPawnBodyForRecord(g_hst.idx);
     if (body && g_hst.bodyBaseOk)
         Runtime::PawnSetInclinationLive(body, g_hst.inclId, g_hst.bodyBase[g_hst.inclId]);
 
@@ -750,8 +758,7 @@ void RenderPawnAIUI(){
                         if (ImGui::SliderFloat("##hi", &v, 0.0f, 1000.0f, "")) {
                             rec[i] = v;
                             WriteAllIncl(rec, idx);
-                            bool im = false;
-                            const uintptr_t b = Runtime::PawnBodyAt(idx, &im);
+                            const uintptr_t b = ExactPawnBodyForRecord(idx);
                             if (b) Runtime::PawnSetInclinationLive(b, i, v);
                             g_hiChanged[idx] = true;
                         }

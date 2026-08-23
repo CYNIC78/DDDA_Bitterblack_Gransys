@@ -13,17 +13,20 @@
  * горизонтальные составляющие. Анимация при этом не меняется — меняется
  * только скорость перемещения тушки.
  *
- * ВАЖНО ПРО ДВА ПУТИ. Движение в игре применяется в двух разных местах:
- * обычное (смещения на стеке) и спринт (смещения в регистрах). Захукать
- * одно — получить «шагом медленно, бегом быстро». Поэтому хука два.
+ * ВАЖНО ПРО ДВА ПУТИ. Основной хук (смещения на стеке) — это общая
+ * локомоция: через него проходят dash/track, run и walk. Отдельная
+ * sprint-сигнатура (смещения в регистрах) остаётся самостоятельным путём,
+ * но её попадание не требуется для доказательства общей локомоции.
  *
- * ЧЕГО ЭТОТ МОДУЛЬ НЕ ДЕЛАЕТ. Тайминги атак не затрагиваются: замах, удар
- * и восстановление идут по анимации. Для них нужен темп воспроизведения,
- * это отдельная задача (docs/MONSTER_TEMPO_RECON.md).
+ * ВТОРОЙ КАНАЛ. Темп атак меняется отдельно через ряд множителей
+ * воспроизведения анимации. Обычная мутация сохраняет два независимых
+ * индивидуальных коэффициента. Director не умножает их повторно: одна
+ * ограниченная оболочка ведёт точное тело от стабильной пары L0/A0 к его
+ * неизменным личным rage-endpoint L1/A1 и затем отпускает обратно.
  *
- * ГРАНИЦЫ. Множитель жёстко зажат в 0.75…1.30 независимо от ini:
- * анимация остаётся прежней, поэтому при большем расхождении заметно
- * проскальзывание стоп, а слишком крупный шаг за кадр пробивает коллизию.
+ * ГРАНИЦЫ. Передвижение жёстко зажато в 0.75…1.30, а анимация — в
+ * 0.70…1.40 независимо от ini. Итоговая композиция всегда повторно
+ * проходит species-safe clamp.
  */
 
 #include <stdint.h>
@@ -39,6 +42,11 @@ void Init();
 // Снимает все правки. Вызывается из Runtime::Shutdown().
 void Shutdown();
 
+// Живое управление общей локомоцией. Хуки остаются установленными как
+// безопасный no-op при пустой таблице, поэтому OFF можно переключить в ON
+// без перезапуска и после старта с сохранённым выключенным состоянием.
+void SetEnabled(bool on);
+
 // Пересчёт таблицы «тело → множитель». Зовётся продуктовым тиком раз в
 // 150 мс: хук читает готовую таблицу и не делает ни одного резолва.
 void RefreshTable();
@@ -46,9 +54,9 @@ void RefreshTable();
 // --- состояние для UI -----------------------------------------------------
 struct Status {
     bool     enabled;        // включён ли режим в конфиге
-    bool     walkHooked;     // хук обычного движения установлен
-    bool     sprintHooked;   // хук спринта установлен
-    int      walkMatches;    // сколько мест подошло под сигнатуру
+    bool     walkHooked;     // legacy name: общий dash/run/walk хук установлен
+    bool     sprintHooked;   // отдельный хук спринта установлен
+    int      walkMatches;    // сколько мест подошло под общую сигнатуру
     int      sprintMatches;
     int      tracked;        // сколько монстров сейчас в таблице
     float    minFactor;      // фактический разброс в текущей таблице
@@ -70,6 +78,45 @@ struct Status {
     float    animCoupling;      // 0 = ручки независимы, 1 = темп следует за скоростью
 };
 Status GetStatus();
+
+// Build 012 mobilization readiness gate. All four facts are reported separately
+// so the Director can log the exact fail-closed reason. Director admission only
+// permits attack-scoped animation mutation; `everything` is rejected.
+struct DirectorReadiness {
+    bool movementEnabled;
+    bool generalHookInstalled;
+    bool animationEnabled;
+    bool attacksOnly;
+};
+DirectorReadiness GetDirectorReadiness();
+bool DirectorReady(const char** reasonOut);
+
+// One non-stacking mobilization envelope per exact Director responder.
+// `stable*` is the immutable deterministic baseline assigned to this body;
+// `rage*` is its personal exact-kind endpoint. Repeated commands refresh the
+// same row and maximize `level`; a transitional live factor is never sampled.
+struct DirectorMobilizationReceipt {
+    uintptr_t body;
+    float urgency;
+    float level;
+    float stableLoco;
+    float stableAnim;
+    float rageLoco;
+    float rageAnim;
+    float effectiveLoco;
+    float effectiveAnim;
+    bool holding;
+    bool decaying;
+};
+
+bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
+                               float urgency, uint32_t ttlMs,
+                               DirectorMobilizationReceipt* receipt,
+                               const char** reasonOut);
+void ReleaseDirectorMobilization(uintptr_t body);       // ordinary decay
+void HardResetDirectorMobilization(uintptr_t body);     // unsafe immediate reset
+void HardResetAllDirectorMobilization();                // disable/shutdown/rollback
+int  DirectorMobilizationCount();
 
 // Живая настройка диапазона из UI: применяется со следующим обновлением
 // таблицы, то есть в пределах 150 мс. Значения зажимаются в 0.75…1.30.
@@ -123,16 +170,21 @@ void        SprintWatchTick();       // зовётся каждый кадр и�
 SprintStats GetSprintStats();
 void        ResetSprintStats();
 
+// Одна строка агрегатов в лог. Первый GENERAL(dash/run/walk) hit и первый
+// необязательный SPRINT hit печатаются автоматически продуктовым тиком.
+void        DumpLocomotionDiagnostics(const char* reason);
+
 // ============================================================================
 // ШОВ ДЛЯ КОНТРОЛЛЕРА МУТАЦИЙ
 // ============================================================================
 //
-// Этот модуль — ПРИМИТИВ. Он умеет ровно одно: держать у особи два
-// множителя, передвижения и темпа анимации. Он не знает ни про ярость,
-// ни про память энкаунтеров, ни про фазы боя — и не должен.
+// Этот модуль — ПРИМИТИВ. Он держит у особи два множителя — передвижения
+// и темпа анимации — и две независимые ограниченные надстройки. Универсальный
+// override остаётся мультипликативным. Director использует отдельную
+// stable→personal-rage оболочку, но не знает тактику, цель или фазы боя.
 //
 // Базовый разброс от адреса тела — это «мутация по умолчанию», чтобы стая
-// не была одинаковой. Всё поведение сверху приходит отсюда:
+// не была одинаковой. Универсальное поведение сверху приходит отсюда:
 //
 //     Tempo::SetOverride(body, 1.0f, 1.35f, 6000);   // взбесился на 6 секунд
 //     Tempo::SetOverride(body, 0.8f, 0.8f, 0);       // ранен, бессрочно
@@ -145,7 +197,10 @@ void        ResetSprintStats();
 //
 // ttlMs = 0 означает «до явной отмены». Просрочки снимаются на обновлении
 // таблицы, то есть в пределах 150 мс.
-void  SetOverride(uintptr_t body, float loco, float atk, uint32_t ttlMs);
+// Returns false only when body is invalid or the bounded override table is full.
+// Existing entries update in place. Controllers can therefore fail closed
+// instead of assuming that a synchronized policy was installed.
+bool  SetOverride(uintptr_t body, float loco, float atk, uint32_t ttlMs);
 
 // --- ряд множителей анимации у НЕ-монстра ------------------------------------
 //

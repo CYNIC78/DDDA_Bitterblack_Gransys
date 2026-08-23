@@ -26,6 +26,7 @@ namespace Runtime {
     inline bool PawnInclinationsLive(unsigned, float*) { return false; }
     inline bool PawnSetInclinationLive(unsigned, int, float) { return false; }
 }
+static unsigned ExactPawnBodyForRecord(int) { return 0; }
 static void  WriteAllIncl(const float*, int) {}
 
 void UiPawnBlockTest()

@@ -10,8 +10,8 @@ wandRange = on
 Бой с магом/чародеем (наёмный ок). В логе:
 
 ```text
-WandRange: APPLIED live cCmc ...
-WandRange: applied bands: cCmcMagicUserCombo 5.0-10.0 cCmcLightningCloud 5.0-10.0
+WandRange: first APPLIED live cCmc ...
+WandRange: first applied bands: cCmcMagicUserCombo 5.0-10.0 cCmcLightningCloud 5.0-10.0
 ```
 
 `cCmcIceWalk 0.0-5.0` только в `seen`. Лук/кинжал не в `applied`.

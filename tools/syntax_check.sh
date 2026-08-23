@@ -9,6 +9,7 @@
 #   1. src/devtools/AnimProbe.cpp целиком (со шимом windows.h);
 #   1g. src/pawnai/GuardianDoctrine.cpp (SEH подменён на try/catch);
 #   2. src/monsterai/MonsterDirector.cpp (шим ini/лога);
+#   2t. src/runtime/MonsterTempo.cpp (dedicated portable shim);
 #   3. UI-блок пробы из DevTools.cpp на настоящем imgui.h;
 #   4. не-ASCII в строках, попадающих в ImGui (рисуются как '?').
 #
@@ -18,33 +19,39 @@ ROOT=$(pwd)
 T="$ROOT/tools/tcomp"
 GPP="g++ -std=c++11 -fsyntax-only -I$T -I$T/shim -I$ROOT"
 
-echo "== 1/9 AnimProbe.cpp =="
+echo "== 1/10 AnimProbe.cpp =="
 $GPP "$T/animprobe_t.cpp"
 
-echo "== 1b/9 MonsterDirector.cpp =="
+echo "== 1b/10 MonsterDirector.cpp =="
 $GPP "$T/director_t.cpp"
 
-echo "== 1c/9 PawnHaste.cpp =="
+echo "== 1j/10 MonsterTempo.cpp =="
+$GPP -DDDDA_TEMPO_PORTABLE_FIXTURE "$ROOT/src/runtime/MonsterTempo.cpp"
+
+echo "== 1c/10 PawnHaste.cpp =="
 $GPP "$T/pawnhaste_t.cpp"
 
-echo "== 1d/9 VocationCordon.cpp =="
+echo "== 1d/10 VocationCordon.cpp =="
 $GPP "$T/cordon_t.cpp"
 
-echo "== 1e/9 DashWatch.cpp =="
+echo "== 1e/10 DashWatch.cpp =="
 $GPP "$T/dashwatch_t.cpp"
 
-echo "== 1h/9 AggroWatch.cpp =="
+echo "== 1h/10 AggroWatch.cpp =="
 $GPP "$T/aggro_t.cpp"
 
-echo "== 1f/9 GoapProbe.cpp =="
+echo "== 1i/10 PartyRecon.cpp =="
+$GPP "$T/partyrecon_t.cpp"
+
+echo "== 1f/10 GoapProbe.cpp =="
 $GPP "$T/goap_t.cpp"
 
-echo "== 1g/9 GuardianDoctrine.cpp =="
+echo "== 1g/10 GuardianDoctrine.cpp =="
 # SEH под g++ нет: __try/__except подменяем на try/catch. Проверяется не
 # поведение обработчика, а синтаксис тела — этого и хотим.
 $GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/guard_t.cpp"
 
-echo "== 2/9 UI block =="
+echo "== 2/10 UI block =="
 python3 - <<'PY'
 p = 'src/devtools/DevTools.cpp'
 s = open(p, encoding='utf-8').read()
@@ -54,7 +61,7 @@ open('tools/tcomp/ui_block.inc', 'w', encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_t.cpp"
 
-echo "== 2b/9 UI block (PawnAI.cpp) =="
+echo "== 2b/10 UI block (PawnAI.cpp) =="
 # ЗАЧЕМ ЕЩЁ ОДИН БЛОК. Панель пешек живёт в PawnAI.cpp и до 75.2 не
 # проверялась вовсе: ошибки в вызовах ImGui там ловились только сборкой у
 # тестера, то есть ценой итерации. Проверяем тот же кусок тем же способом.
@@ -67,7 +74,10 @@ open('tools/tcomp/ui_pawn_block.inc', 'w', encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_pawn_t.cpp"
 
-echo "== 9/9 ASCII in UI strings =="
+echo "== 2c/10 EnemyAI.cpp =="
+$GPP "$T/enemyai_t.cpp"
+
+echo "== 9/10 ASCII in UI strings =="
 python3 - <<'PY'
 import re, glob, sys
 pat = re.compile(r'ImGui::(?:Text|Button|TextColored|TextWrapped|TextDisabled'

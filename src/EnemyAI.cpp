@@ -40,20 +40,27 @@ void RenderEnemyAIUI()
     {
         const Runtime::Tempo::Status ts = Runtime::Tempo::GetStatus();
         ImGui::TextColored(ImVec4(1, 0.85f, 0.4f, 1), "Movement tempo variation");
-        if (!ts.enabled) {
-            ImGui::TextDisabled("off - [monsterTempo] enabled = on in the ini");
+        bool movementOn = ts.enabled;
+        if (ImGui::Checkbox("enable movement tempo##mt", &movementOn)) {
+            Runtime::Tempo::SetEnabled(movementOn);
+            config.setBool("monsterTempo", "enabled", movementOn);
+        }
+        if (!movementOn) {
+            ImGui::TextDisabled("off (saved to INI); hook remains ready for live ON");
         } else {
-            // Счётчики совпадений показываем ВСЕГДА: в Build 70.0 не встал
-            // хук обычного движения, а увидеть это было негде — сообщение
-            // выводилось только когда не встали ОБА.
+            // Legacy-поле walkHooked на деле обозначает общий канал
+            // локомоции: dash/track, run и walk. Sprint — отдельный путь,
+            // а не критерий успеха общей локомоции.
             ImGui::TextColored(ts.walkHooked ? ImVec4(0.3f,1,0.3f,1) : ImVec4(1,0.5f,0.3f,1),
-                "walk hook: %s (%d sig matches)",
+                "general locomotion hook (dash/run/walk): %s (%d sig matches)",
                 ts.walkHooked ? "ON" : "not installed", ts.walkMatches);
             ImGui::TextColored(ts.sprintHooked ? ImVec4(0.3f,1,0.3f,1) : ImVec4(1,0.5f,0.3f,1),
-                "sprint hook: %s (%d sig matches)",
+                "separate sprint hook: %s (%d sig matches)",
                 ts.sprintHooked ? "ON" : "not installed", ts.sprintMatches);
-            if (!ts.walkHooked || !ts.sprintHooked)
-                ImGui::TextDisabled("Need both hooks, else one gait stays vanilla.");
+            if (!ts.walkHooked)
+                ImGui::TextDisabled("General locomotion is vanilla: dash/run/walk proof unavailable.");
+            else if (!ts.sprintHooked)
+                ImGui::TextDisabled("Sprint path is vanilla; general locomotion remains active.");
             float lo = 0, hi = 0;
             Runtime::Tempo::GetRange(&lo, &hi);
             bool changed = false;
@@ -80,8 +87,10 @@ void RenderEnemyAIUI()
             if (ImGui::SmallButton("reset##sprint")) Runtime::Tempo::ResetSprintStats();
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Bodies that hit the sprint hook this session.");
+            if (ImGui::SmallButton("locomotion counters to log"))
+                Runtime::Tempo::DumpLocomotionDiagnostics("manual");
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Per-monster speed. Pack arrives out of sync.");
+                ImGui::SetTooltip("Write bounded general/sprint application counters to the log.");
         }
     }
 
@@ -214,12 +223,12 @@ void RenderEnemyAIUI()
     }
 
     // --- Режиссёр стороны монстров -----------------------------------------
-    //
-    // Пока наблюдатель: показывает, что он видит на шине. Политики появятся
-    // только после того, как картина боя окажется верной.
+    // Build 012 retains exact target+urgency and splits ownership: Aggro consumes
+    // the target while Tempo mobilizes each exact free responder. Existing
+    // checkboxes remain the only consent; every safety gate stays fail-closed.
     {
         ImGui::Separator();
-        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1, 1), "Monster director (observer)");
+        ImGui::TextColored(ImVec4(0.7f, 0.9f, 1, 1), "Monster director (Build 012 urgency + mobilization)");
         bool on = MonsterAI::Enabled();
         if (ImGui::Checkbox("enable monster director", &on)) {
             MonsterAI::SetEnabled(on);
@@ -227,8 +236,90 @@ void RenderEnemyAIUI()
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("snapshot to log")) MonsterAI::DumpSnapshot();
+
+        bool pilot = MonsterAI::ActuatorEnabled();
+        if (ImGui::Checkbox("enable Director actuator (WRITES)", &pilot)) {
+            MonsterAI::SetActuatorEnabled(pilot);
+            config.setBool("monsterAI", "wolfActuator", pilot);
+        }
+        ImGui::Text("policy: %s | %s | gameplay calls %d",
+                    MonsterAI::PolicyStatus(),
+                    MonsterAI::PolicyEngaged() ? "ENGAGED" : "released",
+                    MonsterAI::GameplayWriteCount());
+        const Runtime::Tempo::DirectorReadiness tr =
+            Runtime::Tempo::GetDirectorReadiness();
+        ImGui::TextDisabled("Tempo ready: movement %s | general hook %s | animation %s | attacks-only %s",
+            tr.movementEnabled ? "yes" : "NO",
+            tr.generalHookInstalled ? "yes" : "NO",
+            tr.animationEnabled ? "yes" : "NO",
+            tr.attacksOnly ? "yes" : "NO");
         ImGui::TextWrapped("%s", MonsterAI::Status());
         if (on) {
+            static const char* kPartyName[4] = {
+                "Arisen", "MainPawn", "Hired1", "Hired2"
+            };
+            const int mark = MonsterAI::PackMarkSlot();
+            const int runner = MonsterAI::RunnerUpSlot();
+            const int p0 = MonsterAI::PrioritySlot(0);
+            const int p1 = MonsterAI::PrioritySlot(1);
+            const int p2 = MonsterAI::PrioritySlot(2);
+            const int p3 = MonsterAI::PrioritySlot(3);
+            const float holdS = (float)MonsterAI::HoldRemainingMs() / 1000.0f;
+            const float isolationPct = MonsterAI::TargetIsolationRatio() * 100.0f;
+            const float depthPct = MonsterAI::TargetDepthRatio() * 100.0f;
+            ImGui::TextColored(ImVec4(0.45f, 1.0f, 0.55f, 1),
+                "Build 012 target+urgency | Aggro target + Tempo responders | actuator %s | gameplay calls %d",
+                MonsterAI::ActuatorEnabled() ? "ON" : "OFF",
+                MonsterAI::GameplayWriteCount());
+            ImGui::Text("wolves %d | raw priority %s > %s > %s > %s",
+                MonsterAI::ScoredWolfCount(),
+                p0 >= 0 && p0 < 4 ? kPartyName[p0] : "-",
+                p1 >= 0 && p1 < 4 ? kPartyName[p1] : "-",
+                p2 >= 0 && p2 < 4 ? kPartyName[p2] : "-",
+                p3 >= 0 && p3 < 4 ? kPartyName[p3] : "-");
+            ImGui::Text("committed PackMark %s | runner %s | focus intent %s | hold %.1fs",
+                mark >= 0 && mark < 4 ? kPartyName[mark] : "none",
+                runner >= 0 && runner < 4 ? kPartyName[runner] : "none",
+                MonsterAI::RecommendationName(), holdS);
+            ImGui::Text("isolation (runner/mark - 1) %+.1f%% | target depth (highest/mark - 1) %+.1f%%",
+                isolationPct, depthPct);
+            ImGui::TextDisabled(
+                "Focus tiers use isolation only: <20%% NONE | 20..<100%% BIAS | >=100%% FOCUS-WINDOW.");
+            ImGui::TextDisabled(
+                "Decision input: confirmed ABSOLUTE current HP only. max-HP percentage is not used.");
+            ImGui::TextDisabled(
+                "Strategic DEF/ATK, equipment, vocation, skills and status: ignored; cue uses exact actions + pair distance.");
+            ImGui::TextDisabled(
+                "Both metrics follow the held PackMark; healing/level-up metadata cannot reset that hold.");
+            ImGui::TextDisabled(
+                "Actuation requires all four record slots to map to exact unique live bodies; ambiguity releases.");
+            ImGui::TextDisabled(
+                "GrabStart opens a 5s read-only nearby-action probe; ground pin is not actuated until its exact pair is known.");
+
+            for (int m = 0; m < 4; ++m) {
+                MonsterAI::HuntTelemetry h;
+                if (!MonsterAI::HuntTelemetryAt(m, &h)) {
+                    ImGui::TextDisabled("  %-8s record unavailable", kPartyName[m]);
+                    continue;
+                }
+                const ImVec4 c = m == mark ? ImVec4(1.0f, 0.78f, 0.35f, 1)
+                                           : ImVec4(0.82f, 0.82f, 0.82f, 1);
+                ImGui::TextColored(c,
+                    "%c rank %d | %-8s HP %s%.0f | HP-score %s%.3f | maxHP %.0f diag-only",
+                    m == mark ? '*' : ' ', h.priorityRank, kPartyName[m],
+                    h.hpValid ? "" : "? ", h.currentHp,
+                    h.scoreValid ? "" : "? ", h.huntScore, h.maxHp);
+                ImGui::TextDisabled(
+                    "    record %s | body %s | position %s (HP ignores; cue requires exact)",
+                    h.recordValid ? "valid" : "invalid",
+                    h.bodyValid ? "mapped" : "UNVALIDATED",
+                    h.positionValid ? "available" : "UNVALIDATED");
+                ImGui::TextDisabled(
+                    "    CORE/UNVALIDATED ignored: STR %.0f DEF %.0f MAG %.0f MDEF %.0f | loadout totals UNKNOWN",
+                    h.coreStrength, h.coreDefense, h.coreMagick,
+                    h.coreMagickDefense);
+            }
+
             const int n = MonsterAI::ViewCount();
             for (int i = 0; i < n && i < 8; ++i) {
                 const MonsterAI::MonsterView* v = MonsterAI::ViewAt(i);
@@ -241,17 +332,8 @@ void RenderEnemyAIUI()
             }
             if (n > 8) ImGui::TextDisabled("  ... and %d more", n - 8);
 
-            // Схождение стаи: сколько особей на одном и что с жертвой.
-            ImGui::TextDisabled("pack convergence (>=3 foes on one member):");
-            for (int m = 0; m < 4; ++m) {
-                const Runtime::Aggro::Converge* c = Runtime::Aggro::ConvergeAt(m);
-                if (!c || !c->peak) continue;
-                ImGui::TextColored(c->count >= 3 ? ImVec4(1, 0.5f, 0.4f, 1)
-                                                 : ImVec4(0.7f, 0.7f, 0.7f, 1),
-                    "  %-9s now %d  peak %d  %s",
-                    Runtime::Aggro::MemberName(m), c->count, c->peak,
-                    c->memberAct[0] ? c->memberAct : "");
-            }
+            ImGui::TextDisabled(
+                "Actuator identity is revalidated internally before writes; use bounded policy transitions in the log.");
         }
     }
 
@@ -285,7 +367,8 @@ void RenderEnemyAIUI()
         // внимания на члене партии. Пишет ТОЛЬКО в карты uEm0200,
         // нативное значение 300, readback + откат. Сброс = снять штырь,
         // затухание движка доведёт поле до нуля само.
-        if (aw) {
+        const bool directorLease = Runtime::Aggro::DirectorFocusMember() >= 0;
+        if (aw && !directorLease) {
             const int pm = Runtime::Aggro::PinMember();
             const int ps = Runtime::Aggro::PinScope();
             // 83.0: FOCUS — продуктовая операция одной кнопкой:
@@ -356,6 +439,9 @@ void RenderEnemyAIUI()
             Runtime::Aggro::PinStats(&pw, &pr);
             if (pm >= 0 || pw)
                 ImGui::TextDisabled("pin: writes %u  rollbacks %u", pw, pr);
+        } else if (aw && directorLease) {
+            ImGui::TextColored(ImVec4(1.0f, 0.72f, 0.35f, 1),
+                "Manual PIN/FOCUS controls suspended: Monster Director owns the focus lease.");
         }
         if (aw) {
             // Отметки режут лог замера на A и B. Без них две половины

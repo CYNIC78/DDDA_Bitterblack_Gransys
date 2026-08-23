@@ -14,7 +14,7 @@ float в чужую память.
 |---|---|---|
 | смещение ряда `+0x0EE4…+0x0EF4` | **вероятно да** | лежит глубоко в общей для всех существ части тела, задолго до видоспецифичной зоны (`cCharParamEnemy` у гоблина только на `+0x5870`) |
 | хуки передвижения | **да, уже** | сигнатуры ловят код движка, а не вид |
-| классификация «это атака» | **да, теперь** | таблица действий покрывает все 35 видов |
+| классификация «это атака» | **да, теперь** | ActMap содержит 873 состояния в 36 emId-группах |
 | допустимые пределы множителей | **под вопросом** | у огра замах и так медленный, у волка быстрый; одни и те же 0.70…1.40 могут читаться по-разному |
 
 «Вероятно» — не основание писать в память. Поэтому допуск.
@@ -106,3 +106,68 @@ Tempo: species uEm0700 rejected (no field at exactly 1.0) rates 0.00 0.00 ...
 по имени.
 
 Пока не трогаем: сначала темп должен устояться на всех видах.
+
+## 7. Build 011: universal cue не означает universal write admission
+
+Ground pin, standing restraint и literal lift/carry — разные interaction
+classes, но все задаются строками одного `TacticalCues` matcher. Recipe хранит
+exact holder actions, exact monster kind, spatial bound, priority, response
+strength и max lease. Добавление вида не должно создавать ветку в Director.
+
+Текущий wolf recipe использует exact acting-pawn `cPlActGrabStart` как ALERT и
+exact `cPlActHagaijime4Feet` как независимо допустимый ALARM. Волк и сауриан
+могут разделять категорию ground pin, но обязаны иметь независимо проверенные
+action recipes и exact kind. Standing rear restraint гоблина и literal
+lift/carry остаются отдельными rows.
+
+Распознавание cue и разрешение write — разные ворота. Tempo проходит свой
+species verdict. Aggro layout нового вида требует проверки card base, stride,
+shape, native values, readback и rollback. Пока её нет, downstream actuator
+fail-closed даже при правильно распознанном universal cue. В Build 011 Aggro
+admission остаётся только exact `uEm0200`, без prefix/subtype.
+
+Для вида с надёжной spatial identity exact restrained body исключается из
+responders. ALERT не владеет Tempo; ALARM может получить только per-body leases
+с проверенным видом. Ни один rollout не должен ослаблять exact-four party
+identity, freshness, uniqueness, bounded lease или default-off consent.
+
+## 8. Build 012: mobilization endpoint тоже допускается per exact species
+
+Universal cue по-прежнему не открывает ни Aggro, ни Tempo write для нового
+вида. Build 012 добавляет третий независимый proof gate: кроме attack map и
+Aggro card layout, виду нужен собственный безопасный диапазон personal rage
+endpoint.
+
+Для каждой admitted species должны быть явно определены и проверены:
+
+- stable locomotion/attack ranges;
+- `L1` rage locomotion range;
+- `A1` rage attacks-only animation range;
+- строгий инвариант `L0<L1`, `A0<A1` для каждого тела;
+- final hard clamps и визуальная читаемость атак;
+- полный набор locomotion состояний: dash/track, run и walk, не только sprint;
+- deterministic individual variation при `m=1`.
+
+Текущий integrated pilot имеет единственную exact строку `uEm0200`: `L1
+1.20..1.25`, `A1 1.20..1.26`. `strcmp` остаётся точным: subtype/prefix не
+наследует эти пределы. Для гоблина нельзя копировать wolf balance — его swing
+слишком медленный относительно movement; для других видов диапазоны также
+подбираются отдельно. Заполнение полного bestiary inventory остаётся явным
+техническим долгом.
+
+Если species endpoint не доказан, `AdmitDirectorMobilization()` возвращает
+`director-mobilization-species-unvalidated`; Director hard-reset-ит частичную
+policy. Нельзя подставлять generic hard max как endpoint, снимать endpoint с
+live transitional factor или автоматически наследовать значение похожего вида.
+
+После допуска composition одинакова для всех видов:
+
+```text
+assigned stable L0/A0 -> personal exact-species L1/A1 envelope
+-> independent generic override -> final species-safe clamp
+```
+
+Build 011 ALERT-without-Tempo больше не является текущей политикой: в Build 012
+каждый исполняемый emergency, включая ALERT, требует readiness и mobilization
+всех exact free responders. Различие ALERT/ALARM остаётся в Aggro bundle и
+lease, а не в наличии mobilization.
