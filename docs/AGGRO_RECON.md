@@ -1373,6 +1373,8 @@ fC=4 — «восприятие» (300-10d, 9/тик, вес 1.0 — то, чт�
 fC=2 — «боевой» (до ~500, 1.8/тик, вес 0.2). Это объясняет и ~25%
 дрейфа целей в мурле, и фактуру аномалий. Следующий зазор покрытия —
 понять переходы 4<->2 и научиться гнуть и «боевой» режим.
+Build 84.12 пишет proven `fC=2` at native ceiling 500 (range 0..520) and
+keeps `fC=4` at 300. Weight `+0x14` is still not written.
 
 ### 25.4 Лидер стаи
 
@@ -1484,3 +1486,23 @@ rows переводит в bounded decay. Identity/body/species/readiness/topolo
 stale world, timeout, rollback, disable и shutdown снимают Aggro и делают
 immediate hard reset Director Tempo state. Generic Tempo overrides при этом не
 принадлежат Director и не очищаются.
+
+## 29. Build 84.15 — empty `uEm0100` card wake (not species inherit)
+
+Log 23: cue `GOBLIN-GRAB-ALERT` fired, but Aggro wrote 0. Mark cards were
+exact empty shells (`f8=0 fC=0 att=0 w=0`) with a stuck party pointer.
+`LiveWolfCardMode` correctly refused them. 84.15 does **not** copy wolf
+head writes onto an unknown goblin layout.
+
+Proven shared prefix only:
+
+```text
+roster +0x2FA0, stride 0x28C, 4 cards
+wake only if the whole head is 0/0/0/0
+write f8=1 fC=4 att=300 w=1.0
+readback all four; mismatch -> restore the four zeros
+never write the card-head party pointer
+```
+
+Any other head (transitional `fC=1`, combat `fC=2`, leftover junk) stays
+fail-closed. Manual PIN remains `uEm0200`. Goblin ALERT stays pin-only.

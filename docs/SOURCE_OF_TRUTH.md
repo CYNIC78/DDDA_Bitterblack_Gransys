@@ -58,6 +58,8 @@ Account economy (абсолютные, от `pBase`):
 
 Main Pawn определяется динамически как `uCmc`, Arisen как `uPlayer`; hardcoded absolute vtable не является production resolver.
 
+Arisen identity (Build 84.11): live `uPlayer` (TypeAtlas size 23056 = `kPartyBodySize`) клеится к fixed record `*pBase+0xA7000` без обязательного указателя на запись в наружном теле. Порядок доказательств: pointer в теле / child graph; обратный указатель в первых `0x7F0` байтах записи (не заходить в Main Pawn record); полный `cPlayerInfo` (2032 B = `0x7F0`) содержит указатель на запись; иначе ровно один живой `uPlayer` + валидный `CombatRecordCore` + читаемые XYZ. Ноль или два+ `uPlayer` — fail-closed. HP записи (`+0x96C`) лежит за пределами `0x7F0` и в `cPlayerInfo` не ищется.
+
 | Offset live body | Type | Field |
 |---:|---|---|
 | `+0x2DC0` | ptr | `cActionManager::cActBank` |
@@ -439,6 +441,11 @@ Current target pointer не подтверждён.
 - `+0x0C/+0x10`: observed doubly-linked live-unit list.
 - `+0x40/+0x44/+0x48`: world XYZ.
 - `+0x2DC8`: current enemy Act; смерть определяется `Die/DeadBody`, не угадыванием HP.
+- `uEm0200` roster card head (только этот вид; база/шаг по форме, не константа):
+  `+0x00` ptr party body; `+0x08` int live flag `1`; `+0x0C` mode `4`=perception
+  (attention `+0x10` native `0..300`, pin ceiling 300) или `2`=combat
+  (`+0x10` native `0..~500`, pin ceiling 500). Weight `+0x14` (1.0 / 0.2) —
+  read-only. Dead `0/0` and transitional `fC=1` are not writable.
 - `uEm0100` body size `0x73C0`; видоспецифичные offsets нельзя переносить на все `uEm*`.
 - Goblin `cCharParamEnemy` найден по signature; observed copies около `+0x5870/+0x59B0`, size `0x140`.
 - Body scale channels `+0x60/+0x64/+0x68` и charparam scale `+0x12C` используются только через проверяемый EnemyTuner contract.

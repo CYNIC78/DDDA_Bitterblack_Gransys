@@ -46,7 +46,7 @@ namespace Aggro {
 
 enum {
     kMaxRows     = 32,  // особей под наблюдением
-    kMaxSlots    = 8,   // слотов-ссылок на партию в одном теле
+    kMaxSlots    = 12,  // target slots + forced uEm0100 roster (4 cards)
     kMaxParty    = 4,   // Аризен + до трёх пешек
     kMemberSlots = 5    // + графа «неразрешённая пешка», см. MEMBER_OTHERPAWN
 };
@@ -187,12 +187,17 @@ bool ResolveMemberBody(int member, uintptr_t* bodyOut);
 // This is for automatic Director logs; it performs no writes.
 const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut);
 
-// Product response lease for Monster Director (uEm0200 only). ALERT reapplies
-// only the validated attention pin: free packmates turn their target toward the
-// acting pawn without fake-hit attack pressure. ALARM uses the already tested
-// pin+suppress+fakehit bundle. The caller supplies the exact fixed-slot body;
-// Aggro re-resolves it here and before every write. member < 0 releases. The
-// optional exact restrained body receives no Aggro mutation.
+// Product response lease for Monster Director. exactKind is a full DTI name
+// (uEm0200 pack or uEm0100 grab pin). ALERT reapplies only the validated
+// attention pin: free same-kind bodies (not the restrained body, and not a
+// wolf already in combat with someone else) turn toward the acting pawn
+// without fake-hit attack pressure. A wolf chewing another member is left
+// occupying them. ALARM uses the already tested pin+suppress+fakehit bundle
+// on free wolves and on wolves already fighting the mark. Goblins never get
+// that ALARM pack; their only write is ALERT pin-only. The caller supplies
+// the exact fixed-slot body; Aggro re-resolves it here and before every write.
+// member < 0 releases. The optional exact restrained body receives no Aggro
+// mutation. Manual research PIN stays uEm0200-only.
 enum DirectorResponse {
     DIRECTOR_RESPONSE_NONE = 0,
     DIRECTOR_RESPONSE_ALERT = 1,
@@ -200,7 +205,8 @@ enum DirectorResponse {
 };
 bool     DirectorFocusSet(int member, uintptr_t expectedBody,
                           uintptr_t excludedEnemyBody = 0,
-                          int response = DIRECTOR_RESPONSE_ALARM);
+                          int response = DIRECTOR_RESPONSE_ALARM,
+                          const char* exactKind = "uEm0200");
 int      DirectorFocusMember();
 int      DirectorResponseLevel();
 uint32_t DirectorWriteCount();

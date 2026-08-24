@@ -15,7 +15,7 @@ tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 director = (root / 'src/monsterai/MonsterDirector.cpp').read_text(encoding='utf-8')
 
 # Build 012 is a full build over (and must retain) the completed Build 005 proof.
-assert '84.9-pilot012-urgency-mobilization' in tag
+assert '84.15-goblin-grab-hold' in tag
 
 walk = re.search(
     r'static void __declspec\(naked\) HMoveWalk\(\).*?'

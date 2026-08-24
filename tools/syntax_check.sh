@@ -25,6 +25,9 @@ $GPP "$T/animprobe_t.cpp"
 echo "== 1b/10 MonsterDirector.cpp =="
 $GPP "$T/director_t.cpp"
 
+echo "== 1k/10 PackObserve.cpp =="
+$GPP -DDDDA_PACKOBSERVE_PORTABLE "$T/packobserve_t.cpp"
+
 echo "== 1j/10 MonsterTempo.cpp =="
 $GPP -DDDDA_TEMPO_PORTABLE_FIXTURE "$ROOT/src/runtime/MonsterTempo.cpp"
 

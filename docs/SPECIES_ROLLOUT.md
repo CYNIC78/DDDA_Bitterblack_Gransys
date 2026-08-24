@@ -171,3 +171,19 @@ Build 011 ALERT-without-Tempo больше не является текущей 
 каждый исполняемый emergency, включая ALERT, требует readiness и mobilization
 всех exact free responders. Различие ALERT/ALARM остаётся в Aggro bundle и
 lease, а не в наличии mobilization.
+
+## 9. Build 84.10: observe-карточка не есть write-допуск
+
+`src/monsterai/SpeciesCard.h` — точный `strcmp` по DTI. Сейчас две строки:
+
+| kind | size | observe | tempoRage | aggroWrite |
+|---|---|---|---|---|
+| `uEm0200` | 29888 | да | да | да |
+| `uEm0100` | 29632 | да | нет | да (GrabStart/Hagaijime pin-only) |
+
+`PackObserve` по-прежнему только читает exact `uEm0100`. 84.15 держит
+`GOBLIN-GRAB-ALERT` через `cPlActHagaijime` (4000 ms) и будит пустые карты
+`0/0` на доказанном `+0x2FA0+k*0x28C`. Tempo L1/A1 и FOCUS-WINDOW /
+suppress+fakehit пак гоблину не даются. Волчьи числа копировать нельзя.
+Хобгоблин и гримгоблин получат свои карточки после своего боя, не префиксом
+`uEm010*`.

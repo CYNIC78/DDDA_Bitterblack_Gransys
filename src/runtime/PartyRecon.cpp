@@ -24,6 +24,7 @@ bool PartyRelevantName(const char* n)
         || PartyStartsWith(n, "uPawn")
         || PartyStartsWith(n, "cAIPlayer")
         || PartyStartsWith(n, "rAIPlayer")
+        || !strcmp(n, "cPlayerInfo")
         || strstr(n, "ActionManager") != nullptr
         || strstr(n, "ActBank") != nullptr
         || strstr(n, "Motion") != nullptr
@@ -929,6 +930,41 @@ void PartyInspectBody(PartyBodyDump& P)
             }
         }
     }
+
+    // Arisen: the live uPlayer often does not embed *pBase+0xA7000 in the
+    // outer 0x5A10 blob. Pawns already have a second path; give Arisen the
+    // same three proofs before we fall back to "unique live uPlayer".
+    // Reverse-scan only the first 0x7F0 of the Arisen record so we do not
+    // walk the adjacent Main Pawn record. cPlayerInfo is 2032 = 0x7F0;
+    // kPartyChildHeadSize (384) would miss a pointer past the first 384.
+    if (!strcmp(P.dti, "uPlayer") && playerRecord) {
+        if (P.playerRecordRef && !P.pawnRecordMatch[0])
+            lstrcpynA(P.pawnRecordMatch, "player-record-pointer",
+                      sizeof(P.pawnRecordMatch));
+        if (!P.playerRecordRef) {
+            BYTE recHead[0x7F0];
+            if (Rd((void*)playerRecord, recHead, sizeof(recHead))
+                && PartyBlockHasPtr(recHead, sizeof(recHead), P.ptr)) {
+                P.playerRecordRef = true;
+                lstrcpynA(P.pawnRecordMatch, "record-body-pointer",
+                          sizeof(P.pawnRecordMatch));
+            }
+        }
+        if (!P.playerRecordRef) {
+            const uintptr_t info =
+                FindChildByClass(P.ptr, P.bodySize, "cPlayerInfo", 0);
+            if (info) {
+                BYTE infoBlob[2032];
+                if (Rd((void*)info, infoBlob, sizeof(infoBlob))
+                    && PartyBlockHasPtr(infoBlob, sizeof(infoBlob),
+                                        playerRecord)) {
+                    P.playerRecordRef = true;
+                    lstrcpynA(P.pawnRecordMatch, "info-record-pointer",
+                              sizeof(P.pawnRecordMatch));
+                }
+            }
+        }
+    }
 }
 
 void PartyMarkPawnManagerRefs()
@@ -956,9 +992,43 @@ int PartyCountValueHits(const PartyBodyDump& P, const char* prefix)
 static bool PartyIsRecordBackedArisen(const PartyBodyDump& P)
 {
     // DTI alone is not identity. Live-list snapshots can expose multiple
-    // class-valid uPlayer subobjects/candidates at once. Only the body whose
-    // inspected graph contains the exact fixed player record may claim Arisen.
+    // class-valid uPlayer subobjects/candidates at once. Pointer evidence
+    // (body/record/cPlayerInfo) wins first. PartyClaimUniqueArisen may then
+    // set playerRecordRef for a unique live uPlayer whose Arisen record is
+    // valid and whose world position is readable. Zero or two+ uPlayer
+    // claims stay fail-closed; list order never promotes.
     return !strcmp(P.dti, "uPlayer") && P.playerRecordRef;
+}
+
+// Species-independent Arisen glue. Find the live uPlayer once; do not reopen
+// identity every time a new monster type is added. Fixture tests have no
+// pBase, so unique-DTI-alone stays fail-closed there.
+static void PartyClaimUniqueArisen()
+{
+    int unique = -1;
+    int n = 0;
+    for (int i = 0; i < g_nParty; ++i) {
+        if (strcmp(g_party[i].dti, "uPlayer") != 0) continue;
+        unique = i;
+        ++n;
+    }
+    if (n != 1 || unique < 0) return;
+    PartyBodyDump& P = g_party[unique];
+    if (P.playerRecordRef) return;
+    if (!CombatRecordCore(ArisenRecordAddr(), 0, 0)) return;
+    float x = 0.f, y = 0.f, z = 0.f;
+    if (!CombatReadPosition(P.ptr, &x, &y, &z)) return;
+    if (x == 0.0f && y == 0.0f && z == 0.0f) return;
+    P.playerRecordRef = true;
+    if (!P.pawnRecordMatch[0] || !strcmp(P.pawnRecordMatch, "not-a-pawn"))
+        lstrcpynA(P.pawnRecordMatch, "unique-live-uPlayer",
+                  sizeof(P.pawnRecordMatch));
+    static uintptr_t sLoggedBody = 0;
+    if (sLoggedBody != P.ptr) {
+        sLoggedBody = P.ptr;
+        logFile << "PartyRecon: Arisen claimed @0x" << std::hex << P.ptr
+                << std::dec << " via " << P.pawnRecordMatch << std::endl;
+    }
 }
 
 void PartySelectWorkingPair()
@@ -1200,6 +1270,9 @@ static void PartyRetryUnresolvedPawnIdentity()
                   P.pawnRecordMatch);
         logFile << l << std::endl;
     }
+    const uintptr_t beforeArisen = ArisenBody();
+    PartyClaimUniqueArisen();
+    if (ArisenBody() != beforeArisen) changed = true;
     if (changed) PartyAssignRoles();
 }
 
@@ -1230,6 +1303,7 @@ void PartyAdoptBody(uintptr_t body, const char* dti)
     lstrcpynA(P.dti, dti, sizeof(P.dti));
     P.pawnRecordIdx = -1;
     PartyInspectBody(P);
+    PartyClaimUniqueArisen();
     PartyAssignRoles();
 
     char l[220];
@@ -1239,8 +1313,10 @@ void PartyAdoptBody(uintptr_t body, const char* dti)
                   P.pawnRecordIdx, P.pawnRecordMatch);
     } else if (PartyIsRecordBackedArisen(P)) {
         sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
-                     " (fixed slot Arisen via player-record-pointer)",
-                  dti, (unsigned)body);
+                     " (fixed slot Arisen via %s)",
+                  dti, (unsigned)body,
+                  P.pawnRecordMatch[0] ? P.pawnRecordMatch
+                                       : "player-record-pointer");
     } else {
         sprintf_s(l, "PartyRecon: adopted %s body 0x%08X from the live list"
                      " (unresolved: no player-record-pointer)",
@@ -1274,6 +1350,7 @@ void PartyPositionsTick()
                 PartyFindBodies(true);
                 for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
                 PartyMarkPawnManagerRefs();
+                PartyClaimUniqueArisen();
                 PartySelectWorkingPair();
                 PartyAssignRoles();
                 PartyReportCompositionChange();
@@ -1354,6 +1431,7 @@ void PartyPositionsTick()
     PartyFindBodies(true);
     for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
     PartyMarkPawnManagerRefs();
+    PartyClaimUniqueArisen();
     PartySelectWorkingPair();
     PartyAssignRoles();
     PartyReportCompositionChange();
@@ -1373,6 +1451,7 @@ void PartyCapture(bool forceFind)
     if (forceFind || !PartyCandidatesStillValid()) PartyFindBodies();
     for (int i = 0; i < g_nParty; ++i) PartyInspectBody(g_party[i]);
     PartyMarkPawnManagerRefs();
+    PartyClaimUniqueArisen();
     PartySelectWorkingPair();
     PartyAssignRoles();
     PartyReadPositions();
@@ -1448,8 +1527,8 @@ bool GetArisenWorldPos(float* x, float* y, float* z)
 
 // Arisen имеет отдельный DTI uPlayer, но DTI не является identity: live-list
 // может одновременно показать несколько class-valid candidates/subobjects.
-// Exact4 принимает только одного claimant, чьё инспектированное тело/child graph
-// содержит точный fixed player record. Zero/multiple claims fail closed.
+// Один claimant принимается, если pointer evidence или unique-live-uPlayer
+// glue уже выставили playerRecordRef. Zero/multiple claims fail closed.
 uintptr_t ArisenBody()
 {
     uintptr_t body = 0;

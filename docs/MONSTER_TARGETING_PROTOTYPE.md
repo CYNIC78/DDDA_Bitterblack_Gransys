@@ -1,7 +1,8 @@
 # Monster Director — Build 012 urgency + mobilization
 
-**Build tag:** `84.9-pilot012-urgency-mobilization`  
-**Статус:** source pilot; exact `uEm0200`; default OFF; новых F12 controls нет.
+**Build tag:** `84.14-goblin-grab-pin` (84.13 leave-engaged + exact `uEm0100` grab pin)  
+**Предыдущий Director-pilot:** `84.9-pilot012-urgency-mobilization`  
+**Статус:** source pilot; `uEm0200` pack + `uEm0100` grab pin; default OFF; новых F12 нет.
 
 ## 1. Что изменилось
 
@@ -86,10 +87,11 @@ Generic override остаётся отдельной старой ручкой. 
 
 | Response | Aggro bundle | Evidence lease | Tempo |
 |---|---|---:|---|
-| `PACK-GRAB-ALERT` | exact target pin only; без suppress/fake-hit | 750 ms | full urgency для free responders |
-| `PACK-GROUND-PIN-ALARM` | pin + suppress + bounded fake-hit | 4000 ms | full urgency для free responders |
-| `PACK-LIFT-RESCUE` | pin + suppress + bounded fake-hit | 2500 ms | full urgency для free responders |
-| strategic FOCUS-WINDOW | ALARM-strength target response | strategic intent lifecycle | full urgency для free responders |
+| `PACK-GRAB-ALERT` | exact target pin only; без suppress/fake-hit | 750 ms | full urgency для free `uEm0200` |
+| `GOBLIN-GRAB-ALERT` | exact target pin only; empty `0/0` wake at `+0x2FA0`; без suppress/fake-hit | 4000 ms | нет (`tempoRage=false`) |
+| `PACK-GROUND-PIN-ALARM` | pin + suppress + bounded fake-hit | 4000 ms | full urgency для free `uEm0200` |
+| `PACK-LIFT-RESCUE` | pin + suppress + bounded fake-hit | 2500 ms | full urgency для free `uEm0200` |
+| strategic FOCUS-WINDOW | ALARM-strength target response | strategic intent lifecycle | full urgency для free `uEm0200` only |
 
 Aggro потребляет exact party target. Tempo не знает target и получает только
 exact responder body, exact kind, urgency и TTL.
@@ -111,6 +113,7 @@ exact responder body, exact kind, urgency и TTL.
 | `PACK-GROUND-PIN-ALARM` | exact `cPlActHagaijime4Feet` | exact `uEm0200`, одна spatial pair ≤2.0 m | 200 | 1.0 | 4000 ms |
 | `PACK-LIFT-RESCUE` | exact `cPlActLift*` | globally unique exact `cEm0200Lifted`, pair ≤2.5 m | 150 | 1.0 | 2500 ms |
 | `PACK-GRAB-ALERT` | exact `cPlActGrabStart` | exact `uEm0200`, одна spatial pair ≤2.0 m | 100 | 1.0 | 750 ms |
+| `GOBLIN-GRAB-ALERT` | exact `cPlActGrabStart` / `cPlActHagaijime` | exact `uEm0100`, одна spatial pair ≤2.0 m | 90 | 1.0 | 4000 ms |
 
 `Hagaijime4Feet` — independently sufficient action acting pawn: предшествующий
 `GrabStart` не требуется. Ground pin никогда не называется `Lifted`; perfect
@@ -137,7 +140,9 @@ Director хранит отдельно:
 - диагностические диапазоны `L0/A0/L1/A1`.
 
 Если paired wolf — единственный, policy заканчивается
-`wolf-pack-no-free-responder` без gameplay write.
+`wolf-pack-no-free-responder` без gameplay write. То же для exact `uEm0100`
+grab: `goblin-no-free-responder`. FOCUS-WINDOW по-прежнему собирает только
+`uEm0200`.
 
 ## 7. Release: decay или hard reset
 
@@ -170,7 +175,9 @@ Tempo overrides. Это исключает stale world state и перенос o
 До gameplay write обязательны:
 
 - свежий WorldReport (не старше 450 ms);
-- exact четыре party records и четыре уникальных body;
+- occupied-exact party records: Arisen + Main обязательны; пустой Hired
+  (`record-unavailable`) пропускается, занятый без тела — fail-closed;
+  snapshot body совпадает с независимым fixed-slot Aggro bridge;
 - совпадение snapshot body с независимым fixed-slot Aggro bridge;
 - exact party action и exact admitted target body;
 - exact `strcmp(kind, "uEm0200")`, не prefix;
@@ -180,6 +187,10 @@ Tempo overrides. Это исключает stale world state и перенос o
 - Tempo movement ON, general locomotion hook, animation ON, attacks-only scope;
 - прежний default-off `wolfActuator` consent;
 - downstream Aggro row shape/native/readback/rollback safeguards.
+  Live wolf heads are `f8=1 fC=4` (perception, pin 300) and `f8=1 fC=2`
+  (combat, pin 500). Dead `0/0` and transitional `fC=1` stay fail-closed.
+  Director does not retarget a wolf whose combat card is already on another
+  party member (`left` in Aggro summary).
 
 ## 9. Что сохранено
 
@@ -205,15 +216,29 @@ Tempo overrides. Это исключает stale world state и перенос o
 1. Собрать и установить source Build 012.
 2. В первой строке лога проверить exact tag:
    ```text
-   84.9-pilot012-urgency-mobilization
+   84.15-goblin-grab-hold
    ```
 3. Включить прежние `enable monster director` и
    `enable Director actuator (WRITES)`. Новых переключателей искать не нужно.
-4. Убедиться, что UI показывает все четыре Tempo readiness как `yes`.
-5. В бою с несколькими волками дать любой пешке начать `GrabStart` и, по
-   возможности, завершить ground pin.
-6. После боя сохранить **полный лог**. Не выписывать вручную fast counters,
+4. Текущий прогон — ночной берег Кассардиса, exact `uEm0100`. Волков
+   искать не нужно. Пешка хватает гоблина (`GrabStart`).
+5. После боя сохранить **полный лог**. Не выписывать вручную fast counters,
    distances или HP.
+
+### Ожидаемый goblin grab hold (84.15)
+
+```text
+situation ENGAGED name=GOBLIN-GRAB-ALERT response=ALERT urgency=1 holderAct=cPlActGrabStart|cPlActHagaijime leaseMax=4000ms
+policy ENGAGED reason=tactical-goblin-grab-alert ... responders=N tempoOwned=0 mobilization=HOLD
+Aggro: DIRECTOR ALERT ... kind=uEm0100 ... pin-only
+Aggro: DIRECTOR goblin-card-wake @...  0/0 -> 1/4 att=300 w=1.0
+Aggro: DIRECTOR ALERT ... writes N   (N>0, не только lease)
+```
+
+Tempo owned обязан быть 0. FOCUS-WINDOW / SUPPRESS / FAKEHIT на гоблинах —
+ошибка. `holder-action-ended` на 375 ms — регресс. Один свободный
+оппортунист достаточен; единственный схваченный гоблин даёт
+`goblin-no-free-responder` без write.
 
 ### Ожидаемый failed GrabStart
 

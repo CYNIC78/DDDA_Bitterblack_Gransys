@@ -24,11 +24,13 @@ static uintptr_t g_overrideFailBody = 0;
 static bool g_tempoReady = true;
 static const char* g_tempoReason = "ready";
 static uintptr_t g_identityBody[4] = {};
+static bool      g_identityRecordMissing[4] = {};
 static bool g_observerDemand = false;
 static int g_focusMember = -1;
 static uintptr_t g_focusBody = 0;
 static uintptr_t g_focusExcludedBody = 0;
 static int g_focusResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
+static char g_focusKind[16] = "uEm0200";
 
 namespace Runtime {
 bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
@@ -157,36 +159,52 @@ const char* ResolveMemberBodyStatus(int member, uintptr_t* out)
         "identity-Arisen-exact", "identity-MainPawn-exact",
         "identity-Hired1-exact", "identity-Hired2-exact"
     };
+    static const char* missingRec[4] = {
+        "identity-Arisen-record-unavailable",
+        "identity-MainPawn-record-unavailable",
+        "identity-Hired1-record-unavailable",
+        "identity-Hired2-record-unavailable"
+    };
     static const char* missing[4] = {
         "identity-Arisen-body-unresolved-or-duplicate",
         "identity-MainPawn-body-unresolved-or-duplicate",
         "identity-Hired1-body-unresolved-or-duplicate",
         "identity-Hired2-body-unresolved-or-duplicate"
     };
-    const bool ok = ResolveMemberBody(member, out);
     if (member < 0 || member >= 4) return "identity-invalid-slot";
+    if (g_identityRecordMissing[member]) {
+        if (out) *out = 0;
+        return missingRec[member];
+    }
+    const bool ok = ResolveMemberBody(member, out);
     return ok ? exact[member] : missing[member];
 }
 
 bool DirectorFocusSet(int member, uintptr_t expectedBody,
-                      uintptr_t excludedEnemyBody, int response)
+                      uintptr_t excludedEnemyBody, int response,
+                      const char* exactKind)
 {
     if (member < 0) {
         g_focusMember = -1;
         g_focusBody = 0;
         g_focusExcludedBody = 0;
         g_focusResponse = DIRECTOR_RESPONSE_NONE;
+        strcpy(g_focusKind, "uEm0200");
         return true;
     }
     uintptr_t resolved = 0;
     if (!ResolveMemberBody(member, &resolved) || resolved != expectedBody
         || (response != DIRECTOR_RESPONSE_ALERT
-            && response != DIRECTOR_RESPONSE_ALARM))
+            && response != DIRECTOR_RESPONSE_ALARM)
+        || !exactKind || (strcmp(exactKind, "uEm0200") != 0
+                          && strcmp(exactKind, "uEm0100") != 0))
         return false;
     g_focusMember = member;
     g_focusBody = expectedBody;
     g_focusExcludedBody = excludedEnemyBody;
     g_focusResponse = response;
+    strncpy(g_focusKind, exactKind, sizeof(g_focusKind) - 1);
+    g_focusKind[sizeof(g_focusKind) - 1] = 0;
     return true;
 }
 } // namespace Aggro
@@ -239,6 +257,22 @@ static void SetWolves(int n)
     }
 }
 
+static void SetGoblins(int n)
+{
+    MonsterAI::s_nView = n;
+    for (int i = 0; i < n; ++i) {
+        MonsterAI::MonsterView& v = MonsterAI::s_view[i];
+        memset(&v, 0, sizeof(v));
+        v.body = 0xA000u + (uintptr_t)i * 0x100u;
+        strcpy(v.kind, "uEm0100");
+        strcpy(v.act, "cEm0100ActWait");
+        v.positionValid = true;
+        v.x = 2000.0f + (float)i * 80.0f;
+        v.y = 0.0f;
+        v.z = 0.0f;
+    }
+}
+
 static void FreshDirector()
 {
     using namespace MonsterAI;
@@ -257,6 +291,7 @@ static void FreshDirector()
     g_focusBody = 0;
     g_focusExcludedBody = 0;
     g_focusResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
+    strcpy(g_focusKind, "uEm0200");
     g_observerDemand = false;
     Init();
     assert(!Enabled());
@@ -601,6 +636,23 @@ static void TestBuild012SynchronizedMobilization()
     assert(PolicyEngaged());
     assert(!s_inactiveSafetyLatched);
 
+    // Empty hired slots must not force a 4-pawn party. Occupied Arisen +
+    // Main + Hired1 stay exact; record-unavailable Hired2 is skipped.
+    g_identityRecordMissing[Runtime::PARTY_HIRED2] = true;
+    g_identityBody[Runtime::PARTY_HIRED2] = 0;
+    g_snapshot.member[Runtime::PARTY_HIRED2].recordValid = false;
+    g_snapshot.member[Runtime::PARTY_HIRED2].body = 0;
+    g_snapshot.member[Runtime::PARTY_HIRED2].bodyValid = false;
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    g_identityRecordMissing[Runtime::PARTY_HIRED2] = false;
+    g_identityBody[Runtime::PARTY_HIRED2] =
+        0x5000u + (uintptr_t)Runtime::PARTY_HIRED2 * 0x100u;
+    SetMember(3, 1100.0f, 1100.0f, true);
+    g_identityBody[Runtime::PARTY_HIRED2] =
+        g_snapshot.member[Runtime::PARTY_HIRED2].body;
+
     // Pack loss and Director disable are explicit release paths.
     s_mode = RECOMMEND_FOCUS;
     SetWolves(2);
@@ -729,6 +781,41 @@ static void TestBuild012UrgencyDataDefinedMatcher()
     party[0].positionValid = false;
     ScanTacticalSituations(party, 2, monsters, 3, &scan);
     assert(!scan.matched && scan.positionRejected == 3);
+
+    // Exact uEm0100 GrabStart is its own lower-priority ALERT, not a wolf row.
+    party[0].positionValid = true;
+    party[0].act = "cPlActGrabStart";
+    for (int i = 0; i < 3; ++i) monsters[i].kind = "uEm0100";
+    monsters[0].x = 100.0f;
+    monsters[1].x = 5500.0f;
+    monsters[2].x = 6500.0f;
+    ScanTacticalSituations(party, 2, monsters, 3, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+    assert(scan.response == TACTICAL_RESPONSE_ALERT);
+    assert(scan.match.priority == 90);
+    assert(scan.match.maxLeaseMs == 4000);
+    assert(scan.match.evidenceBody == monsters[0].body);
+
+    // Night-shore hold: cPlActHagaijime (not 4Feet) continues the same ALERT.
+    party[0].act = "cPlActHagaijime";
+    ScanTacticalSituations(party, 2, monsters, 3, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+    assert(scan.match.maxLeaseMs == 4000);
+    party[0].act = "cPlActHagaijime4Feet";
+    ScanTacticalSituations(party, 2, monsters, 3, &scan);
+    assert(!scan.matched);
+    party[0].act = "cPlActGrabStart";
+
+    // A close wolf pair outranks the opportunist row.
+    monsters[0].kind = "uEm0200";
+    monsters[1].kind = "uEm0100";
+    monsters[1].x = 120.0f;
+    ScanTacticalSituations(party, 2, monsters, 3, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_PACK_GRAB_ALERT);
+    assert(scan.match.priority == 100);
 }
 
 static void TestBuild012TacticalArbitrationAndLifecycle()
@@ -999,6 +1086,131 @@ static void TestBuild012TwoStageResponseLifecycle()
     assert(!s_tactical.active && !s_tactical.timeoutBlocked);
 }
 
+static void TestGoblinOpportunistGrabPin()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1200.0f, 1200.0f, true);
+    SetMember(1, 100.0f, 1000.0f, true);
+    SetMember(2, 1000.0f, 1000.0f, true);
+    SetMember(3, 1100.0f, 1100.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+
+    SetGoblins(3);
+    Decide(500000);
+    assert(PackMarkSlot() == -1);
+    assert(Recommendation() == RECOMMEND_NONE);
+    SetActuatorEnabled(true);
+    g_tempoReady = false;
+    g_tempoReason = "tempo-general-hook-missing";
+    s_mode = RECOMMEND_FOCUS;
+    s_mark = Runtime::PARTY_MAIN;
+    ApplyPolicies();
+    assert(!PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "wolf-pack-lost");
+    assert(g_overrides.empty() && g_focusMember == -1);
+    assert(GameplayWriteCount() == 0);
+
+    Runtime::PartyCombatMember& holder =
+        g_snapshot.member[Runtime::PARTY_HIRED1];
+    holder.x = 2000.0f;
+    strcpy(holder.liveAct, "cPlActGrabStart");
+    s_view[0].x = 2050.0f;
+    s_view[1].x = 5000.0f;
+    s_view[2].x = 9000.0f;
+    UpdateTacticalSituations(500150);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+    assert(s_tactical.response == TACTICAL_RESPONSE_ALERT);
+    assert(s_tactical.victimBody == s_view[0].body);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "tactical-goblin-grab-alert");
+    assert(g_focusMember == Runtime::PARTY_HIRED1);
+    assert(g_focusBody == holder.body);
+    assert(g_focusExcludedBody == s_view[0].body);
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
+    assert(strcmp(g_focusKind, "uEm0100") == 0);
+    assert(g_overrides.empty());
+    assert(s_nResponderWolf == 2 && s_nOwnedWolf == 0);
+    assert(GameplayWriteCount() == 1);
+
+    // Log 23: pawn leaves GrabStart for cPlActHagaijime. Same lease, past 750 ms.
+    strcpy(holder.liveAct, "cPlActHagaijime");
+    UpdateTacticalSituations(500900);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+    assert(s_tactical.sinceMs == 500150);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(g_overrides.empty());
+    assert(strcmp(g_focusKind, "uEm0100") == 0);
+
+    s_nView = 5;
+    for (int i = 3; i < 5; ++i) {
+        MonsterView& v = s_view[i];
+        memset(&v, 0, sizeof(v));
+        v.body = 0x9000u + (uintptr_t)(i - 3) * 0x100u;
+        strcpy(v.kind, "uEm0200");
+        strcpy(v.act, "cEm0200ActWait");
+        v.positionValid = true;
+        v.x = 8000.0f;
+        v.y = 0.0f;
+        v.z = 0.0f;
+    }
+    UpdateTacticalSituations(501050);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(g_overrides.empty());
+    assert(s_nOwnedWolf == 0);
+    assert(s_nResponderWolf == 2);
+    assert(strcmp(g_focusKind, "uEm0100") == 0);
+
+    strcpy(s_view[1].kind, "uEm0100_0");
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(s_nResponderWolf == 1);
+    assert(g_overrides.empty());
+    strcpy(s_view[1].kind, "uEm0100");
+
+    SetGoblins(1);
+    s_view[0].x = 2050.0f;
+    strcpy(holder.liveAct, "cPlActHagaijime");
+    UpdateTacticalSituations(501200);
+    ApplyPolicies();
+    assert(!PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "goblin-no-free-responder");
+    assert(g_overrides.empty() && g_focusMember == -1);
+
+    SetWolves(2);
+    s_nView = 3;
+    {
+        MonsterView& v = s_view[2];
+        memset(&v, 0, sizeof(v));
+        v.body = 0xA000;
+        strcpy(v.kind, "uEm0100");
+        strcpy(v.act, "cEm0100ActWait");
+        v.positionValid = true;
+        v.x = 0.0f;
+    }
+    strcpy(holder.liveAct, "cPlActWait");
+    UpdateTacticalSituations(501350);
+    assert(!s_tactical.active);
+    g_tempoReady = true;
+    s_mode = RECOMMEND_FOCUS;
+    s_mark = Runtime::PARTY_MAIN;
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    assert(g_overrides.size() == 2);
+    assert(g_overrides.count(0xA000) == 0);
+    assert(strcmp(g_focusKind, "uEm0200") == 0);
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALARM);
+}
+
 int main()
 {
     TestPriorityAndHysteresis();
@@ -1008,6 +1220,7 @@ int main()
     TestBuild012UrgencyDataDefinedMatcher();
     TestBuild012TacticalArbitrationAndLifecycle();
     TestBuild012TwoStageResponseLifecycle();
+    TestGoblinOpportunistGrabPin();
     MonsterAI::Shutdown();
     assert(!MonsterAI::Enabled());
 

@@ -10,6 +10,7 @@
 
 #include "stdafx.h"
 #include "monsterai/MonsterDirector.h"
+#include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
 #include "runtime/MonsterTempo.h"
 #include "EnemyAI.h"
@@ -236,6 +237,7 @@ void RenderEnemyAIUI()
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("snapshot to log")) MonsterAI::DumpSnapshot();
+        ImGui::TextDisabled("%s", MonsterAI::PackObserveStatus());
 
         bool pilot = MonsterAI::ActuatorEnabled();
         if (ImGui::Checkbox("enable Director actuator (WRITES)", &pilot)) {

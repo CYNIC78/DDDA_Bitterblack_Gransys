@@ -26,6 +26,11 @@ using namespace Mem;
 static const uint32_t kScanBytes    = 0x6800;
 static const uint32_t kChunk        = 0x400;
 static const uint32_t kRediscoverMs = 5000;   // как часто пересматривать тело
+// Shared uEnemy prefix (goblin body is 256 B shorter at the tail). Wolf
+// recon §15.2 measured this roster; log 23 found the same stride on uEm0100.
+static const uint32_t kEm0100RosterBase   = 0x2FA0;
+static const uint32_t kEm0100RosterStride = 0x28C;
+static const int      kEm0100RosterCount  = 4;
 
 static bool  s_enabled = false;         // explicit research/watch toggle
 static bool  s_directorObserver = false;// quiet, read-only product demand
@@ -101,6 +106,7 @@ static int       s_directorFocus = MEMBER_NONE;
 static uintptr_t s_directorExpectedBody = 0;
 static uintptr_t s_directorExcludedBody = 0;
 static int       s_directorResponse = DIRECTOR_RESPONSE_NONE;
+static char      s_directorKind[16] = "uEm0200";
 static uint32_t  s_directorWrites = 0;
 static bool      s_directorIdentityBlockLogged = false;
 static float    s_pinFakehitValue = 150.0f;
@@ -111,8 +117,9 @@ static uint32_t s_pinRollbacks = 0;
 static uint32_t s_pinUnsafeSkips = 0;
 static uint32_t s_pinLastLog = 0;
 static uint32_t s_pinLastAnomaly = 0;
-static const float kPinValue = 300.0f;   // нативный потолок (линия при 0 м)
-static const float kSuppValue = 0.0f;    // нативное «полностью затухшее»
+static const float kPinValue = 300.0f;         // perception ceiling (fC=4, линия при 0 м)
+static const float kCombatPinValue = 500.0f;   // combat ceiling (fC=2, замер 82.0 §25.3)
+static const float kSuppValue = 0.0f;          // нативное «полностью затухшее»
 
 // Журнал «что писали и когда» — для дельта-лога: не лить 30 строк в
 // секунду, а одну на карточку, когда значение реально изменилось.
@@ -324,7 +331,7 @@ static void ClassifySlots(Row& R)
     if (R.nSlots < 3) return;
 
     // Перебираем пары как кандидатов на (база, шаг) и ищем самую длинную
-    // прогрессию. Слотов максимум 8 — перебор дешёвый.
+    // прогрессию. Слотов максимум kMaxSlots — перебор дешёвый.
     int bestN = 0; uint32_t bestBase = 0, bestStride = 0;
     for (int a = 0; a < R.nSlots; ++a) {
         for (int b = 0; b < R.nSlots; ++b) {
@@ -353,6 +360,56 @@ static void ClassifySlots(Row& R)
         for (int i = 0; i < R.nSlots; ++i)
             if (R.slot[i].off == want) R.slot[i].kind = SLOT_ROSTER;
     }
+}
+
+static bool IsEm0100RosterOff(uint32_t off)
+{
+    if (off < kEm0100RosterBase) return false;
+    const uint32_t d = off - kEm0100RosterBase;
+    return (d % kEm0100RosterStride) == 0
+        && (int)(d / kEm0100RosterStride) < kEm0100RosterCount;
+}
+
+// Empty goblin cards are invisible to DiscoverSlots. Force the proven
+// 0x2FA0/0x28C x4 array so ALERT can pin or wake the mark card.
+static void EnsureGoblinRosterSlots(Row& R, const PartyRef* party, int nParty)
+{
+    if (strcmp(R.kind, "uEm0100") != 0) return;
+    const DWORD now = GetTickCount();
+    for (int k = 0; k < kEm0100RosterCount; ++k) {
+        const uint32_t off = kEm0100RosterBase
+                           + (uint32_t)k * kEm0100RosterStride;
+        if (!RegionOk(R.body + off, 20)) continue;
+        int existing = -1;
+        for (int i = 0; i < R.nSlots; ++i)
+            if (R.slot[i].off == off) { existing = i; break; }
+        if (existing >= 0) {
+            R.slot[existing].kind = SLOT_ROSTER;
+            continue;
+        }
+        if (R.nSlots >= kMaxSlots) {
+            int drop = -1;
+            for (int i = R.nSlots - 1; i >= 0; --i)
+                if (R.slot[i].kind != SLOT_ROSTER) { drop = i; break; }
+            if (drop < 0) continue;
+            R.slot[drop] = R.slot[R.nSlots - 1];
+            --R.nSlots;
+        }
+        Slot& S = R.slot[R.nSlots++];
+        memset(&S, 0, sizeof(S));
+        S.off = off;
+        S.kind = SLOT_ROSTER;
+        S.member = MEMBER_NONE;
+        S.sinceMs = now;
+        uintptr_t p = 0;
+        if (RdPtr((void*)(R.body + off), &p) && p) {
+            for (int q = 0; q < nParty; ++q)
+                if (p == party[q].body) { S.member = party[q].member; break; }
+        }
+    }
+    R.rosterBase = kEm0100RosterBase;
+    R.rosterStride = kEm0100RosterStride;
+    R.rosterCount = kEm0100RosterCount;
 }
 
 // --- строки наблюдения ------------------------------------------------------
@@ -504,15 +561,43 @@ static void CardWatchRow(Row& R, const PartyRef* party, int nParty, DWORD now)
 
 // --- PIN: одна особь ------------------------------------------------------
 //
-// Только uEm0200: карточка верифицирована на волках (два боя, два
-// набора особей, база/шаг/поля сошлись). На другом виде +0x10 от головы
-// карточки — чужое поле, и писать в него нельзя (FIX_RULES: субобъект —
-// по проверенному имени/форме, а не по совпадению смещения).
-static bool IsPinnableKind(const char* kind)
+// Manual PIN stays exact uEm0200. Director may also pin exact uEm0100 on
+// the grab-alert lease. LiveWolfCardMode still fail-closes unknown heads:
+// a goblin card that is not live 1/4 or 1/2 is skipped, not guessed.
+static bool IsPinnableKind(const char* kind, bool director)
 {
-    // The card layout is admitted for this exact live DTI species only.
-    // Prefix matching could silently write an unverified subtype/layout.
-    return kind && strcmp(kind, "uEm0200") == 0;
+    if (!kind) return false;
+    if (strcmp(kind, "uEm0200") == 0) return true;
+    return director && strcmp(kind, "uEm0100") == 0;
+}
+
+// Director must not tear a wolf off a live fight with someone else.
+// fC=2 on a non-mark party card = already chewing that member; they occupy
+// them, and free wolves go to the mark. Combat on the mark itself is kept
+// (reinforce). Perception-only (fC=4) wolves stay redirectable.
+static bool CombatOccupiesOther(const Row& R, const PartyRef* party, int nParty,
+                                int mark)
+{
+    if (mark < 0) return false;
+    for (int k = 0; k < R.nSlots; ++k) {
+        const Slot& S = R.slot[k];
+        if (S.kind != SLOT_ROSTER) continue;
+        uintptr_t p = 0;
+        if (!RdPtr((void*)(R.body + S.off), &p) || !p) continue;
+        int actual = MEMBER_NONE;
+        for (int q = 0; q < nParty; ++q) {
+            if (p != party[q].body) continue;
+            actual = party[q].member;
+            break;
+        }
+        if (actual == MEMBER_NONE || actual == mark) continue;
+        uint32_t flag = 0, mode = 0;
+        if (!Rd((void*)(R.body + S.off + 0x08), &flag, 4)
+            || !Rd((void*)(R.body + S.off + 0x0C), &mode, 4))
+            continue;
+        if (flag == 1 && mode == 2) return true;
+    }
+    return false;
 }
 
 // Genuine unsafe-write evidence stays automatic, but repeated instances are
@@ -535,8 +620,89 @@ static bool DirectorIdentityExactNow()
         && resolved == s_directorExpectedBody;
 }
 
+// Proven live uEm0200 card heads (AGGRO_RECON §19.3 / §25.3).
+// Perception fC=4: +0x10 native 0..300, pin ceiling 300, weight 1.0 (unread).
+// Combat     fC=2: +0x10 native 0..~500, pin ceiling 500, weight 0.2 (unread).
+// Dead 0/0, transitional fC=1, and any other head stay fail-closed.
+// Weight +0x14 is not written: flipping 0.2↔1.0 is an unproven mode change.
+static bool LiveWolfCardMode(uint32_t flag, uint32_t mode,
+                             float* pinCeiling, float* maxNative)
+{
+    if (flag != 1) return false;
+    if (mode == 4) {
+        if (pinCeiling) *pinCeiling = kPinValue;
+        if (maxNative) *maxNative = 320.0f;
+        return true;
+    }
+    if (mode == 2) {
+        if (pinCeiling) *pinCeiling = kCombatPinValue;
+        if (maxNative) *maxNative = 520.0f;
+        return true;
+    }
+    return false;
+}
+
+// Log 23: mark cards on uEm0100 were exact empty shells (0/0/0/0) with a
+// stuck party pointer. Wake only those shells at the proven roster offsets
+// to a native perception-at-contact head. Not a pack: no suppress/fakehit.
+static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
+{
+    if (strcmp(R.kind, "uEm0100") != 0) return -1;
+    if (!IsEm0100RosterOff(S.off)) return -1;
+    const uintptr_t card = R.body + S.off;
+    uint32_t flag = 0, mode = 0;
+    float att = 0.0f, weight = 0.0f;
+    if (!Rd((void*)(card + 0x08), &flag, 4)
+        || !Rd((void*)(card + 0x0C), &mode, 4)
+        || !Rd((void*)(card + 0x10), &att, 4)
+        || !Rd((void*)(card + 0x14), &weight, 4))
+        return -1;
+    if (flag != 0 || mode != 0 || att != 0.0f || weight != 0.0f)
+        return -1;
+
+    const uint32_t wantFlag = 1, wantMode = 4;
+    const float wantAtt = kPinValue;
+    const float wantW = 1.0f;
+    if (!WrSafe((void*)(card + 0x08), &wantFlag, 4)
+        || !WrSafe((void*)(card + 0x0C), &wantMode, 4)
+        || !WrSafe((void*)(card + 0x10), &wantAtt, 4)
+        || !WrSafe((void*)(card + 0x14), &wantW, 4)) {
+        WrSafe((void*)(card + 0x08), &flag, 4);
+        WrSafe((void*)(card + 0x0C), &mode, 4);
+        WrSafe((void*)(card + 0x10), &att, 4);
+        WrSafe((void*)(card + 0x14), &weight, 4);
+        PinAnomaly(R.body, "goblin-card-wake: WrSafe failed");
+        return 1;
+    }
+    uint32_t backFlag = 0, backMode = 0;
+    float backAtt = 0.0f, backW = 0.0f;
+    if (!Rd((void*)(card + 0x08), &backFlag, 4) || backFlag != wantFlag
+        || !Rd((void*)(card + 0x0C), &backMode, 4) || backMode != wantMode
+        || !Rd((void*)(card + 0x10), &backAtt, 4) || backAtt != wantAtt
+        || !Rd((void*)(card + 0x14), &backW, 4) || backW != wantW) {
+        WrSafe((void*)(card + 0x08), &flag, 4);
+        WrSafe((void*)(card + 0x0C), &mode, 4);
+        WrSafe((void*)(card + 0x10), &att, 4);
+        WrSafe((void*)(card + 0x14), &weight, 4);
+        ++s_pinRollbacks;
+        logFile << "Aggro: PIN ROLLBACK goblin-card-wake @"
+                << std::hex << R.body << std::dec
+                << " card +0x" << std::hex << S.off << std::dec
+                << std::endl;
+        return 2;
+    }
+    ++s_pinWrites;
+    ++s_directorWrites;
+    logFile << "Aggro: DIRECTOR goblin-card-wake @"
+            << std::hex << R.body << std::dec
+            << " card +0x" << std::hex << S.off << std::dec
+            << "  " << (who ? who : "?")
+            << "  0/0 -> 1/4 att=300 w=1.0" << std::endl;
+    return 0;
+}
+
 // Одна карта: форма -> диапазон -> запись -> readback -> откат.
-// want = kPinValue (300, штырь) или kSuppValue (0, подавление, 81.0).
+// want = kPinValue/kCombatPinValue (штырь) или kSuppValue (0, подавление).
 // who — фактический владелец карты (по пере-читанному указателю).
 static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now, bool director)
 {
@@ -548,49 +714,58 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
     }
     const uintptr_t card = R.body + S.off;
 
-    // Форма карты перед записью: живая (+0x08=1) и «наша» (+0x0C=4 —
-    // константа, увиденная на обоих волках в обоих боях). Иначе это
-    // уже не та структура — не пишем.
     uint32_t flag = 0, c4 = 0;
     if (!Rd((void*)(card + 0x08), &flag, 4)
-        || !Rd((void*)(card + 0x0C), &c4, 4)
-        || flag != 1 || c4 != 4) {
-        // 81.0: аномалия не молчит — печатаем фактическую форму, чтобы
-        // понять, старая ли это указатель-оболочка или чужая структура.
-        char buf[64] = {};
-        wsprintfA(buf, "shape: f8=%u fC=%u (want 1/4) — stale/other card?",
-                  flag, c4);
+        || !Rd((void*)(card + 0x0C), &c4, 4)) {
+        PinAnomaly(R.body, "shape: unreadable head");
+        return 1;
+    }
+    float pinCeil = 0.0f, maxNative = 0.0f;
+    if (!LiveWolfCardMode(flag, c4, &pinCeil, &maxNative)) {
+        if (director && want != kSuppValue) {
+            const int woke = TryGoblinEmptyCardWake(R, S, who);
+            if (woke == 0) return 0;
+            if (woke > 0) return woke;
+        }
+        float f10 = 0.0f, f14 = 0.0f;
+        Rd((void*)(card + 0x10), &f10, 4);
+        Rd((void*)(card + 0x14), &f14, 4);
+        char buf[96] = {};
+        sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live 1/4 or 1/2)",
+                  flag, c4, f10, f14);
         PinAnomaly(R.body, buf);
         return 1;
     }
+    const float writeWant = (want == kSuppValue) ? kSuppValue : pinCeil;
 
     uintptr_t att = card + 0x10;
     float cur = 0.0f;
     if (!Rd((void*)att, &cur, 4)) return 1;
-    // Нативный диапазон поля: 0..300 (линия 300-10d). Если там другое
-    // число — наше поле уже не то, запись отменяется.
-    if (cur < -0.001f || cur > 320.0f) {
+    // Native range is mode-specific. A combat card at 484 is legal; writing
+    // the perception ceiling 300 into it would LOWER attention, so pin uses
+    // the mode's own ceiling.
+    if (cur < -0.001f || cur > maxNative) {
         PinAnomaly(R.body, "attention value out of native range");
         return 1;
     }
 
     // Запись -> readback -> при рассинхроне откат к прочитанному.
-    if (!WrSafe((void*)att, &want, 4)) {
+    if (!WrSafe((void*)att, &writeWant, 4)) {
         PinAnomaly(R.body, "WrSafe failed");
         return 1;
     }
     float back = 0.0f;
-    if (!Rd((void*)att, &back, 4) || back != want) {
+    if (!Rd((void*)att, &back, 4) || back != writeWant) {
         WrSafe((void*)att, &cur, 4);
         ++s_pinRollbacks;
         // Откат — редкое важное событие: логируем сразу, без гетеризации.
         logFile << "Aggro: PIN ROLLBACK @" << std::hex << R.body << std::dec
                 << " card +0x" << std::hex << S.off << std::dec
-                << "  readback " << back << " != " << want
+                << "  readback " << back << " != " << writeWant
                 << "  restored " << cur << std::endl;
         return 2;
     }
-    if (want == kPinValue) ++s_pinWrites; else ++s_pinSuppWrites;
+    if (writeWant == kSuppValue) ++s_pinSuppWrites; else ++s_pinWrites;
     if (director) ++s_directorWrites;
 
     // Successful per-card readbacks are research telemetry, not product
@@ -627,8 +802,8 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         logFile << "Aggro: PIN @" << std::hex << R.body << std::dec
                 << " card +0x" << std::hex << S.off << std::dec
                 << "  " << (who ? who : "?")
-                << "  att " << cur << " -> " << want
-                << (want == kPinValue ? "  readback ok" : "  supp ok")
+                << "  att " << cur << " -> " << writeWant
+                << (writeWant == kSuppValue ? "  supp ok" : "  readback ok")
                 << std::endl;
     }
     return 0;
@@ -737,11 +912,9 @@ static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, bool dir
     }
 }
 
-// 83.0: диагностика формы. Карта не легла в 1/4 (переходное fC=1/2,
-// мёртвая оболочка, чужая структура) — печатаем ГОЛОВЫ всех карт
-// особи: только чтение, троттл 5 с на особь. На этих строках ловим
-// переходы 4->2->4 и учимся режимам «боевой» карты (10 до ~500,
-// вес 0.2, медленное затухание — замер 82.0, §25.3).
+// 83.0/84.12: диагностика формы. Живые 1/4 и 1/2 уже пишутся. Сюда
+// попадают мёртвая оболочка 0/0, переходное fC=1 и чужая голова —
+// печатаем ГОЛОВЫ всех карт особи: только чтение, троттл 5 с.
 struct ShapeWatch { uintptr_t body; DWORD lastMs; };
 static ShapeWatch s_shapeW[8];
 static int        s_nShapeW = 0;
@@ -805,6 +978,8 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
         break;
     }
     if (!mBody) return;
+    if (director && CombatOccupiesOther(R, party, nParty, targetMember))
+        return;
 
     for (int k = 0; k < R.nSlots; ++k) {
         Slot& S = R.slot[k];
@@ -842,7 +1017,7 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
     }
 }
 
-static void PinSummary(int nWolves, DWORD now, int targetMember, int scope,
+static void PinSummary(int nWolves, int nLeft, DWORD now, int targetMember, int scope,
                        bool suppress, bool fakehit, bool director)
 {
     // First summary is immediate; unchanged leases then report at most once
@@ -853,7 +1028,9 @@ static void PinSummary(int nWolves, DWORD now, int targetMember, int scope,
     // (метрика «прилипло» в лог — глазу больше не приходится гадать).
     int held = 0;
     for (int i = 0; i < s_nRow; ++i) {
-        if (!IsPinnableKind(s_row[i].kind)) continue;
+        if (!IsPinnableKind(s_row[i].kind, director)) continue;
+        if (director && s_directorKind[0]
+            && strcmp(s_row[i].kind, s_directorKind) != 0) continue;
         if (director && s_row[i].body == s_directorExcludedBody) continue;
         if (s_row[i].targetMember == targetMember) ++held;
     }
@@ -871,6 +1048,7 @@ static void PinSummary(int nWolves, DWORD now, int targetMember, int scope,
     if (director && s_directorExcludedBody)
         logFile << "  excluded 0x" << std::hex << s_directorExcludedBody << std::dec;
     logFile << "  held " << held
+            << "  left " << nLeft
             << "  writes " << s_pinWrites
             << "  supp " << s_pinSuppWrites
             << "  fakehit " << s_pinFakehitWrites
@@ -890,6 +1068,7 @@ void Init()
     s_directorExpectedBody = 0;
     s_directorExcludedBody = 0;
     s_directorResponse = DIRECTOR_RESPONSE_NONE;
+    lstrcpynA(s_directorKind, "uEm0200", sizeof(s_directorKind));
     s_directorWrites = 0;
     s_directorIdentityBlockLogged = false;
     s_lastIdentityMask = -1;
@@ -982,7 +1161,8 @@ void SetObserverDemand(bool on)
 bool ObserverDemanded() { return s_directorObserver; }
 
 bool DirectorFocusSet(int member, uintptr_t expectedBody,
-                      uintptr_t excludedEnemyBody, int response)
+                      uintptr_t excludedEnemyBody, int response,
+                      const char* exactKind)
 {
     if (member < 0) {
         if (s_directorFocus >= 0)
@@ -995,12 +1175,16 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
         s_directorExpectedBody = 0;
         s_directorExcludedBody = 0;
         s_directorResponse = DIRECTOR_RESPONSE_NONE;
+        lstrcpynA(s_directorKind, "uEm0200", sizeof(s_directorKind));
         s_directorIdentityBlockLogged = false;
         return true;
     }
     if (member > MEMBER_HIRED2 || !expectedBody
         || (response != DIRECTOR_RESPONSE_ALERT
-            && response != DIRECTOR_RESPONSE_ALARM))
+            && response != DIRECTOR_RESPONSE_ALARM)
+        || !exactKind || !exactKind[0]
+        || (strcmp(exactKind, "uEm0200") != 0
+            && strcmp(exactKind, "uEm0100") != 0))
         return false;
 
     uintptr_t resolved = 0;
@@ -1017,12 +1201,14 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
         s_directorExpectedBody = 0;
         s_directorExcludedBody = 0;
         s_directorResponse = DIRECTOR_RESPONSE_NONE;
+        lstrcpynA(s_directorKind, "uEm0200", sizeof(s_directorKind));
         return false;
     }
 
     if (s_directorFocus != member || s_directorExpectedBody != expectedBody
         || s_directorExcludedBody != excludedEnemyBody
-        || s_directorResponse != response) {
+        || s_directorResponse != response
+        || strcmp(s_directorKind, exactKind) != 0) {
         // Product response owns the actuator exclusively. Do not let an old
         // research PIN silently resume when the Director later releases.
         s_pinMember = MEMBER_NONE;
@@ -1036,7 +1222,8 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
                 << MemberName(member)
                 << " expected=0x" << std::hex << expectedBody
                 << " excludedEnemy=0x" << excludedEnemyBody << std::dec
-                << " identity=EXACT scope=free-wolves "
+                << " identity=EXACT kind=" << exactKind
+                << " scope=free-kind leave-engaged "
                 << (response == DIRECTOR_RESPONSE_ALERT
                     ? "pin-only" : "pin+suppress+fakehit")
                 << std::endl;
@@ -1045,6 +1232,7 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     s_directorExpectedBody = expectedBody;
     s_directorExcludedBody = excludedEnemyBody;
     s_directorResponse = response;
+    lstrcpynA(s_directorKind, exactKind, sizeof(s_directorKind));
     s_directorIdentityBlockLogged = false;
     return true;
 }
@@ -1261,6 +1449,7 @@ void Tick()
             ClassifySlots(*R);
             R->lastScanMs = now;
         }
+        EnsureGoblinRosterSlots(*R, party, nParty);
 
         // Обычный тик: перечитываем только известные смещения.
         for (int k = 0; k < R->nSlots; ++k) {
@@ -1463,6 +1652,7 @@ void Tick()
             s_directorExpectedBody = 0;
             s_directorExcludedBody = 0;
             s_directorResponse = DIRECTOR_RESPONSE_NONE;
+            lstrcpynA(s_directorKind, "uEm0200", sizeof(s_directorKind));
         }
     }
 
@@ -1484,15 +1674,24 @@ void Tick()
         if (mBody) {
             if (activeScope == 1) {
                 int nW = 0;
+                int nLeft = 0;
                 for (int i = 0; i < s_nRow; ++i) {
-                    if (!IsPinnableKind(s_row[i].kind)) continue;
+                    if (!IsPinnableKind(s_row[i].kind, directorActive)) continue;
+                    if (directorActive && s_directorKind[0]
+                        && strcmp(s_row[i].kind, s_directorKind) != 0)
+                        continue;
                     if (directorActive && s_row[i].body == s_directorExcludedBody)
                         continue;
+                    ++nW;
+                    if (directorActive
+                        && CombatOccupiesOther(s_row[i], party, nParty, activeMember)) {
+                        ++nLeft;
+                        continue;
+                    }
                     PinRow(s_row[i], party, nParty, now, activeMember,
                            activeSuppress, activeFakehit, directorActive);
-                    ++nW;
                 }
-                PinSummary(nW, now, activeMember, activeScope,
+                PinSummary(nW, nLeft, now, activeMember, activeScope,
                            activeSuppress, activeFakehit, directorActive);
             } else {
                 // Ближайший к заштыренному члену волк: «приведи к нему».
@@ -1502,7 +1701,9 @@ void Tick()
                     float bestD = 1.0e9f;
                     for (int i = 0; i < s_nRow; ++i) {
                         Row& R = s_row[i];
-                        if (!IsPinnableKind(R.kind)) continue;
+                        if (!IsPinnableKind(R.kind, directorActive)) continue;
+                        if (directorActive && s_directorKind[0]
+                            && strcmp(R.kind, s_directorKind) != 0) continue;
                         float wp[3] = {};
                         if (!ReadBodyPos(R.body, wp)) continue;
                         const float dx = wp[0] - mp[0];
@@ -1511,10 +1712,16 @@ void Tick()
                         const float d = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
                         if (d < bestD) { bestD = d; best = &R; }
                     }
-                    if (best)
-                        PinRow(*best, party, nParty, now, activeMember,
-                               activeSuppress, activeFakehit, directorActive);
-                    PinSummary(best ? 1 : 0, now, activeMember, activeScope,
+                    int nLeft = 0;
+                    if (best) {
+                        if (directorActive
+                            && CombatOccupiesOther(*best, party, nParty, activeMember))
+                            ++nLeft;
+                        else
+                            PinRow(*best, party, nParty, now, activeMember,
+                                   activeSuppress, activeFakehit, directorActive);
+                    }
+                    PinSummary(best ? 1 : 0, nLeft, now, activeMember, activeScope,
                                activeSuppress, activeFakehit, directorActive);
                 }
             }

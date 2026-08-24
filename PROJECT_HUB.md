@@ -2,7 +2,11 @@
 
 ## Текущий milestone
 
-**Build 75.56:** `anodyne` — кастер пешки, AI range 15 м (`docs/WAND_RANGE.md`)
+**Build 84.10:** `goblin-pack-observe` — ночной observe-прибор exact `uEm0100`
+(`docs/GOBLIN_PACK_OBSERVE.md`). Только чтение, без новых галок F12.
+Волчий write path 84.9 / Build 012 не изменён.
+
+**Предыдущий зафиксированный pawn milestone — Build 75.56:** `anodyne` — кастер пешки, AI range 15 м (`docs/WAND_RANGE.md`)
 
 **Ветка разработки:** `work/player-main-pawn-recon`
 

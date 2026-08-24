@@ -10,6 +10,8 @@
 #include "stdafx.h"
 #include "MonsterDirector.h"
 #include "TacticalCues.h"
+#include "SpeciesCard.h"
+#include "PackObserve.h"
 #include "../runtime/Runtime.h"
 #include "../CombatBus.h"
 #include "../runtime/MonsterTempo.h"
@@ -344,9 +346,10 @@ static void UpdateTacticalSituations(DWORD now)
     }
     s_cueParty = fresh;
 
-    // Observation and writes share the same exact4 admission. Do not report a
-    // tactical event as proven when party/body identity is incomplete or
-    // ambiguous, even though the downstream actuator repeats this gate.
+    // Observation and writes share the same occupied-exact admission. Do not
+    // report a tactical event as proven when a required party/body identity
+    // is incomplete or ambiguous, even though the downstream actuator
+    // repeats this gate. Empty hired slots are not a missing party.
     const char* identityReason = 0;
     if (!ExactPartyIdentity(fresh, &identityReason)) {
         TacticalRelease(identityReason ? identityReason
@@ -1023,14 +1026,25 @@ static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
                                const char** reasonOut)
 {
     uintptr_t seen[Runtime::PARTY_COMBAT_SLOTS] = {};
+    int nSeen = 0;
     for (int slot = 0; slot < Runtime::PARTY_COMBAT_SLOTS; ++slot) {
         // Ask Aggro's independently resolved fixed-slot bridge first so the
-        // automatic policy log names the unavailable slot, not merely exact4.
+        // automatic policy log names the unavailable slot, not merely
+        // occupied-exact. Empty hired record-unavailable is not a missing
+        // party: skip, do not force exact4.
         uintptr_t resolved = 0;
         const char* bridge = Runtime::Aggro::ResolveMemberBodyStatus(slot,
                                                                      &resolved);
-        if (!bridge || !strstr(bridge, "-exact")) {
-            if (reasonOut) *reasonOut = bridge ? bridge : "identity-bridge-error";
+        if (!bridge) {
+            if (reasonOut) *reasonOut = "identity-bridge-error";
+            return false;
+        }
+        const bool skipEmptyHired =
+            (slot == Runtime::PARTY_HIRED1 || slot == Runtime::PARTY_HIRED2)
+            && strstr(bridge, "-record-unavailable") != 0;
+        if (skipEmptyHired) continue;
+        if (!strstr(bridge, "-exact")) {
+            if (reasonOut) *reasonOut = bridge;
             return false;
         }
 
@@ -1047,42 +1061,56 @@ static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
             if (reasonOut) *reasonOut = "identity-slot-body-mismatch";
             return false;
         }
-        for (int k = 0; k < slot; ++k) {
+        for (int k = 0; k < nSeen; ++k) {
             if (seen[k] == m.body) {
                 if (reasonOut) *reasonOut = "identity-body-not-unique";
                 return false;
             }
         }
-        seen[slot] = m.body;
+        seen[nSeen++] = m.body;
     }
-    if (reasonOut) *reasonOut = "identity-exact4";
+    if (reasonOut) *reasonOut = "identity-occupied-exact";
     return true;
 }
 
-static int CollectEligibleWolves(uintptr_t* out, int cap, uintptr_t excludedBody,
-                                 const char** reasonOut)
+static const char* PolicyResponderKind(int situation)
 {
+    return situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT
+        ? "uEm0100" : "uEm0200";
+}
+
+static int CollectEligibleResponders(uintptr_t* out, int cap,
+                                     uintptr_t excludedBody, const char* kind,
+                                     const char** reasonOut)
+{
+    const bool goblin = kind && !strcmp(kind, "uEm0100");
     int n = 0;
     for (int i = 0; i < s_nView; ++i) {
         const MonsterView& v = s_view[i];
-        if (!IsWolf(v) || v.dead || !v.body || v.body == excludedBody) continue;
+        if (!v.body || v.dead || v.body == excludedBody) continue;
+        if (!kind || strcmp(v.kind, kind) != 0) continue;
         for (int k = 0; k < n; ++k) {
             if (out[k] == v.body) {
-                if (reasonOut) *reasonOut = "wolf-pack-duplicate-body";
+                if (reasonOut)
+                    *reasonOut = goblin ? "goblin-duplicate-body"
+                                        : "wolf-pack-duplicate-body";
                 return -1;
             }
         }
         if (n >= cap) {
-            if (reasonOut) *reasonOut = "wolf-pack-too-large";
+            if (reasonOut)
+                *reasonOut = goblin ? "goblin-too-large" : "wolf-pack-too-large";
             return -1;
         }
         out[n++] = v.body;
     }
     if (!n) {
-        if (reasonOut) *reasonOut = "wolf-pack-lost";
+        if (reasonOut)
+            *reasonOut = goblin ? "goblin-no-free-responder" : "wolf-pack-lost";
         return 0;
     }
-    if (reasonOut) *reasonOut = "wolf-pack-eligible";
+    if (reasonOut)
+        *reasonOut = goblin ? "goblin-eligible" : "wolf-pack-eligible";
     return n;
 }
 
@@ -1243,16 +1271,26 @@ static void ApplyPolicies()
         return;
     }
 
-    uintptr_t responders[kMaxPolicyWolves] = {};
-    const int nResponder = CollectEligibleWolves(responders, kMaxPolicyWolves,
-                                                  excludedBody, &reason);
-    if (nResponder <= 0) {
-        ReleasePolicy(excludedBody && nResponder == 0
-                      ? "wolf-pack-no-free-responder" : reason, true);
+    const char* responderKind = PolicyResponderKind(situation);
+    const SpeciesCard* card = FindSpeciesCard(responderKind);
+    if (!card || !card->aggroWrite) {
+        ReleasePolicy("species-aggro-write-denied", true);
         return;
     }
 
-    if (!Runtime::Tempo::DirectorReady(&reason)) {
+    uintptr_t responders[kMaxPolicyWolves] = {};
+    const int nResponder = CollectEligibleResponders(
+        responders, kMaxPolicyWolves, excludedBody, responderKind, &reason);
+    if (nResponder <= 0) {
+        const char* none = !strcmp(responderKind, "uEm0100")
+                         ? "goblin-no-free-responder"
+                         : "wolf-pack-no-free-responder";
+        ReleasePolicy(excludedBody && nResponder == 0 ? none : reason, true);
+        return;
+    }
+
+    const bool wantTempo = card->tempoRage;
+    if (wantTempo && !Runtime::Tempo::DirectorReady(&reason)) {
         ReleasePolicy(reason, true);
         return;
     }
@@ -1287,37 +1325,41 @@ static void ApplyPolicies()
         for (int i = 0; i < nResponder; ++i)
             s_responderWolf[s_nResponderWolf++] = responders[i];
 
-        for (int i = 0; i < nResponder; ++i) {
-            Runtime::Tempo::DirectorMobilizationReceipt receipt;
-            const char* tempoReason = 0;
-            if (!Runtime::Tempo::AdmitDirectorMobilization(
-                    responders[i], "uEm0200", urgency, kPolicyTtlMs,
-                    &receipt, &tempoReason)) {
-                ReleasePolicy(tempoReason ? tempoReason
-                                          : "tempo-mobilization-admit-failed",
-                              true);
-                return;
+        if (wantTempo) {
+            for (int i = 0; i < nResponder; ++i) {
+                Runtime::Tempo::DirectorMobilizationReceipt receipt;
+                const char* tempoReason = 0;
+                if (!Runtime::Tempo::AdmitDirectorMobilization(
+                        responders[i], responderKind, urgency, kPolicyTtlMs,
+                        &receipt, &tempoReason)) {
+                    ReleasePolicy(tempoReason ? tempoReason
+                                              : "tempo-mobilization-admit-failed",
+                                  true);
+                    return;
+                }
+                IncludeReceipt(receipt, s_nOwnedWolf == 0);
+                s_ownedWolf[s_nOwnedWolf++] = responders[i];
+                ++s_gameplayWrites;
             }
-            IncludeReceipt(receipt, s_nOwnedWolf == 0);
-            s_ownedWolf[s_nOwnedWolf++] = responders[i];
-            ++s_gameplayWrites;
         }
     } else {
         if (urgency > s_policyUrgency) s_policyUrgency = urgency;
         // Repeated and overlapping orders refresh/maximize the one existing
         // per-body envelope; no factors are multiplied and no endpoint moves.
-        for (int i = 0; i < s_nOwnedWolf; ++i) {
-            Runtime::Tempo::DirectorMobilizationReceipt receipt;
-            const char* tempoReason = 0;
-            if (!Runtime::Tempo::AdmitDirectorMobilization(
-                    s_ownedWolf[i], "uEm0200", urgency, kPolicyTtlMs,
-                    &receipt, &tempoReason)) {
-                ReleasePolicy(tempoReason ? tempoReason
-                                          : "tempo-mobilization-refresh-failed",
-                              true);
-                return;
+        if (wantTempo) {
+            for (int i = 0; i < s_nOwnedWolf; ++i) {
+                Runtime::Tempo::DirectorMobilizationReceipt receipt;
+                const char* tempoReason = 0;
+                if (!Runtime::Tempo::AdmitDirectorMobilization(
+                        s_ownedWolf[i], responderKind, urgency, kPolicyTtlMs,
+                        &receipt, &tempoReason)) {
+                    ReleasePolicy(tempoReason ? tempoReason
+                                              : "tempo-mobilization-refresh-failed",
+                                  true);
+                    return;
+                }
+                ++s_gameplayWrites;
             }
-            ++s_gameplayWrites;
         }
     }
 
@@ -1325,7 +1367,7 @@ static void ApplyPolicies()
                             ? Runtime::Aggro::DIRECTOR_RESPONSE_ALERT
                             : Runtime::Aggro::DIRECTOR_RESPONSE_ALARM;
     if (!Runtime::Aggro::DirectorFocusSet(targetSlot, targetBody, excludedBody,
-                                           aggroResponse)) {
+                                           aggroResponse, responderKind)) {
         ReleasePolicy("aggro-focus-identity-rejected", true);
         return;
     }
@@ -1394,6 +1436,7 @@ void Init()
             << " Build012 integrated urgency + mobilization;"
             << " decision=500ms; situationScan=150ms; hold=2500ms;"
             << " grabAlert=GrabStart/750ms/pin-only-Aggro;"
+            << " goblinGrab=GrabStart|Hagaijime/4000ms/pin-only-no-tempo+empty-card-wake;"
             << " groundAlarm=Hagaijime4Feet/4000ms/independent;"
             << " liftAlarm=literal-lift/2500ms/separate;"
             << " allAdmittedUrgency=1.0; Tempo=immutable-uEm0200-endpoints/1400ms-decay;"
@@ -1403,10 +1446,12 @@ void Init()
             << " exact4+same-kind+unique-spatial-admission+sticky-exact-continuation;"
             << " observerOnly=" << (s_actuatorEnabled ? 0 : 1)
             << " writes=0" << std::endl;
+    PackObserveInit();
 }
 
 void Shutdown()
 {
+    PackObserveShutdown();
     ReleasePolicy("shutdown", true);
     s_actuatorEnabled = false;
     s_enabled = false;
@@ -1472,9 +1517,9 @@ void SetActuatorEnabled(bool on)
         SetPolicyStatus("actuator-off", false);
     }
     logFile << "Monster Director: tactics actuator " << (on ? "ON" : "OFF")
-            << " (same consent switch; uEm0200 actuator only;"
+            << " (same consent switch; uEm0200 pack + uEm0100 grab pin;"
             << " GrabStart ALERT + ground/lift ALARM + PackMark;"
-            << " exact4; every admitted order urgency=1.0;"
+            << " occupied-exact; every admitted order urgency=1.0;"
             << " immutable rage endpoints + automatic decay)" << std::endl;
 }
 
@@ -1592,6 +1637,7 @@ void DumpSnapshot()
             IsWolf(v) ? 1 : 0);
         logFile << line << std::endl;
     }
+    PackObserveDump();
     logFile << "Monster Director: ===== end snapshot =====" << std::endl;
 }
 

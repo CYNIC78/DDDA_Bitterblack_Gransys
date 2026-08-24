@@ -29,6 +29,12 @@ static const char* const kPackGrabAlertActs[] = {
 static const char* const kPackGroundPinAlarmActs[] = {
     "cPlActHagaijime4Feet"
 };
+// Night-shore log 23: the pawn leaves GrabStart for cPlActHagaijime
+// (not the wolf 4-feet pin). Same opportunist ALERT, longer hold.
+static const char* const kGoblinGrabAlertActs[] = {
+    "cPlActGrabStart",
+    "cPlActHagaijime"
+};
 
 struct TacticalRule {
     int       situation;
@@ -104,6 +110,22 @@ static const TacticalRule kRules[] = {
         false,
         2.00f,
         750,
+        true
+    },
+    {
+        TACTICAL_SITUATION_GOBLIN_GRAB_ALERT,
+        "GOBLIN-GRAB-ALERT",
+        "tactical-goblin-grab-alert",
+        90,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0100",
+        kGoblinGrabAlertActs,
+        (int)(sizeof(kGoblinGrabAlertActs) / sizeof(kGoblinGrabAlertActs[0])),
+        0, 0,
+        false,
+        2.00f,
+        4000,
         true
     }
 };
@@ -317,12 +339,9 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
             }
         }
 
-        // Wildcard same-kind evidence is context, not a cue by itself. Without
-        // this guard, ordinary nearby wolves would report a perpetual strong
-        // partial and hide a lower-priority GrabStart diagnostic.
-        const bool diagnosticEvidence = rule.evidenceActCount > 0
-                                     && diag.evidenceCandidates > 0;
-        if ((diag.targetCandidates > 0 || diagnosticEvidence)
+        // A holder action alone is not a diagnostic. Wolf GrabStart must not
+        // hide the goblin row when no uEm0200 is present (log 23 PARTIAL).
+        if (diag.targetCandidates > 0 && diag.evidenceCandidates > 0
             && rule.priority > bestDiagnosticPriority) {
             bestDiagnostic = diag;
             bestDiagnosticPriority = rule.priority;

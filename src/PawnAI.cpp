@@ -21,6 +21,7 @@
 #include "pawnai/PawnAI_BusOrchestrator.h"
 #include "pawnai/GuardianDoctrine.h"
 #include "monsterai/MonsterDirector.h"
+#include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
@@ -42,6 +43,9 @@ void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
     __try { Runtime::WorldScan_Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    // Read-only night instrument. Must run even if pawn AI / Director are off.
+    __try { MonsterAI::PackObserveTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     if(!g_enabled || !pBase || !*pBase) {

@@ -16,6 +16,7 @@
 | `pWorld` | signature-resolved world pointer | ✅ |
 | `*pBase + 0xA7000` | Arisen character record | ✅ |
 | `Arisen record + 0x7F0` | Main Pawn character record | ✅ |
+| `cPlayerInfo` | 2032 B (`0x7F0`); child of live `uPlayer`; scanned whole for Arisen record ptr | ✅ |
 | `*pBase + 0xA7A14` | Discipline Points (DP) | ✅ |
 | `*pBase + 0xA7A18` | Gold | ✅ |
 | `*pBase + 0xA7A1C` | Rift Crystals (RC) | ✅ |
@@ -186,6 +187,16 @@ Build 52 traversed all 91 slots: 56 have direct GOAP links and 42/70 codes used 
 | charparam scale | `+0x12C` inside block | ✅ |
 
 Offsets of `cCharParamEnemy` inside body must be signature-resolved for other species.
+
+### Wolf `uEm0200` roster card head
+
+| Offset | Type | Field | Status |
+|---:|---|---|---|
+| `+0x00` | ptr | party body | ✅ |
+| `+0x08` | int | live flag (`1`) | ✅ |
+| `+0x0C` | int | mode `4` perception / `2` combat | ✅ |
+| `+0x10` | float | attention (pin 300 if `fC=4`, 500 if `fC=2`) | ✅ |
+| `+0x14` | float | weight 1.0 / 0.2 — do not write | ✅ read-only |
 
 ## 10. Open fields
 

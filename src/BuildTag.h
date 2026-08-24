@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.9-pilot012-urgency-mobilization"
+#define MOD_BUILD_TAG "84.15-goblin-grab-hold"

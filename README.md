@@ -4,7 +4,38 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** Build 012 / tag `84.9-pilot012-urgency-mobilization` —
+**Текущий milestone:** tag `84.15-goblin-grab-hold` — grab **держится**.
+`GOBLIN-GRAB-ALERT` принимает `cPlActGrabStart` и `cPlActHagaijime` (не
+волчий `Hagaijime4Feet`), lease 4000 ms. Пустые карты `0/0/0/0` на
+`+0x2FA0+k*0x28C` будятся в нативное `1/4 att=300 w=1.0` (readback+rollback).
+Указатели партии не пишутся. Tempo rage / FOCUS / suppress+fakehit нет.
+Ночных волчьих кругов нет — тест на берегу Кассардиса.
+
+**Предыдущий milestone:** tag `84.14-goblin-grab-pin` — первый write exact
+`uEm0100`: `GOBLIN-GRAB-ALERT` (GrabStart, ≤2 м, 750 ms) пинит свободных
+оппортунистов ALERT pin-only. Tempo rage нет.
+
+**Предыдущий milestone:** tag `84.13-leave-engaged` — Director не срывает волка,
+уже дерущегося с другим членом партии (`fC=2` не на марке). Он вяжет свою
+цель; свободные и те, кто уже на марке, идут на приказ. Tempo у занятых
+остаётся. Карта `fC=2` на самом марке по-прежнему пишется (84.12).
+
+**Предыдущий milestone:** tag `84.12-wolf-combat-card` — штырь `uEm0200` пишет
+и боевую карту `f8=1 fC=2` (потолок 500), не только восприятие `fC=4`
+(потолок 300). Мёртвые `0/0` и переходное `fC=1` по-прежнему fail-closed.
+Вес `+0x14` не пишется. Гоблины observe-only. Identity 84.11 не тронута.
+
+**Предыдущий milestone:** tag `84.11-arisen-record-glue` — живой `uPlayer`
+навсегда клеится к записи Arisen. Identity не зависит от вида монстра и не
+требует указателя на запись внутри тела. Пустые Hired-слоты больше не
+ломают партию из двух.
+
+**Предыдущий milestone:** tag `84.10-goblin-pack-observe` — ночной observe-прибор
+exact `uEm0100`. Только чтение: роли, `rabble`/`led`, корона по рогу/ChargeCommand,
+`LEADER-FALL` по ванильному бегству. Новых галок F12 нет. Волчий write path
+Build 012 не изменён. Протокол: [`docs/GOBLIN_PACK_OBSERVE.md`](docs/GOBLIN_PACK_OBSERVE.md).
+
+**Предыдущий milestone (Director):** Build 012 / tag `84.9-pilot012-urgency-mobilization` —
 **интегрированные target + urgency + mobilization**. Каждый допущенный приказ
 Director хранит точное тело цели и нормализованную срочность `0..1`; все текущие
 emergency-рецепты запрашивают `1.0`. Aggro потребляет цель, сохраняя разную силу
@@ -84,6 +115,9 @@ Priority profiles не запускают действие насильно. О�
 Отдельный `TacticalCues` — маленький универсальный table-driven matcher, а не
 wolf-условие внутри Director. Таблица сохраняет три независимые рецепта:
 
+- `cPlActGrabStart` / `cPlActHagaijime` + exact `uEm0100` →
+  `GOBLIN-GRAB-ALERT`, priority 90, pin-only, без Tempo, lease до 4000 ms;
+  пустая карта `0/0` на `+0x2FA0` будится в `1/4`;
 - `cPlActGrabStart` → `PACK-GRAB-ALERT`, priority 100, pin-only focus, lease до
   750 ms;
 - `cPlActHagaijime4Feet` → `PACK-GROUND-PIN-ALARM`, priority 200, полный alarm,
@@ -112,14 +146,14 @@ lease. Exact restrained body не получает ни Aggro write, ни Direct
 Композиция: stable baseline → Director envelope → generic override → final clamp.
 
 Обе существующие галки `[monsterAI] enabled` и `wolfActuator` по умолчанию
-выключены; новых элементов F12 нет. Exact-four party identity, свежесть world
-snapshot, exact `uEm0200`, уникальность body/pair, bounded lease, downstream
-readback и rollback продолжают fail closed. Для Arisen одного имени DTI
-`uPlayer` недостаточно: claim обязан содержать точный fixed player-record pointer
-в теле или проверенном child graph. Один такой claim принимается, ноль или
-несколько остаются unresolved без fallback по адресу, live-list или порядку
-скана. Поэтому transient второй class-valid `uPlayer` больше не выключает
-actuator и не может перехватить fixed slot.
+выключены; новых элементов F12 нет. Occupied-exact party identity (Arisen +
+Main обязательны; пустой Hired пропускается), свежесть world snapshot, exact
+`uEm0200`, уникальность body/pair, bounded lease, downstream readback и
+rollback продолжают fail closed. Для Arisen одного имени DTI `uPlayer`
+недостаточно само по себе: claim берёт pointer evidence (тело / первые `0x7F0`
+записи / полный `cPlayerInfo`) или, если живой `uPlayer` ровно один, валидную
+запись Arisen плюс читаемые XYZ. Ноль или два+ `uPlayer` остаются unresolved
+без fallback по адресу, live-list или порядку скана.
 
 #### Полезная диагностика интегрированной policy
 
@@ -136,11 +170,13 @@ actuator и не может перехватить fixed slot.
   неактивный unsafe episode. Повторные NONE/BIAS/identity evaluations без owned
   state не изображают новые release transitions. `policy RECOVERED` сообщает
   первую успешную команду и число `coalesced` повторов;
-- `PartyRecon: adopted uPlayer ... player-record-pointer` доказывает точный
-  Arisen claim; `unresolved: no player-record-pointer` — безопасно
-  проигнорированный class-only candidate;
+- `PartyRecon: adopted uPlayer ... via unique-live-uPlayer` (или
+  `player-record-pointer` / `record-body-pointer` / `info-record-pointer`)
+  доказывает точный Arisen claim; `unresolved: no player-record-pointer` —
+  безопасно проигнорированный class-only candidate (0 или 2+ `uPlayer`);
 - Aggro summary сохраняет bundle (`pin-only` для ALERT,
-  `pin+suppress+fakehit` для ALARM), writes и rollback count.
+  `pin+suppress+fakehit` для ALARM), `left` (занятые чужой картой `fC=2`),
+  writes и rollback count.
 
 `writes` — накопительный счётчик подтверждённых Tempo/Aggro операций, не уровень
 ускорения. При refresh он закономерно растёт пропорционально числу responders;
@@ -290,6 +326,7 @@ bash    tools/test_build005_locomotion_proof.sh # retained hook-side locomotion 
 bash    tools/test_build008_qol.sh                # profile/toggle/bounded-log contracts
 bash    tools/test_act_map_build004.sh           # determinism + five wolf attacks
 python3 tools/check_cpp_literals.py               # malformed C++ string/char literals
+bash    tools/test_packobserve.sh                 # goblin card + PackObserve + grab pin
 bash    tools/syntax_check.sh                    # g++ modules + ASCII UI
 ```
 
@@ -320,6 +357,7 @@ Sensors / target selection
 | [`docs/TEMPO_SYSTEM.md`](docs/TEMPO_SYSTEM.md) | система темпа: примитив, две ручки, связка, пресеты, замеры |
 | [`docs/MONSTER_AI_ARCHITECTURE.md`](docs/MONSTER_AI_ARCHITECTURE.md) | две стороны и одна шина; контракт режиссёра; замыслы политик |
 | [`docs/SPECIES_ROLLOUT.md`](docs/SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак |
+| [`docs/GOBLIN_PACK_OBSERVE.md`](docs/GOBLIN_PACK_OBSERVE.md) | ночной observe-прибор exact `uEm0100`: протокол берега |
 | [`docs/PAWN_SPRINT_RECON.md`](docs/PAWN_SPRINT_RECON.md) | трек спринта/уклонения: коды целей, приоритетные строки, компенсация темпа |
 | [`docs/WAND_RANGE.md`](docs/WAND_RANGE.md) | **эррата посоха пешки**: 15 м eligibility, не игрок |
 | [`docs/PAWN_IDLE_RECON.md`](docs/PAWN_IDLE_RECON.md) | разнообразие простоя вне боя: почему пул НПЦ закрыт и что взамен |

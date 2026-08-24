@@ -22,8 +22,14 @@ readme = (root / 'README.md').read_text(encoding='utf-8')
 doc = (root / 'docs/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
 dinput = (root / 'src/dinput8.cpp').read_text(encoding='utf-8')
 
-assert '84.9-pilot012-urgency-mobilization' in tag
+assert '84.15-goblin-grab-hold' in tag
 assert '84.9-pilot012-urgency-mobilization' in readme
+assert '84.10-goblin-pack-observe' in readme
+assert '84.11-arisen-record-glue' in readme
+assert '84.12-wolf-combat-card' in readme
+assert '84.13-leave-engaged' in readme
+assert '84.14-goblin-grab-pin' in readme
+assert '84.15-goblin-grab-hold' in readme
 assert 'Build 012' in doc
 
 # Build 004 HP-only ranking/hold/axes stay intact.
@@ -77,9 +83,14 @@ assert 'direct-pointer-conflict' in party
 assert 'pointer-current-hp-conflict' in party
 assert 'PartyRecordInfo(0, 0, 0, &body)' in party
 assert 'PartyIsRecordBackedArisen' in party
+assert 'PartyClaimUniqueArisen' in party
+assert 'unique-live-uPlayer' in party
+assert 'cPlayerInfo' in party
 assert 'P.playerRecordRef' in party
 assert 'if (!PartyIsRecordBackedArisen(g_party[i])) continue;' in party
 assert 'unresolved: no player-record-pointer' in party
+assert 'skipEmptyHired' in director
+assert 'identity-occupied-exact' in director
 assert 'if (duplicateFixedClaim) return;' in party
 assert 'kPartyExactSlots     = 4' in runtime_internal
 assert 'g_partyChosen[kPartyExactSlots]' in runtime_internal
@@ -107,8 +118,23 @@ for slot in ('Arisen', 'MainPawn', 'Hired1', 'Hired2'):
 assert 'fixed-slot identity availability' in aggro
 assert 'DirectorIdentityExactNow()' in aggro
 assert 'if (director && !DirectorIdentityExactNow())' in aggro
+assert 'LiveWolfCardMode' in aggro
+assert 'kCombatPinValue' in aggro
+assert 'not live 1/4 or 1/2' in aggro
+assert 'if (mode == 2)' in aggro
+assert 'CombatOccupiesOther' in aggro
+assert 'leave-engaged' in aggro
+assert '  left ' in aggro
+assert 'if (director && CombatOccupiesOther' in aggro
 assert 's_pinMember = MEMBER_NONE;' in aggro
 assert 'product lease owns the actuator' in aggro
+assert 'TryGoblinEmptyCardWake' in aggro
+assert 'EnsureGoblinRosterSlots' in aggro
+assert 'kEm0100RosterBase   = 0x2FA0' in aggro
+assert 'kEm0100RosterStride = 0x28C' in aggro
+assert 'goblin-card-wake' in aggro
+assert '0/0 -> 1/4 att=300 w=1.0' in aggro
+assert 'kMaxSlots    = 12' in (root / 'src/runtime/AggroWatch.h').read_text(encoding='utf-8')
 
 # Readiness explicitly reports all four required facts.
 assert 'r.movementEnabled = g_enabled;' in tempo

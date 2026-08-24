@@ -23,6 +23,59 @@
 
 ## Текущий milestone
 
+**Build 84.15** — `goblin-grab-hold`. Grab держится через `cPlActHagaijime`
+и пишет в пустые карты `uEm0100`.
+
+- holder `cPlActGrabStart` | `cPlActHagaijime` (не `Hagaijime4Feet`), lease 4000 ms;
+- пустая голова `0/0/0/0` на `+0x2FA0+k*0x28C` → `1/4 att=300 w=1.0`, readback+rollback;
+- указатели партии не пишутся; Tempo owned=0; pin-only; pack не строится;
+- диагностике cue нужны и holder, и same-kind evidence (лог 23 PARTIAL).
+
+## Предыдущий milestone
+
+**Build 84.14** — `goblin-grab-pin`. Первый Director write exact `uEm0100`.
+
+- `SpeciesCard` `uEm0100`: observe + aggroWrite, `tempoRage=false`;
+- cue `GOBLIN-GRAB-ALERT` (GrabStart, ≤2 м, 750 ms, exclude evidence);
+- Aggro ALERT pin-only на свободных exact `uEm0100`; Tempo owned=0;
+- FOCUS-WINDOW / suppress+fakehit / волчьи Tempo-числа не копируются;
+- ручной PIN остаётся `uEm0200`; головы по-прежнему `LiveWolfCardMode`.
+
+## Предыдущий milestone
+
+**Build 84.13** — `leave-engaged`. Director не переписывает волка с живой
+боевой картой (`f8=1 fC=2`) на *другом* члене партии: он занимает ту цель,
+свободные идут на марку. В summary поле `left`. Tempo у занятых не снимается.
+Боевая карта самого марка по-прежнему пишется.
+
+## Предыдущий milestone
+
+**Build 84.12** — `wolf-combat-card`. Штырь `uEm0200` допускает живую боевую
+голову `f8=1 fC=2` (нативный потолок `+0x10=500`) рядом с восприятием
+`f8=1 fC=4` (потолок 300). Иначе лог 19 писал только suppress: боевые карты
+отсекались чеком `1/4`, хотя замер 82.0 §25.3 уже описал режим. Мёртвые
+`0/0` и переходное `fC=1` не пишутся. Вес `+0x14` не трогаем. Гоблины
+observe-only.
+
+## Предыдущий milestone
+
+**Build 84.11** — `arisen-record-glue`. Живой `uPlayer` клеится к записи Arisen
+без указателя в теле: `cPlayerInfo` / первые `0x7F0` записи / уникальный
+живой `uPlayer` + валидная запись + XYZ. Director больше не требует четырёх
+тел: пустой Hired пропускается. Identity не зависит от вида монстра.
+
+## Предыдущий milestone
+
+**Build 84.10** — `goblin-pack-observe`. Ночной observe-прибор exact `uEm0100`.
+
+- `SpeciesCard`: `uEm0200` observe+write, `uEm0100` observe-only; prefix не входит;
+- `PackObserve` тикает после `WorldScan` даже при выключенном Director;
+- лог переходов ADMIT/JOIN/LEAVE/PACK/HORN/CHARGE/IGNORE-LEADER/LEADER-*/FLEE/PACK-GONE;
+- одна `TextDisabled` строка в F12, без новой галки;
+- волчий Tempo/Aggro write path bit-identical. Протокол: `docs/GOBLIN_PACK_OBSERVE.md`.
+
+## Предыдущий milestone
+
 **Build 75.56** — caster AI range закрыт как продукт.
 
 - пешка (все `uCmc`): кастерские cCmc с RangeMax 1–10 м → 15 м;
