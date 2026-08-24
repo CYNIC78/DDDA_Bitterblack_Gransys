@@ -120,6 +120,8 @@ static uint32_t s_pinLastAnomaly = 0;
 static const float kPinValue = 300.0f;         // perception ceiling (fC=4, линия при 0 м)
 static const float kCombatPinValue = 500.0f;   // combat ceiling (fC=2, замер 82.0 §25.3)
 static const float kSuppValue = 0.0f;          // нативное «полностью затухшее»
+// Goblin combat ceiling (84.17, лог 24): наблюдаемый нативный максимум fC=5.
+static const float kGobCombatPinValue = 484.0f;
 
 // Журнал «что писали и когда» — для дельта-лога: не лить 30 строк в
 // секунду, а одну на карточку, когда значение реально изменилось.
@@ -571,14 +573,41 @@ static bool IsPinnableKind(const char* kind, bool director)
     return director && strcmp(kind, "uEm0100") == 0;
 }
 
-// Director must not tear a wolf off a live fight with someone else.
-// fC=2 on a non-mark party card = already chewing that member; they occupy
-// them, and free wolves go to the mark. Combat on the mark itself is kept
-// (reinforce). Perception-only (fC=4) wolves stay redirectable.
+// Goblin live card heads (84.17, лог 24 — GOBCARD-HEAD строки):
+//   fC=4 — восприятие: потолок 300 (линия при контакте, как у волка);
+//   fC=5 — боевой режим: att до 484 (наблюдаемый максимум), проверка 0..520
+//          по волчьему образцу.
+// Флаг +0x08 — (константа_карты) | младший_байт: на части карт старшие биты
+// ненулевые (1028.0, 1.0, -1025.0, ...), поэтому гейт по (flag & 1), а не
+// flag == 1. Пустая карточка — fC=0; переходная fC=1 — fail-closed, как у
+// волка. Константа старших битов НИКОГДА не пишется.
+bool LiveGoblinCardMode(uint32_t flag, uint32_t mode,
+                        float* pinCeiling, float* maxNative)
+{
+    if ((flag & 1u) != 1u) return false;
+    if (mode == 4) {
+        if (pinCeiling) *pinCeiling = kPinValue;
+        if (maxNative) *maxNative = 320.0f;
+        return true;
+    }
+    if (mode == 5) {
+        if (pinCeiling) *pinCeiling = kGobCombatPinValue;
+        if (maxNative) *maxNative = 520.0f;
+        return true;
+    }
+    return false;
+}
+
+// Director must not tear a free responder off a live fight with someone
+// else. Wolf: fC=2 on a non-mark party card = already chewing that member.
+// Goblin (84.17, лог 24): fC=5 — тот же боевой режим, флаг по младнему
+// биту. Они занимают свою цель, свободные идут на марку. Bой САМОГО марка
+// сохраняется (reinforce). Perception-only stays redirectable.
 static bool CombatOccupiesOther(const Row& R, const PartyRef* party, int nParty,
                                 int mark)
 {
     if (mark < 0) return false;
+    const bool goblin = !strcmp(R.kind, "uEm0100");
     for (int k = 0; k < R.nSlots; ++k) {
         const Slot& S = R.slot[k];
         if (S.kind != SLOT_ROSTER) continue;
@@ -595,7 +624,11 @@ static bool CombatOccupiesOther(const Row& R, const PartyRef* party, int nParty,
         if (!Rd((void*)(R.body + S.off + 0x08), &flag, 4)
             || !Rd((void*)(R.body + S.off + 0x0C), &mode, 4))
             continue;
-        if (flag == 1 && mode == 2) return true;
+        if (goblin) {
+            if ((flag & 1u) && mode == 5) return true;
+        } else if (flag == 1 && mode == 2) {
+            return true;
+        }
     }
     return false;
 }
@@ -701,6 +734,305 @@ static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
     return 0;
 }
 
+// --- GOBCARD / CARDRECON (84.16, универсализирован в 84.18) -------------
+//
+// Универсальный карточный рекон для ЛЮБОГО вида врага. Метод тот же,
+// которым найдена волчья карта (AGGRO_RECON §15.2): DiscoverSlots (все
+// указатели на членов партии в теле) + ClassifySlots (арифметическая
+// прогрессия слотов = массив карточек: база/шаг — РЕЗУЛЬТАТ замера, а не
+// допущение). Потом — временной дифф карт. Новый монстр = один бой +
+// строки лога, без видового кода.
+//
+// Трекинг: до 4 тел, одно на вид (дедуп по kind). Пустые карточки
+// невидимы для DiscoverSlots — пока ростер не найден, перескан раз в 5 с.
+//
+// Строки:
+//   GOBCARD track    — тело + вид взяты на трекинг;
+//   GOBCARD roster   — найденный ростер base/stride/число; refmatch, если
+//                      раскладка совпала с волчьим референсом (2FA0/28C) —
+//                      однострочное доказательство «вид лежит как волк»;
+//   GOBCARD-HEAD     — голова карточки при смене состояния;
+//   GOBCARD-DIFF     — изменившиеся поля (временной дифф);
+//   GOBCARD-STILL    — heartbeat;
+//   GOBCARD-DUMP     — полный дамп (MARK / snapshot to log).
+//
+// ЗАПИСЕЙ НЕТ: только Rd. Работает и при выключенном Director.
+
+static const int      kReconTrackMax   = 4;
+static const uint32_t kReconCardCap    = 0x400;   // потолок чтения карты
+static const int      kReconCardDwords = (int)(kReconCardCap / 4);
+static const DWORD    kReconSnapMs     = 300;     // каденс снимка на тело
+static const DWORD    kReconStillMs    = 15000;   // heartbeat «тихо» (84.19: 5c спамило)
+static const DWORD    kReconHeadThrottleMs = 1000;
+static const DWORD    kReconRediscoverMs   = 5000; // перескан ростера
+// Волчий референс (замер 76.1, AGGRO_RECON §15.2) — для строки refmatch.
+static const uint32_t kReconRefBase   = 0x2FA0;
+static const uint32_t kReconRefStride = 0x28C;
+
+struct CardReconTrack {
+    uintptr_t body;
+    char      kind[16];
+    uint32_t  base, stride;
+    int       cards;
+    bool      haveRoster;
+    DWORD     lastTryMs;
+    DWORD     lastSnapMs;
+    DWORD     lastStillMs;
+    DWORD     lastHeadMs;
+    uint32_t  lastHead[kMaxParty];   // f8 | (fC << 16) последней строки
+    bool      haveHead[kMaxParty];
+    uint32_t  prev[kMaxParty][kReconCardDwords];
+    bool      havePrev[kMaxParty];
+};
+static CardReconTrack s_reconTrack[kReconTrackMax];
+static int   s_nReconTrack = 0;
+static DWORD s_reconLastTick = 0;
+
+// Имя владельца карточки (указатель в голове): лучший усиливающийся
+// вариант, только чтение. Нерезолвлённый — "-".
+static void CardReconName(uintptr_t ptr, char* out, int cap)
+{
+    out[0] = 0;
+    if (!ptr) return;
+    const uintptr_t ar = ArisenBody();
+    if (ptr == ar) { lstrcpynA(out, "Arisen", cap); return; }
+    for (int r = 0; r < 3; ++r) {
+        uintptr_t b = 0;
+        if (!PartyRecordInfo(r, 0, 0, &b) || b != ptr) continue;
+        lstrcpynA(out, r == 0 ? "MainPawn" : (r == 1 ? "Hired1" : "Hired2"), cap);
+        return;
+    }
+}
+
+static void CardReconForgetMissing()
+{
+    const int n = EnemyCount();
+    for (int i = 0; i < s_nReconTrack; ) {
+        bool alive = false;
+        for (int k = 0; k < n; ++k)
+            if (EnemyBodyAt(k, 0) == s_reconTrack[i].body) { alive = true; break; }
+        if (alive) { ++i; continue; }
+        s_reconTrack[i] = s_reconTrack[s_nReconTrack - 1];
+        --s_nReconTrack;
+    }
+}
+
+static void CardReconSelect()
+{
+    // Первое тело каждого вида (дедуп по kind) в порядке WorldScan.
+    const int n = EnemyCount();
+    for (int k = 0; k < n && s_nReconTrack < kReconTrackMax; ++k) {
+        const char* kind = 0;
+        const uintptr_t body = EnemyBodyAt(k, &kind);
+        if (!body || !kind || !kind[0]) continue;
+        bool tracked = false, kindTaken = false;
+        for (int i = 0; i < s_nReconTrack; ++i) {
+            if (s_reconTrack[i].body == body) tracked = true;
+            if (!strcmp(s_reconTrack[i].kind, kind)) kindTaken = true;
+        }
+        if (tracked || kindTaken) continue;
+        CardReconTrack& T = s_reconTrack[s_nReconTrack++];
+        memset(&T, 0, sizeof(T));
+        T.body = body;
+        lstrcpynA(T.kind, kind, sizeof(T.kind));
+        logFile << "Aggro: GOBCARD track @" << std::hex << body << std::dec
+                << " " << kind << " (read-only card recon)" << std::endl;
+    }
+}
+
+// Поиск ростера — точно те функции, которыми найден волчий массив:
+// DiscoverSlots + ClassifySlots по временному Row.
+static bool CardReconDiscoverRoster(CardReconTrack& T)
+{
+    PartyRef party[kMaxParty];
+    const int nParty = CollectParty(party, kMaxParty);
+    if (nParty <= 0) return false;
+    Slot fresh[kMaxSlots];
+    const int nf = DiscoverSlots(T.body, party, nParty, fresh, kMaxSlots);
+    if (nf < 3) return false;
+    Row tmp;
+    memset(&tmp, 0, sizeof(tmp));
+    tmp.body = T.body;
+    tmp.nSlots = nf;
+    memcpy(tmp.slot, fresh, (size_t)nf * sizeof(Slot));
+    ClassifySlots(tmp);
+    if (tmp.rosterCount < 3 || !tmp.rosterStride) return false;
+
+    T.base = tmp.rosterBase;
+    T.stride = tmp.rosterStride;
+    T.cards = tmp.rosterCount > kMaxParty ? kMaxParty : tmp.rosterCount;
+    T.haveRoster = true;
+    for (int c = 0; c < kMaxParty; ++c) T.havePrev[c] = false;
+    logFile << "Aggro: GOBCARD roster @" << std::hex << T.body << std::dec
+            << " " << T.kind << " base=+0x" << std::hex << T.base
+            << " stride=+0x" << T.stride << " x" << std::dec << T.cards;
+    if (T.base == kReconRefBase && T.stride == kReconRefStride)
+        logFile << "  refmatch (layout == uEm0200 reference)";
+    logFile << std::endl;
+    return true;
+}
+
+static void CardReconDiscoverTick(CardReconTrack& T, DWORD now)
+{
+    if (T.haveRoster) return;
+    if (now - T.lastTryMs < kReconRediscoverMs) return;
+    T.lastTryMs = now;
+    CardReconDiscoverRoster(T);
+}
+
+// Одна карточка: прочитать (stride, потолок kReconCardCap), сравнить со
+// предыдущим снимком, напечатать ТОЛЬКО изменившиеся поля.
+static bool CardReconDiffCard(CardReconTrack& T, int c, DWORD now)
+{
+    const uint32_t bytes = T.stride < kReconCardCap ? T.stride : kReconCardCap;
+    const int nD = (int)(bytes / 4);
+    if (nD < 6) return false;   // голова — 24 B, минимум 6 dwords
+    const uintptr_t card = T.body + T.base + (uintptr_t)c * T.stride;
+    uint32_t data[kReconCardDwords];
+    if (!Rd((void*)card, data, bytes)) return false;
+
+    // HEAD: при смене состояния (f8/fC) — строка формы, троттл на тело.
+    const uint32_t head = data[2] | (data[3] << 16);
+    if ((!T.haveHead[c] || head != T.lastHead[c])
+        && now - T.lastHeadMs >= kReconHeadThrottleMs) {
+        T.lastHeadMs = now;
+        float att = 0.0f, w = 0.0f;
+        memcpy(&att, &data[4], 4);
+        memcpy(&w, &data[5], 4);
+        char who[16] = {};
+        CardReconName(data[0], who, sizeof(who));
+        logFile << "Aggro: GOBCARD-HEAD @" << std::hex << T.body << std::dec
+                << " " << T.kind << " c" << c << " " << (who[0] ? who : "-")
+                << " f8=" << data[2] << " fC=" << data[3]
+                << " att=" << att << " w=" << w << std::endl;
+    }
+    T.lastHead[c] = head;
+    T.haveHead[c] = true;
+
+    // Дельта: первое чтение — тихая базовая линия.
+    if (!T.havePrev[c]) {
+        memcpy(T.prev[c], data, bytes);
+        T.havePrev[c] = true;
+        return false;
+    }
+
+    // Тихий дифф (84.19): монотонное затухание внимания (+0x10, -9..-24/тик)
+    // — не событие, в лог не идёт. Печатаем: состояние карты
+    // (+0x08/+0x0C/+0x14), блоки урона (+0x260..+0x284) — всегда;
+    // внимание (+0x10) — только скачок |д| >= 30 (ре-восприятие, сброс,
+    // пин); прочее — любое изменение (редко).
+    char cells[2048] = {};
+    int pos = 0;
+    int changed = 0;
+    int printed = 0;
+    for (int d = 0; d < nD; ++d) {
+        if (data[d] == T.prev[c][d]) continue;
+        const int off = d * 4;
+        const int a = (int)T.prev[c][d];
+        const int b = (int)data[d];
+        float fa = 0.0f, fb = 0.0f;
+        memcpy(&fa, &a, 4);
+        memcpy(&fb, &b, 4);
+        bool significant = true;
+        if (off == 0x10 && fabsf(fb - fa) < 30.0f)
+            significant = false;   // обычное затухание/докачка линией
+        if (!significant) continue;
+        ++changed;
+        if (printed >= 24) continue;
+        const bool floatish =
+            (fa > -100000.0f && fa < 100000.0f
+                && (fa == 0.0f || fa > 0.0001f || fa < -0.0001f))
+         && (fb > -100000.0f && fb < 100000.0f
+                && (fb == 0.0f || fb > 0.0001f || fb < -0.0001f));
+        char cell[80] = {};
+        if (floatish)
+            sprintf_s(cell, sizeof(cell), " +%03X %.3f->%.3f", off, fa, fb);
+        else
+            sprintf_s(cell, sizeof(cell), " +%03X %d->%d", off, a, b);
+        const int len = (int)strlen(cell);
+        if (pos + len < (int)sizeof(cells)) {
+            memcpy(cells + pos, cell, (size_t)len);
+            pos += len;
+        }
+        ++printed;
+    }
+    if (!changed) return false;
+    logFile << "Aggro: GOBCARD-DIFF @" << std::hex << T.body << std::dec
+            << " " << T.kind << " c" << c << cells;
+    if (printed < changed)
+        logFile << "(+" << (changed - printed) << " more)";
+    logFile << std::endl;
+    memcpy(T.prev[c], data, bytes);
+    return true;
+}
+
+static void CardReconDumpOne(CardReconTrack& T)
+{
+    if (!T.haveRoster) {
+        logFile << "Aggro: GOBCARD-DUMP @" << std::hex << T.body << std::dec
+                << " " << T.kind << " roster=scanning" << std::endl;
+        return;
+    }
+    const uint32_t bytes = T.stride < kReconCardCap ? T.stride : kReconCardCap;
+    const int nD = (int)(bytes / 4);
+    for (int c = 0; c < T.cards && c < kMaxParty; ++c) {
+        const uintptr_t card = T.body + T.base + (uintptr_t)c * T.stride;
+        uint32_t data[kReconCardDwords];
+        if (!Rd((void*)card, data, bytes)) continue;
+        char who[16] = {};
+        CardReconName(data[0], who, sizeof(who));
+        logFile << "Aggro: GOBCARD-DUMP @" << std::hex << T.body << std::dec
+                << " " << T.kind << " c" << c << " " << (who[0] ? who : "-");
+        for (int d = 0; d < nD; ++d) {
+            float f = 0.0f;
+            memcpy(&f, &data[d], 4);
+            char cell[24];
+            if (f > -100000.0f && f < 100000.0f
+                && (f > 0.0001f || f < -0.0001f || data[d] == 0))
+                sprintf_s(cell, sizeof(cell), "%8.3f", f);
+            else
+                sprintf_s(cell, sizeof(cell), "%8d", (int)data[d]);
+            logFile << " " << cell;
+        }
+        logFile << std::endl;
+    }
+}
+
+void CardReconTick()
+{
+    if (!InWorld()) return;
+    const DWORD now = GetTickCount();
+    if (s_reconLastTick && now - s_reconLastTick < 150) return;
+    s_reconLastTick = now;
+
+    CardReconForgetMissing();
+    CardReconSelect();
+    for (int i = 0; i < s_nReconTrack; ++i) {
+        CardReconTrack& T = s_reconTrack[i];
+        CardReconDiscoverTick(T, now);
+        if (!T.haveRoster) continue;
+        if (now - T.lastSnapMs < kReconSnapMs) continue;
+        T.lastSnapMs = now;
+        bool any = false;
+        for (int c = 0; c < T.cards && c < kMaxParty; ++c)
+            if (CardReconDiffCard(T, c, now)) any = true;
+        if (!any && now - T.lastStillMs >= kReconStillMs) {
+            T.lastStillMs = now;
+            logFile << "Aggro: GOBCARD-STILL @" << std::hex << T.body
+                    << std::dec << " " << T.kind << " " << T.cards
+                    << " cards stable" << std::endl;
+        }
+    }
+}
+
+void CardReconDump()
+{
+    for (int i = 0; i < s_nReconTrack; ++i)
+        CardReconDumpOne(s_reconTrack[i]);
+    if (!s_nReconTrack)
+        logFile << "Aggro: GOBCARD: no enemies in world" << std::endl;
+}
+
 // Одна карта: форма -> диапазон -> запись -> readback -> откат.
 // want = kPinValue/kCombatPinValue (штырь) или kSuppValue (0, подавление).
 // who — фактический владелец карты (по пере-читанному указателю).
@@ -720,8 +1052,15 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         PinAnomaly(R.body, "shape: unreadable head");
         return 1;
     }
+    // Гейт формы специфичен для вида: волк — flag==1 && fC∈{4,2};
+    // гоблин (84.17) — (flag&1)==1 && fC∈{4,5}, константа старших битов
+    // не трогается. Пустая оболочка гоблина 0/0/0/0 — только wake.
+    const bool goblin = !strcmp(R.kind, "uEm0100");
     float pinCeil = 0.0f, maxNative = 0.0f;
-    if (!LiveWolfCardMode(flag, c4, &pinCeil, &maxNative)) {
+    const bool live = goblin
+        ? LiveGoblinCardMode(flag, c4, &pinCeil, &maxNative)
+        : LiveWolfCardMode(flag, c4, &pinCeil, &maxNative);
+    if (!live) {
         if (director && want != kSuppValue) {
             const int woke = TryGoblinEmptyCardWake(R, S, who);
             if (woke == 0) return 0;
@@ -731,8 +1070,12 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         Rd((void*)(card + 0x10), &f10, 4);
         Rd((void*)(card + 0x14), &f14, 4);
         char buf[96] = {};
-        sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live 1/4 or 1/2)",
-                  flag, c4, f10, f14);
+        if (goblin)
+            sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live goblin head)",
+                      flag, c4, f10, f14);
+        else
+            sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live 1/4 or 1/2)",
+                      flag, c4, f10, f14);
         PinAnomaly(R.body, buf);
         return 1;
     }
@@ -912,6 +1255,125 @@ static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, bool dir
     }
 }
 
+// 84.19: голос сигнала. Один раз на lease: «директор дал агр через
+// фейк-хит». Разряжается DirectorFocusSet, срабатывает при первой
+// успешной записи блока B.
+static uintptr_t s_fhSignalLease = 0;
+
+// 84.17: фейк-урон гоблину — тот же блок B на тех же оффсетах, что у
+// волка (лог 24: +0x274 флаг / +0x278 счётчик / +0x27C значение /
+// +0x280 вес; нативный диапазон 0..~500, затухание -24/тик — поэтому
+// пере-заявляем каждый тик, пока жив lease).
+//
+// ОТЛИЧИЕ ОТ ВОЛКА: флаг +0x274 — (константа_карты) | младший_байт.
+// Старшие биты — константа карты (1028.0, 1.0, -1025.0, ...), её писать
+// нельзя: ставим только младший бит (V -> V+1), если он ещё 0.
+// +0x278/+0x280 не трогаем (счётчик и вес — минимальная поверхность).
+static void GoblinFakehitCard(Row& R, Slot& S, const char* who, DWORD now,
+                              bool director)
+{
+    if (strcmp(R.kind, "uEm0100") != 0) return;
+    if (director && !DirectorIdentityExactNow()) {
+        DirectorFocusSet(MEMBER_NONE, 0);
+        return;
+    }
+    const uintptr_t card = R.body + S.off;
+
+    // Флаг +274: живое целое; младший байт 0/1, старшие — константа.
+    uint32_t flagCur = 0;
+    if (!Rd((void*)(card + 0x274), &flagCur, 4)) return;
+    // Значение +27C: нативный диапазон 0..~500 (лог 24: до 495.0).
+    float valCur = 0.0f;
+    if (!Rd((void*)(card + 0x27C), &valCur, 4)
+        || valCur < -0.001f || valCur > 600.0f) {
+        PinAnomaly(R.body, "goblin-fakehit: 27C out of native range");
+        return;
+    }
+
+    const float wantVal = s_pinFakehitValue;
+    bool wrote = false;
+
+    if ((flagCur & 1u) == 0) {
+        const uint32_t wantFlag = flagCur + 1;   // только младший бит
+        if (!WrSafe((void*)(card + 0x274), &wantFlag, 4)) return;
+        uint32_t back = 0;
+        if (!Rd((void*)(card + 0x274), &back, 4) || back != wantFlag) {
+            WrSafe((void*)(card + 0x274), &flagCur, 4);
+            ++s_pinRollbacks;
+            logFile << "Aggro: PIN ROLLBACK goblin-fakehit flag @"
+                    << std::hex << R.body << std::dec
+                    << "  readback " << back << " != " << wantFlag
+                    << "  restored " << flagCur << std::endl;
+            return;
+        }
+        wrote = true;
+    }
+
+    if (valCur != wantVal) {
+        if (!WrSafe((void*)(card + 0x27C), &wantVal, 4)) return;
+        float back = 0.0f;
+        if (!Rd((void*)(card + 0x27C), &back, 4) || back != wantVal) {
+            WrSafe((void*)(card + 0x27C), &valCur, 4);
+            ++s_pinRollbacks;
+            logFile << "Aggro: PIN ROLLBACK goblin-fakehit val @"
+                    << std::hex << R.body << std::dec
+                    << "  readback " << back << " != " << wantVal
+                    << "  restored " << valCur << std::endl;
+            return;
+        }
+        wrote = true;
+    }
+    if (!wrote) return;
+    ++s_pinFakehitWrites;
+    if (director) {
+        ++s_directorWrites;
+        // Сигнал — событие, а не поток записей: одна строка на lease.
+        if (s_directorExpectedBody != s_fhSignalLease) {
+            s_fhSignalLease = s_directorExpectedBody;
+            logFile << "Aggro: DIRECTOR fakehit-signal "
+                    << MemberName(s_directorFocus)
+                    << " via block B (goblin) first write @"
+                    << std::hex << R.body << std::dec
+                    << " card +0x" << S.off << std::dec << std::endl;
+        }
+    }
+
+    // Детальная телеметрия по карточкам — opt-in research verbosity.
+    if (!s_logEvents) return;
+
+    PinLog* pl = 0;
+    const uint32_t fhOff = S.off | 0x2000000u;   // пространство goblin-fakehit
+    for (int q = 0; q < s_nPinLog; ++q) {
+        if (s_pinLog[q].body != R.body || s_pinLog[q].cardOff != fhOff)
+            continue;
+        pl = &s_pinLog[q];
+        break;
+    }
+    bool logNow = false;
+    if (!pl) {
+        if (s_nPinLog < 128) {
+            pl = &s_pinLog[s_nPinLog++];
+            pl->body = R.body;
+            pl->cardOff = fhOff;
+            pl->lastMs = 0;
+            pl->lastWas = -1e6f;
+        }
+        logNow = true;
+    } else if (now - pl->lastMs >= 2000
+               && fabsf(valCur - pl->lastWas) > 1.5f) {
+        logNow = true;
+    }
+    if (logNow && pl) {
+        pl->lastMs = now;
+        pl->lastWas = valCur;
+        logFile << "Aggro: PIN @" << std::hex << R.body << std::dec
+                << " card +0x" << std::hex << S.off << std::dec
+                << "  " << (who ? who : "?")
+                << "  goblin-fakehit 27c " << valCur << " -> " << wantVal
+                << "  ok" << std::endl;
+    }
+}
+
 // 83.0/84.12: диагностика формы. Живые 1/4 и 1/2 уже пишутся. Сюда
 // попадают мёртвая оболочка 0/0, переходное fC=1 и чужая голова —
 // печатаем ГОЛОВЫ всех карт особи: только чтение, троттл 5 с.
@@ -1000,11 +1462,17 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
         if (actual == targetMember) {
             // Фейк-хит — только если штырь реально прошёл (форма карты
             // валидна, запись и readback ок): на аномальной карте ни
-            // один член формулы не трогаем.
+            // один член формулы не трогаем. Блок B у волка и гоблина на
+            // одних оффсетах, но флаг у гоблина — с константой в старших
+            // битах, поэтому диспетчер по виду.
             const int rc = PinWriteCard(R, S, who, kPinValue, now, director);
             if (rc == 0) {
-                if (fakehit)
-                    PinFakehitCard(R, S, who, now, director);
+                if (fakehit) {
+                    if (!strcmp(R.kind, "uEm0100"))
+                        GoblinFakehitCard(R, S, who, now, director);
+                    else
+                        PinFakehitCard(R, S, who, now, director);
+                }
             } else {
                 // Запись не прошла — смотрим, что там с формой (5 с троттл).
                 PinShapeDump(R, party, nParty, now);
@@ -1104,6 +1572,8 @@ void Init()
     s_pinLastLog = 0;
     s_pinLastAnomaly = 0;
     s_switchTotal = 0;
+    s_nReconTrack = 0;
+    s_reconLastTick = 0;
     for (int i = 0; i < kMemberSlots; ++i) s_holdTicks[i] = 0;
     memset(s_conv, 0, sizeof(s_conv));
     memset(s_convLogged, 0, sizeof(s_convLogged));
@@ -1136,6 +1606,7 @@ void Shutdown()
     s_directorExcludedBody = 0;
     s_directorResponse = DIRECTOR_RESPONSE_NONE;
     s_nRow = 0;
+    s_nReconTrack = 0;
 }
 
 bool Enabled() { return s_enabled; }
@@ -1232,6 +1703,7 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     s_directorExpectedBody = expectedBody;
     s_directorExcludedBody = excludedEnemyBody;
     s_directorResponse = response;
+    s_fhSignalLease = 0;   // 84.19: новая аренда — сигнал ещё не дан
     lstrcpynA(s_directorKind, exactKind, sizeof(s_directorKind));
     s_directorIdentityBlockLogged = false;
     return true;
@@ -1379,6 +1851,9 @@ void MarkEvent(const char* tag)
 {
     logFile << "Aggro: ---- MARK: " << (tag ? tag : "(no tag)")
             << " ---- switches so far " << s_switchTotal << std::endl;
+    // GOBCARD (84.16): MARK режет замер на A/B — полные карточки goblin
+    // в момент MARK дают вторую точку для временного диффа.
+    CardReconDump();
     // Счётчики долей обнуляем: отметка режет замер на A и B, иначе доли
     // двух состояний смешались бы в одну бесполезную сумму.
     for (int i = 0; i < kMemberSlots; ++i) s_holdTicks[i] = 0;
@@ -1663,8 +2138,15 @@ void Tick()
         const int activeScope = directorActive ? 1 : s_pinScope;
         const bool directorAlarm = directorActive
                                 && s_directorResponse == DIRECTOR_RESPONSE_ALARM;
+        // 84.17: goblin-lease (GOBLIN-GRAB-ALERT) получает фейк-урон даже
+        // в ALERT: блок B — «липкий» член, без него пин в мурле перебивает
+        // восприятие (у волка это дало 18.7% -> 75.6%). Suppress на goblin
+        // не даётся: он не проверен на виде (видоспецифичный допуск).
+        const bool goblinLease = directorActive && s_directorKind[0]
+                               && !strcmp(s_directorKind, "uEm0100");
         const bool activeSuppress = directorActive ? directorAlarm : s_pinSuppress;
-        const bool activeFakehit = directorActive ? directorAlarm : s_pinFakehit;
+        const bool activeFakehit = directorActive
+            ? (directorAlarm || goblinLease) : s_pinFakehit;
         uintptr_t mBody = 0;
         for (int p = 0; p < nParty; ++p) {
             if (party[p].member != activeMember) continue;
@@ -1791,6 +2273,7 @@ void DumpSnapshot()
     for (int m = 0; m < kMemberSlots; ++m)
         logFile << "  " << MemberName(m) << "=" << s_holdTicks[m];
     logFile << "   total switches " << s_switchTotal << std::endl;
+    CardReconDump();
 }
 
 

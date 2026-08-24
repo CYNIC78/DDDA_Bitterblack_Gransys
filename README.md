@@ -4,7 +4,14 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** tag `84.15-goblin-grab-hold` — grab **держится**.
+**Текущий milestone:** tag `84.21-species-rage` — rage-профили (мин-макс скорости атаки и локомоции при std-rush) теперь поля карточки вида (SpeciesCard); roll берёт из них. Волк: 1.20–1.25 / 1.20–1.26 (сбалансированный, без изменений); гоблин: 1.21–1.24 / 1.32–1.40 (атака быстрее локомоции). Нагрузка нулевая: roll один раз на тело, эндпоинты неизменны.
+
+**Предыдущий milestone:** tag `84.18-card-recon` — универсальный CARDRECON (см. 84.19-доки).
+
+**Предыдущий milestone:** tag `84.16-dual-observe` — два read-only прибора
+(GOBCARD дифф карт goblin + PS статусы/revive), записей ноль.
+
+**Предыдущий milestone:** tag `84.15-goblin-grab-hold` — grab **держится**.
 `GOBLIN-GRAB-ALERT` принимает `cPlActGrabStart` и `cPlActHagaijime` (не
 волчий `Hagaijime4Feet`), lease 4000 ms. Пустые карты `0/0/0/0` на
 `+0x2FA0+k*0x28C` будятся в нативное `1/4 att=300 w=1.0` (readback+rollback).

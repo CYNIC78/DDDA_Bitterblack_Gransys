@@ -2,9 +2,14 @@
 
 ## Текущий milestone
 
-**Build 84.10:** `goblin-pack-observe` — ночной observe-прибор exact `uEm0100`
-(`docs/GOBLIN_PACK_OBSERVE.md`). Только чтение, без новых галок F12.
-Волчий write path 84.9 / Build 012 не изменён.
+**Build 84.18:** `card-recon` — универсальный card recon для любого вида (см. README).
+
+**Предыдущий milestone:** Build 84.16 `dual-observe` — GOBCARD + PS,
+read-only (лог 24: блок B goblin на волчьих оффсетах).
+
+**Предыдущий milestone:** Build 84.15 `goblin-grab-hold` (`docs/GOBLIN_PACK_OBSERVE.md`):
+grab держится через `cPlActHagaijime`, пустые карты `0/0/0/0` на
+`+0x2FA0` будятся в `1/4 att=300 w=1.0`. Pin-only, Tempo owned=0.
 
 **Предыдущий зафиксированный pawn milestone — Build 75.56:** `anodyne` — кастер пешки, AI range 15 м (`docs/WAND_RANGE.md`)
 

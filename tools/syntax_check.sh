@@ -10,6 +10,7 @@
 #   1g. src/pawnai/GuardianDoctrine.cpp (SEH подменён на try/catch);
 #   2. src/monsterai/MonsterDirector.cpp (шим ini/лога);
 #   2t. src/runtime/MonsterTempo.cpp (dedicated portable shim);
+#   1i2. src/runtime/PartyStatus.cpp (84.16 dual-observe, read-only);
 #   3. UI-блок пробы из DevTools.cpp на настоящем imgui.h;
 #   4. не-ASCII в строках, попадающих в ImGui (рисуются как '?').
 #
@@ -45,6 +46,9 @@ $GPP "$T/aggro_t.cpp"
 
 echo "== 1i/10 PartyRecon.cpp =="
 $GPP "$T/partyrecon_t.cpp"
+
+echo "== 1i2/10 PartyStatus.cpp =="
+$GPP "$T/partystatus_t.cpp"
 
 echo "== 1f/10 GoapProbe.cpp =="
 $GPP "$T/goap_t.cpp"

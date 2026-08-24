@@ -109,6 +109,13 @@ struct DirectorMobilizationReceipt {
     bool decaying;
 };
 
+// 84.21: rage-профиль вида. Director::Init регистрирует профили из
+// SpeciesCard (единый источник правды — карточка вида); Tempo не зависит
+// от monsterai, поэтому профиль передаётся сверху. Волчий профиль есть
+// встроенным fallback для автономных тестов Tempo.
+void RegisterRageProfile(const char* kind, float locoLo, float locoHi,
+                         float animLo, float animHi);
+
 bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
                                float urgency, uint32_t ttlMs,
                                DirectorMobilizationReceipt* receipt,

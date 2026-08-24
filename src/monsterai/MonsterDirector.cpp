@@ -16,6 +16,7 @@
 #include "../CombatBus.h"
 #include "../runtime/MonsterTempo.h"
 #include "../runtime/AggroWatch.h"
+#include "../runtime/PartyStatus.h"
 #include "../ActMap.Generated.h"
 #include <math.h>
 #include <string.h>
@@ -1429,6 +1430,14 @@ void Init()
               sizeof(s_policyStatus));
     ResetRuntimeState("waiting");
     Runtime::Aggro::SetObserverDemand(s_enabled);
+    // 84.21: rage-профили видов — из карточек (единый источник правды).
+    for (int i = 0; i < SpeciesCardCount(); ++i) {
+        const SpeciesCard* card = &kSpeciesCards[i];
+        if (!card->tempoRage) continue;
+        Runtime::Tempo::RegisterRageProfile(card->kind, card->rageLocoLo,
+                                            card->rageLocoHi,
+                                            card->rageAnimLo, card->rageAnimHi);
+    }
     lstrcpynA(s_status, s_enabled
         ? "Monster Director: PackMark+tactics armed"
         : "Monster Director: disabled", sizeof(s_status));
@@ -1436,7 +1445,7 @@ void Init()
             << " Build012 integrated urgency + mobilization;"
             << " decision=500ms; situationScan=150ms; hold=2500ms;"
             << " grabAlert=GrabStart/750ms/pin-only-Aggro;"
-            << " goblinGrab=GrabStart|Hagaijime/4000ms/pin-only-no-tempo+empty-card-wake;"
+            << " goblinGrab=GrabStart|Hagaijime/4000ms/pin+goblin-fakehit+std-rush-no-suppress+empty-card-wake+live-gate(f8&1,fC45);"
             << " groundAlarm=Hagaijime4Feet/4000ms/independent;"
             << " liftAlarm=literal-lift/2500ms/separate;"
             << " allAdmittedUrgency=1.0; Tempo=immutable-uEm0200-endpoints/1400ms-decay;"
@@ -1517,7 +1526,7 @@ void SetActuatorEnabled(bool on)
         SetPolicyStatus("actuator-off", false);
     }
     logFile << "Monster Director: tactics actuator " << (on ? "ON" : "OFF")
-            << " (same consent switch; uEm0200 pack + uEm0100 grab pin;"
+            << " (same consent switch; uEm0200 pack + uEm0100 grab pin+fakehit+std-rush;"
             << " GrabStart ALERT + ground/lift ALARM + PackMark;"
             << " occupied-exact; every admitted order urgency=1.0;"
             << " immutable rage endpoints + automatic decay)" << std::endl;
@@ -1638,6 +1647,9 @@ void DumpSnapshot()
         logFile << line << std::endl;
     }
     PackObserveDump();
+    // 84.16 dual-observe: goblin card dump + party status/downed snapshot.
+    Runtime::Aggro::CardReconDump();
+    Runtime::PartyStatus::DumpSnapshot();
     logFile << "Monster Director: ===== end snapshot =====" << std::endl;
 }
 

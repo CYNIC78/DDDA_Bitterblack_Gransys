@@ -23,6 +23,17 @@
 
 ## Текущий milestone
 
+**Build 84.18** — `card-recon`. GOBCARD универсализирован (любой вид, ростер находит сам, refmatch к волчьему референсу).
+
+## Предыдущий milestone
+
+**Build 84.16** — `dual-observe`. Два read-only прибора, записей ноль:
+
+- **GOBCARD** — временной дифф 652-байтных карт exact `uEm0100`;
+- **PS** — статусные блоки партии (поиск) + downed/revive FSM.
+
+## Предыдущий milestone
+
 **Build 84.15** — `goblin-grab-hold`. Grab держится через `cPlActHagaijime`
 и пишет в пустые карты `uEm0100`.
 

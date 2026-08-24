@@ -67,6 +67,7 @@ bool GetFactors(uintptr_t, float* loco, float* atk)
     return true;
 }
 
+void RegisterRageProfile(const char*, float, float, float, float) {}
 bool DirectorReady(const char** reasonOut)
 {
     if (reasonOut) *reasonOut = g_tempoReady ? "ready" : g_tempoReason;
@@ -79,7 +80,8 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
                                const char** reasonOut)
 {
     if (receipt) memset(receipt, 0, sizeof(*receipt));
-    if (!body || !exactKind || strcmp(exactKind, "uEm0200")
+    if (!body || !exactKind
+        || (strcmp(exactKind, "uEm0200") && strcmp(exactKind, "uEm0100"))
         || body == g_overrideFailBody) {
         if (reasonOut) *reasonOut = "director-mobilization-table-full";
         return false;
@@ -207,7 +209,14 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     g_focusKind[sizeof(g_focusKind) - 1] = 0;
     return true;
 }
+// 84.16/84.18 dual-observe: Director DumpSnapshot dumps both instruments.
+// Fixture keeps them silent: no goblin/party world in this harness.
+void CardReconDump() {}
 } // namespace Aggro
+
+namespace PartyStatus {
+void DumpSnapshot() {}
+} // namespace PartyStatus
 } // namespace Runtime
 
 static void SetMember(int slot, float hp, float maxHp, bool bodyMapped)
@@ -1112,6 +1121,7 @@ static void TestGoblinOpportunistGrabPin()
     assert(g_overrides.empty() && g_focusMember == -1);
     assert(GameplayWriteCount() == 0);
 
+    g_tempoReady = true;   // 84.20: goblin-lease получает std-rush
     Runtime::PartyCombatMember& holder =
         g_snapshot.member[Runtime::PARTY_HIRED1];
     holder.x = 2000.0f;
@@ -1132,9 +1142,10 @@ static void TestGoblinOpportunistGrabPin()
     assert(g_focusExcludedBody == s_view[0].body);
     assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
     assert(strcmp(g_focusKind, "uEm0100") == 0);
-    assert(g_overrides.empty());
-    assert(s_nResponderWolf == 2 && s_nOwnedWolf == 0);
-    assert(GameplayWriteCount() == 1);
+    // 84.20 std-rush: все свободные goblin мобилизованы (2 responders).
+    assert(g_overrides.size() == 2);
+    assert(s_nResponderWolf == 2 && s_nOwnedWolf == 2);
+    assert(GameplayWriteCount() == 3);
 
     // Log 23: pawn leaves GrabStart for cPlActHagaijime. Same lease, past 750 ms.
     strcpy(holder.liveAct, "cPlActHagaijime");
@@ -1144,7 +1155,7 @@ static void TestGoblinOpportunistGrabPin()
     assert(s_tactical.sinceMs == 500150);
     ApplyPolicies();
     assert(PolicyEngaged());
-    assert(g_overrides.empty());
+    assert(g_overrides.size() == 2);
     assert(strcmp(g_focusKind, "uEm0100") == 0);
 
     s_nView = 5;
@@ -1164,8 +1175,8 @@ static void TestGoblinOpportunistGrabPin()
     assert(s_tactical.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
     ApplyPolicies();
     assert(PolicyEngaged());
-    assert(g_overrides.empty());
-    assert(s_nOwnedWolf == 0);
+    assert(g_overrides.size() == 2);
+    assert(s_nOwnedWolf == 2);
     assert(s_nResponderWolf == 2);
     assert(strcmp(g_focusKind, "uEm0100") == 0);
 
@@ -1173,7 +1184,7 @@ static void TestGoblinOpportunistGrabPin()
     ApplyPolicies();
     assert(PolicyEngaged());
     assert(s_nResponderWolf == 1);
-    assert(g_overrides.empty());
+    assert(g_overrides.size() == 1);
     strcpy(s_view[1].kind, "uEm0100");
 
     SetGoblins(1);

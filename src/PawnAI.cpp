@@ -23,6 +23,7 @@
 #include "monsterai/MonsterDirector.h"
 #include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
+#include "runtime/PartyStatus.h"
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
@@ -46,6 +47,14 @@ void UpdatePawnAI(){
     __except(EXCEPTION_EXECUTE_HANDLER) {}
     // Read-only night instrument. Must run even if pawn AI / Director are off.
     __try { MonsterAI::PackObserveTick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    // 84.16/84.18: универсальный card recon (GOBCARD/CARDRECON).
+    // Read-only; работает при выключенном Director.
+    __try { Runtime::Aggro::CardReconTick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    // 84.16 dual-observe: статусы партии + downed/revive FSM (PS: строки).
+    // Read-only; нужен Director-снапшоту (downedValid/downedRevivable).
+    __try { Runtime::PartyStatus::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     if(!g_enabled || !pBase || !*pBase) {

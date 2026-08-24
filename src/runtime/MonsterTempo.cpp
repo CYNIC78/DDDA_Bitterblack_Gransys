@@ -226,6 +226,55 @@ static const float kWolfRageLocoLo = 1.20f;
 static const float kWolfRageLocoHi = 1.25f;
 static const float kWolfRageAnimLo = 1.20f;
 static const float kWolfRageAnimHi = 1.26f;
+
+// 84.20/84.21: стандарт «приказ = экстренная ситуация». per-body
+// детерминированный roll живёт в rage-профиле ВИДА (SpeciesCard),
+// Director::Init регистрирует профили сюда; дефолт = per-body roll
+// (FactorFor/AnimFactorFor). Волчий профиль — встроенный fallback,
+// чтобы автономные тесты Tempo работали без регистрации.
+struct RageProfile {
+    char   kind[16];
+    float  locoLo, locoHi, animLo, animHi;
+};
+static const int kMaxRageProfiles = 8;
+static RageProfile g_rageProfiles[kMaxRageProfiles];
+static int        g_nRageProfiles = 0;
+
+void RegisterRageProfile(const char* kind, float locoLo, float locoHi,
+                         float animLo, float animHi)
+{
+    if (!kind || !kind[0]) return;
+    if (!(locoLo < locoHi) || !(animLo < animHi)) return;
+    for (int i = 0; i < g_nRageProfiles; ++i) {
+        if (strcmp(g_rageProfiles[i].kind, kind) != 0) continue;
+        g_rageProfiles[i].locoLo = locoLo;
+        g_rageProfiles[i].locoHi = locoHi;
+        g_rageProfiles[i].animLo = animLo;
+        g_rageProfiles[i].animHi = animHi;
+        return;
+    }
+    if (g_nRageProfiles >= kMaxRageProfiles) return;
+    RageProfile& p = g_rageProfiles[g_nRageProfiles++];
+    lstrcpynA(p.kind, kind, sizeof(p.kind));
+    p.locoLo = locoLo; p.locoHi = locoHi;
+    p.animLo = animLo; p.animHi = animHi;
+}
+
+static const RageProfile* FindRageProfile(const char* exactKind)
+{
+    if (!exactKind) return 0;
+    for (int i = 0; i < g_nRageProfiles; ++i)
+        if (!strcmp(g_rageProfiles[i].kind, exactKind))
+            return &g_rageProfiles[i];
+    // Fallback только для волка (автономные тесты Tempo без Director::Init).
+    if (!strcmp(exactKind, "uEm0200")) {
+        static const RageProfile kWolfFallback = { "uEm0200",
+            kWolfRageLocoLo, kWolfRageLocoHi, kWolfRageAnimLo, kWolfRageAnimHi };
+        return &kWolfFallback;
+    }
+    return 0;
+}
+
 struct DirectorMob {
     uintptr_t body;
     float stableLoco, stableAnim;
@@ -1294,13 +1343,12 @@ void Init()
     {
         char l[320];
         sprintf_s(l, "Tempo: effective config: loco %s %.2f..%.2f | anim %s %.2f..%.2f"
-                     " scope=%s coupling=%.2f | Director uEm0200 rage loco %.2f..%.2f"
-                     " anim %.2f..%.2f decay=%lums",
+                     " scope=%s coupling=%.2f | Director rage profiles=%d"
+                     " (per species card, 84.21) decay=%lums",
                   g_enabled ? "on" : "off", g_factorLo, g_factorHi,
                   g_animEnabled ? "on" : "off", g_animLo, g_animHi,
                   (g_animScope == kScopeAttack) ? "ATTACKS-ONLY" : "everything",
-                  g_animCoupling, kWolfRageLocoLo, kWolfRageLocoHi,
-                  kWolfRageAnimLo, kWolfRageAnimHi,
+                  g_animCoupling, g_nRageProfiles,
                   (unsigned long)kDirectorDecayMs);
         logFile << l << std::endl;
     }
@@ -1507,7 +1555,7 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
     if (receipt) memset(receipt, 0, sizeof(*receipt));
     const char* reason = "director-mobilization-ready";
     if (!body) reason = "director-mobilization-body-invalid";
-    else if (!exactKind || strcmp(exactKind, "uEm0200"))
+    else if (!FindRageProfile(exactKind))
         reason = "director-mobilization-species-unvalidated";
     else if (!(urgency == urgency) || urgency < 0.0f || urgency > 1.0f)
         reason = "director-mobilization-urgency-invalid";
@@ -1538,16 +1586,17 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
         return false;
     }
 
+    const RageProfile* prof = FindRageProfile(exactKind);
     DirectorMob fresh;
     memset(&fresh, 0, sizeof(fresh));
     fresh.body = body;
     fresh.stableLoco = FactorFor(body);
     fresh.stableAnim = AnimFactorFor(body);
-    fresh.rageLoco = kWolfRageLocoLo
-                   + (kWolfRageLocoHi - kWolfRageLocoLo)
+    // Roll по ENDPOINT'ам профиля ВИДА (SpeciesCard): новый вид = строка
+    // в карточке, здесь ничего не дописывается.
+    fresh.rageLoco = prof->locoLo + (prof->locoHi - prof->locoLo)
                      * HashUnit(body, kSaltLoco);
-    fresh.rageAnim = kWolfRageAnimLo
-                   + (kWolfRageAnimHi - kWolfRageAnimLo)
+    fresh.rageAnim = prof->animLo + (prof->animHi - prof->animLo)
                      * HashUnit(body, kSaltAtk);
     // A configured baseline above the validated first profile must not be
     // silently slowed, clamped into a false endpoint, or used to ratchet it.

@@ -17,11 +17,25 @@ struct SpeciesCard {
     bool        observe;    // PackObserve имеет право следить
     bool        tempoRage;  // AdmitDirectorMobilization
     bool        aggroWrite; // DirectorFocusSet
+    // Rage-профиль (84.21): per-body детерминированный roll живёт в этих
+    // диапазонах при мобилизации (std-rush). Баланс вида — здесь:
+    //   волк  — сбалансированный (проверенный профиль, без изменений);
+    //   гоблин — атака быстрее локомоции (малый быстрый боец).
+    // Диапазоны обязаны оставаться в пределах species-safe clamp
+    // (loco 0.75..1.30, anim 0.70..1.40) и выше потолка стабильного
+    // профиля (1.20 / 1.15), иначе admission reject.
+    float       rageLocoLo, rageLocoHi;
+    float       rageAnimLo, rageAnimHi;
 };
 
 static const SpeciesCard kSpeciesCards[] = {
-    { "uEm0200", 29888u, true, true,  true  },
-    { "uEm0100", 29632u, true, false, true  },
+    { "uEm0200", 29888u, true, true,  true,
+      1.20f, 1.25f, 1.20f, 1.26f },
+    // 84.20: приказ = экстренная ситуация — goblin-lease получает std-rush
+    // (те же правила мобилизации, что и волк). Aggro-часть lease не менялась:
+    // pin + fakehit, без suppress.
+    { "uEm0100", 29632u, true, true,  true,
+      1.21f, 1.24f, 1.32f, 1.40f },
 };
 
 inline int SpeciesCardCount()

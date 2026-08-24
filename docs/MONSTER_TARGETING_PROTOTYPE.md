@@ -88,7 +88,7 @@ Generic override остаётся отдельной старой ручкой. 
 | Response | Aggro bundle | Evidence lease | Tempo |
 |---|---|---:|---|
 | `PACK-GRAB-ALERT` | exact target pin only; без suppress/fake-hit | 750 ms | full urgency для free `uEm0200` |
-| `GOBLIN-GRAB-ALERT` | exact target pin only; empty `0/0` wake at `+0x2FA0`; без suppress/fake-hit | 4000 ms | нет (`tempoRage=false`) |
+| `GOBLIN-GRAB-ALERT` | exact target pin + bounded fake-hit (блок B, 84.17); empty `0/0` wake at `+0x2FA0`; без suppress | 4000 ms | full urgency для free `uEm0100` (84.20 std-rush) |
 | `PACK-GROUND-PIN-ALARM` | pin + suppress + bounded fake-hit | 4000 ms | full urgency для free `uEm0200` |
 | `PACK-LIFT-RESCUE` | pin + suppress + bounded fake-hit | 2500 ms | full urgency для free `uEm0200` |
 | strategic FOCUS-WINDOW | ALARM-strength target response | strategic intent lifecycle | full urgency для free `uEm0200` only |

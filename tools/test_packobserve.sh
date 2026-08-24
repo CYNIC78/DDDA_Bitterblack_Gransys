@@ -17,12 +17,13 @@ ui = (root / 'src/EnemyAI.cpp').read_text(encoding='utf-8')
 proj = (root / 'ddda-ai-overhaul.vcxproj').read_text(encoding='utf-8')
 tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 
-assert '84.15-goblin-grab-hold' in tag
+assert '84.21-species-rage' in tag
 aggro = (root / 'src/runtime/AggroWatch.cpp').read_text(encoding='utf-8')
 assert 'TryGoblinEmptyCardWake' in aggro
 assert 'EnsureGoblinRosterSlots' in aggro
 assert 'kEm0100RosterBase   = 0x2FA0' in aggro
-assert '"uEm0100", 29632u, true, false, true' in card
+assert '"uEm0100", 29632u, true, true' in card
+assert '1.21f, 1.24f, 1.32f, 1.40f' in card  # goblin rage profile (84.21)
 assert '"uEm0200", 29888u, true, true,  true' in card
 assert 'strcmp(kind, expect)' in card
 assert 'PackObserveIngest' in obs

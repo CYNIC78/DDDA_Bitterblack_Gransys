@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 #include "RuntimeInternal.h"
+#include "PartyStatus.h"
 #include "../TypeAtlas.Generated.h"
 #include <stdio.h>
 
@@ -671,6 +672,11 @@ bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
         M.statusValid = false;
         M.downedValid = false;
         M.downedRevivable = false;
+
+        // 84.16: observer-confirmed downed fields from PartyStatus FSM.
+        // Cached state only (no memory reads); statusMask stays unmapped
+        // until the possession A/B gives a named field.
+        Runtime::PartyStatus::FillMemberStatus(M.body, slot, M);
     }
     return out->recordCount > 0;
 }

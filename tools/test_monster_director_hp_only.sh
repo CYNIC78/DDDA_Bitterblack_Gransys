@@ -23,13 +23,16 @@ TMP="$(mktemp -d /tmp/director_build012.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.15-goblin-grab-hold' "$TAG"
+grep -Fq '84.21-species-rage' "$TAG"
 grep -Fq '84.9-pilot012-urgency-mobilization' "$README"
 grep -Fq '84.10-goblin-pack-observe' "$README"
 grep -Fq '84.12-wolf-combat-card' "$README"
 grep -Fq '84.13-leave-engaged' "$README"
 grep -Fq '84.14-goblin-grab-pin' "$README"
 grep -Fq '84.15-goblin-grab-hold' "$README"
+grep -Fq '84.16-dual-observe' "$README"
+grep -Fq '84.16-dual-observe' "$README"
+grep -Fq '84.21-species-rage' "$README"
 grep -Fq '84.9-pilot012-urgency-mobilization' "$DOC"
 grep -q 'session Build 012' "$PRODUCT"
 grep -q 'Build 012' "$HEADER"
@@ -168,7 +171,7 @@ grep -q 'policy RELEASED reason=hard-timeout.*mobilization=HARD-RESET' "$LOG"
 grep -q 'policy RELEASED reason=tempo-general-hook-missing.*mobilization=HARD-RESET' "$LOG"
 grep -q 'policy FAIL-CLOSED reason=identity-Arisen-body-unresolved-or-duplicate.*mobilization=HARD-RESET-ONCE' "$LOG"
 grep -q 'policy RECOVERED priorFailClosed=identity-Arisen-body-unresolved-or-duplicate coalesced=6' "$LOG"
-grep -q 'policy ENGAGED reason=tactical-goblin-grab-alert.*response=ALERT.*urgency=1.*responders=2 tempoOwned=0.*mobilization=HOLD' "$LOG"
+grep -q 'policy ENGAGED reason=tactical-goblin-grab-alert.*response=ALERT.*urgency=1.*responders=2 tempoOwned=2.*mobilization=HOLD' "$LOG"
 
 # Direct PartyRecon fixture: DTI alone never claims Arisen. Exactly one body
 # carrying the fixed player-record pointer wins; zero/multiple claims fail
@@ -186,4 +189,22 @@ g++ -std=c++11 -Wall -Wextra -Werror -ffunction-sections -fdata-sections \
   "$TEMPO_FIXTURE" "$TEMPO" -Wl,--gc-sections -o "$TMP/tempo012_test"
 "$TMP/tempo012_test"
 
+# 84.21: rage-профили — поля карточки вида; Director регистрирует их в Tempo;
+# гоблин: разгон атаки сильнее, чем локомоции; волк — проверенный профиль.
+python3 - "$ROOT" <<'PY2'
+import re, sys
+root = sys.argv[1]
+card = open(root + "/src/monsterai/SpeciesCard.h", encoding="utf-8").read()
+assert "rageLocoLo, rageLocoHi" in card and "rageAnimLo, rageAnimHi" in card
+w = re.search(r'uEm0200.*?1\.20f, 1\.25f, 1\.20f, 1\.26f', card, re.S)
+g = re.search(r'uEm0100.*?1\.21f, 1\.24f, 1\.32f, 1\.40f', card, re.S)
+assert w and g, "species rage profiles missing/changed"
+tempo_h = open(root + "/src/runtime/MonsterTempo.h", encoding="utf-8").read()
+tempo = open(root + "/src/runtime/MonsterTempo.cpp", encoding="utf-8").read()
+director = open(root + "/src/monsterai/MonsterDirector.cpp", encoding="utf-8").read()
+assert "RegisterRageProfile" in tempo_h and "RegisterRageProfile" in tempo
+assert "FindRageProfile(exactKind)" in tempo
+assert "prof->locoLo + (prof->locoHi - prof->locoLo)" in tempo, "roll must come from the species profile"
+assert "Runtime::Tempo::RegisterRageProfile(card->kind" in director, "Director must register card profiles"
+PY2
 echo "Monster Director Build 012 urgency/mobilization regression passed."

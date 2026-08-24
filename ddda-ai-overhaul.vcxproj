@@ -132,6 +132,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\runtime\RuntimeState.cpp" />
     <ClCompile Include="src\runtime\WorldScan.cpp" />
     <ClCompile Include="src\runtime\PartyRecon.cpp" />
+    <ClCompile Include="src\runtime\PartyStatus.cpp" />
     <ClCompile Include="src\runtime\PriorityPlatform.cpp" />
     <ClCompile Include="src\EntityConfig.cpp" />
     <ClCompile Include="src\EnemyTuner.cpp" />
@@ -220,6 +221,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\runtime\MemProbe.h" />
     <ClInclude Include="src\runtime\AggroWatch.h" />
     <ClInclude Include="src\runtime\MonsterTempo.h" />
+    <ClInclude Include="src\runtime\PartyStatus.h" />
     <ClInclude Include="src\runtime\RuntimeInternal.h" />
     <ClInclude Include="src\BuildTag.h" />
     <!-- dinput8 -->

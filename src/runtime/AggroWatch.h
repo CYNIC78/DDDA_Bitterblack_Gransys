@@ -169,6 +169,23 @@ void Shutdown();
 // Зовётся из общего продуктового тика под своим SEH.
 void Tick();
 
+// CARDRECON (84.16, универсальный в 84.18): временной дифф карточек
+// ЛЮБОГО вида врага. Массив карточек (база/шаг) находит сам — тем же
+// методом, которым найден волчий (DiscoverSlots + ClassifySlots);
+// refmatch-строка, если раскладка совпала с волчьим референсом.
+// Только читает; работает при выключенном Director. docs/GOBLIN_CARD_DIFF_OBSERVE.md.
+void CardReconTick();
+// Полный дамп карточек отслеженных тел (MARK / snapshot to log).
+void CardReconDump();
+
+// Goblin live card mode (84.17, лог 24): fC=4 — восприятие (потолок 300),
+// fC=5 — боевой режим (потолок 484, наблюдаемый нативный максимум).
+// Флаг +0x08 у гоблина — (константа_карты) | младший_байт, поэтому гейт
+// по младшему биту, а не равенству 1 (лог: f8=1149272065 и т.п.).
+// Открыто для фикстюр-теста.
+bool LiveGoblinCardMode(uint32_t flag, uint32_t mode,
+                        float* pinCeiling, float* maxNative);
+
 bool Enabled();
 void SetEnabled(bool on);
 

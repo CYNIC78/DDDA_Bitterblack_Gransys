@@ -17,6 +17,7 @@
 #include "TargetLock.h"
 #include "devtools/DevTools.h"
 #include "runtime/Runtime.h"
+#include "runtime/PartyStatus.h"
 #include "EntityConfig.h"
 #include "ModPaths.h"
 #include "BuildTag.h"
@@ -55,6 +56,10 @@ void InitHooks()
     // Режиссёр стороны монстров — продуктовый слой, поднимается вместе с
     // рантаймом и до UI: он должен работать и без оверлея.
     MonsterAI::Init();
+
+    // 84.16: read-only прибор статусов партии (PS: строки). Поднимается
+    // до UI, работает и без Director; записей не делает.
+    Runtime::PartyStatus::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();
@@ -133,6 +138,7 @@ void Unitialize()
     // calls are bounded guarded cleanup only: no waits, joins, or allocations.
     MonsterAI::Shutdown();
     Runtime::Aggro::Shutdown();
+    Runtime::PartyStatus::Shutdown();
     Runtime::Shutdown();
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
