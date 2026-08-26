@@ -1,0 +1,20 @@
+84.30-party-sheet
+Та же кнопка. Теперь она смотрит в запись персонажа, не только в детей тела.
+
+Что делать:
+1. Собрать Release|Win32. Первая строка лога: 84.30-party-sheet.
+2. Лагерь / берег. Никуда не ехать. Актуатор Director OFF.
+3. F12 → Enemy AI Overhaul → Monster director → snapshot to log.
+4. Если есть фласка яда / ядовитая стрела — кинуть в пешку (иконка яда).
+   Снова snapshot to log.
+5. Выйти из игры (лог в RAM, сброс на выход). Прислать лог.
+
+Ожидать:
+- MOD_BUILD_TAG 84.30-party-sheet
+- PS: SHEET MainPawn rec=0x... body=0x...
+- PS: SHEET MainPawn voc=... lvl=... hp=... sta=...
+- PS: REC MainPawn +0000 ...
+- PS: BODY MainPawn +0000 ...
+- PS: cStatus not-found — это нормально, не ошибка
+
+Не жать другие snapshot. Не ехать к Дрейку и не лезть в воду.

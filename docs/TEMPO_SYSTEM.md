@@ -1,5 +1,9 @@
 # Система темпа: примитив и слой управления
 
+> **§5 DEPRECATED (аудит 84.21).** «Допущен только exact `uEm0200`» ложно:
+> `Director::Init` регистрирует rage-профили из `SpeciesCard` (волк + гоблин).
+> Канон: [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) §7–8. Примитив (две ручки, clamp, envelope) жив.
+
 Историческая основа: 19.08.2026, `73.3-tempo-system`. Интегрированное
 обновление: Build 012 / `84.9-pilot012-urgency-mobilization`.
 

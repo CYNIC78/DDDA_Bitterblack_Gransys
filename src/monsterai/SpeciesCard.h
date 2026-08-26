@@ -36,6 +36,16 @@ static const SpeciesCard kSpeciesCards[] = {
     // pin + fakehit, без suppress.
     { "uEm0100", 29632u, true, true,  true,
       1.21f, 1.24f, 1.32f, 1.40f },
+    // 84.26: hobgoblin. Same body size as goblin; +0xEE4 CONFIRMED (log 6).
+    // Grab = goblin recipe. PackMark = wolf weakest-HP. Rage ceiling below goblin.
+    { "uEm0101", 29632u, true, true,  true,
+      1.21f, 1.23f, 1.24f, 1.32f },
+    // 84.29: ordinary Saurian. Live Devilfire-adjacent pack: DTI uEm0400,
+    // Tempo ACCEPTED, cEm0400* (PoisonGun/Fours/JumpDown), Fluffy em0400.
+    // PackMark weakest-HP only. NO grab cue. Rage just above live stable
+    // (loco≤1.189 anim≤1.115); 1.05..1.15 is already baseline scatter.
+    { "uEm0400", 29568u, true, true,  true,
+      1.20f, 1.22f, 1.20f, 1.23f },
 };
 
 inline int SpeciesCardCount()

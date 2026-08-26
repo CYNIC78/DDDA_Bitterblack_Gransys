@@ -62,8 +62,11 @@ Occupy-чек (`CombatOccupiesOther`) расширен: goblin «занят» п
 
 ```text
 GOBLIN-GRAB-ALERT (ALERT): pin (гейт выше) + GoblinFakehitCard.
-                           suppress — НЕТ (не проверен на виде),
-                           Tempo — НЕТ (оппортунист, как и раньше).
+                           suppress — НЕТ (не проверен на виде).
+                           Tempo std-rush — ДА с 84.21 (`SpeciesCard`).
+
+Найдено A/B на той же карте (до удара / после), не новым прибором.
+Правило: [`FIX_RULES.md`](FIX_RULES.md) §7.
 ```
 
 Волчьи lease не тронуты: ALERT волка по-прежнему pin-only, ALARM —

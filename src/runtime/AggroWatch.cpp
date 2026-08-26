@@ -32,6 +32,26 @@ static const uint32_t kEm0100RosterBase   = 0x2FA0;
 static const uint32_t kEm0100RosterStride = 0x28C;
 static const int      kEm0100RosterCount  = 4;
 
+static bool IsDirectorKind(const char* kind)
+{
+    return kind && kind[0]
+        && (strcmp(kind, "uEm0200") == 0
+         || strcmp(kind, "uEm0100") == 0
+         || strcmp(kind, "uEm0101") == 0
+         || strcmp(kind, "uEm0400") == 0);
+}
+
+static bool IsGoblinFamily(const char* kind)
+{
+    return kind && (strcmp(kind, "uEm0100") == 0
+                 || strcmp(kind, "uEm0101") == 0);
+}
+
+static bool IsSaurianKind(const char* kind)
+{
+    return kind && strcmp(kind, "uEm0400") == 0;
+}
+
 static bool  s_enabled = false;         // explicit research/watch toggle
 static bool  s_directorObserver = false;// quiet, read-only product demand
 static bool  s_logEvents = false;       // verbose research events are opt-in
@@ -192,20 +212,25 @@ static int CollectParty(PartyRef* out, int cap)
 
 static const char* MemberIdentityStatus(int member, int state)
 {
-    // state: 0 exact, 1 record unavailable, 2 body unresolved/duplicate.
-    static const char* kStatus[4][3] = {
+    // state: 0 exact, 1 record unavailable, 2 body unresolved/duplicate,
+    //        3 absent (record жива, 0 тел — рифт / таймер воскрешения).
+    static const char* kStatus[4][4] = {
         { "identity-Arisen-exact",   "identity-Arisen-record-unavailable",
-          "identity-Arisen-body-unresolved-or-duplicate" },
+          "identity-Arisen-body-unresolved-or-duplicate",
+          "identity-Arisen-absent" },
         { "identity-MainPawn-exact", "identity-MainPawn-record-unavailable",
-          "identity-MainPawn-body-unresolved-or-duplicate" },
+          "identity-MainPawn-body-unresolved-or-duplicate",
+          "identity-MainPawn-absent" },
         { "identity-Hired1-exact",   "identity-Hired1-record-unavailable",
-          "identity-Hired1-body-unresolved-or-duplicate" },
+          "identity-Hired1-body-unresolved-or-duplicate",
+          "identity-Hired1-absent" },
         { "identity-Hired2-exact",   "identity-Hired2-record-unavailable",
-          "identity-Hired2-body-unresolved-or-duplicate" }
+          "identity-Hired2-body-unresolved-or-duplicate",
+          "identity-Hired2-absent" }
     };
     if (member < MEMBER_ARISEN || member > MEMBER_HIRED2)
         return "identity-invalid-slot";
-    if (state < 0 || state > 2) state = 2;
+    if (state < 0 || state > 3) state = 2;
     return kStatus[member][state];
 }
 
@@ -218,13 +243,15 @@ const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut)
     uintptr_t body = 0;
     if (member == MEMBER_ARISEN) {
         body = ArisenBody();
+        // Аризен в Разлом не уходит. Ноль тел — дыра, не vacant-слот.
         if (!body) return MemberIdentityStatus(member, 2);
     } else {
         const int recordIdx = member - MEMBER_MAIN;
         if (!PartyRecordInfo(recordIdx, 0, 0, &body))
             return MemberIdentityStatus(member, 1);
-        // PartyRecordInfo returns a body only for exactly one claimant.
-        if (!body) return MemberIdentityStatus(member, 2);
+        const int claims = PartyRecordBodyClaimCount(recordIdx);
+        if (claims == 0) return MemberIdentityStatus(member, 3);
+        if (claims != 1 || !body) return MemberIdentityStatus(member, 2);
     }
     if (bodyOut) *bodyOut = body;
     return MemberIdentityStatus(member, 0);
@@ -376,7 +403,9 @@ static bool IsEm0100RosterOff(uint32_t off)
 // 0x2FA0/0x28C x4 array so ALERT can pin or wake the mark card.
 static void EnsureGoblinRosterSlots(Row& R, const PartyRef* party, int nParty)
 {
-    if (strcmp(R.kind, "uEm0100") != 0) return;
+    // Same proven 0x2FA0/0x28C x4 on uEm0100 / uEm0101 / live uEm0400 (84.29).
+    // Forces the measured roster so ClassifySlots cannot pin a false 0x14E0/0x48.
+    if (!IsGoblinFamily(R.kind) && !IsSaurianKind(R.kind)) return;
     const DWORD now = GetTickCount();
     for (int k = 0; k < kEm0100RosterCount; ++k) {
         const uint32_t off = kEm0100RosterBase
@@ -563,14 +592,14 @@ static void CardWatchRow(Row& R, const PartyRef* party, int nParty, DWORD now)
 
 // --- PIN: одна особь ------------------------------------------------------
 //
-// Manual PIN stays exact uEm0200. Director may also pin exact uEm0100 on
-// the grab-alert lease. LiveWolfCardMode still fail-closes unknown heads:
-// a goblin card that is not live 1/4 or 1/2 is skipped, not guessed.
+// Manual PIN stays exact uEm0200. Director may pin exact uEm0100 / uEm0101
+// on grab-alert and hob PackMark. Live 84.26: hob card heads are goblin-family
+// (f8 low-bit + fC=4), not wolf flag==1. Unknown heads stay fail-closed.
 static bool IsPinnableKind(const char* kind, bool director)
 {
     if (!kind) return false;
     if (strcmp(kind, "uEm0200") == 0) return true;
-    return director && strcmp(kind, "uEm0100") == 0;
+    return director && (IsGoblinFamily(kind) || IsSaurianKind(kind));
 }
 
 // Goblin live card heads (84.17, лог 24 — GOBCARD-HEAD строки):
@@ -607,7 +636,8 @@ static bool CombatOccupiesOther(const Row& R, const PartyRef* party, int nParty,
                                 int mark)
 {
     if (mark < 0) return false;
-    const bool goblin = !strcmp(R.kind, "uEm0100");
+    const bool goblin = IsGoblinFamily(R.kind);
+    const bool saurian = IsSaurianKind(R.kind);
     for (int k = 0; k < R.nSlots; ++k) {
         const Slot& S = R.slot[k];
         if (S.kind != SLOT_ROSTER) continue;
@@ -626,6 +656,9 @@ static bool CombatOccupiesOther(const Row& R, const PartyRef* party, int nParty,
             continue;
         if (goblin) {
             if ((flag & 1u) && mode == 5) return true;
+        } else if (saurian) {
+            // Live 84.29: f8 low-bit + fC=2 combat (not goblin fC=5).
+            if ((flag & 1u) && mode == 2) return true;
         } else if (flag == 1 && mode == 2) {
             return true;
         }
@@ -680,7 +713,7 @@ static bool LiveWolfCardMode(uint32_t flag, uint32_t mode,
 // to a native perception-at-contact head. Not a pack: no suppress/fakehit.
 static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
 {
-    if (strcmp(R.kind, "uEm0100") != 0) return -1;
+    if (!IsGoblinFamily(R.kind)) return -1;
     if (!IsEm0100RosterOff(S.off)) return -1;
     const uintptr_t card = R.body + S.off;
     uint32_t flag = 0, mode = 0;
@@ -734,6 +767,83 @@ static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
     return 0;
 }
 
+// Live uEm0400 (saurian log 84.29): f8=0xBF800001, fC=4 perception / fC=2 combat.
+// Block B +274 is clean 0/1 — wolf fakehit, not goblin high-bit constant.
+static const uint32_t kSaurianLiveFlag = 0xBF800001u;
+
+static bool LiveSaurianCardMode(uint32_t flag, uint32_t mode,
+                                float* pinCeiling, float* maxNative)
+{
+    if ((flag & 1u) != 1u) return false;
+    if (mode == 4) {
+        if (pinCeiling) *pinCeiling = kPinValue;
+        if (maxNative) *maxNative = 320.0f;
+        return true;
+    }
+    if (mode == 2) {
+        if (pinCeiling) *pinCeiling = kCombatPinValue;
+        if (maxNative) *maxNative = 520.0f;
+        return true;
+    }
+    return false;
+}
+
+static int TrySaurianEmptyCardWake(Row& R, Slot& S, const char* who)
+{
+    if (!IsSaurianKind(R.kind)) return -1;
+    if (!IsEm0100RosterOff(S.off)) return -1;
+    const uintptr_t card = R.body + S.off;
+    uint32_t flag = 0, mode = 0;
+    float att = 0.0f, weight = 0.0f;
+    if (!Rd((void*)(card + 0x08), &flag, 4)
+        || !Rd((void*)(card + 0x0C), &mode, 4)
+        || !Rd((void*)(card + 0x10), &att, 4)
+        || !Rd((void*)(card + 0x14), &weight, 4))
+        return -1;
+    if (flag != 0 || mode != 0 || att != 0.0f || weight != 0.0f)
+        return -1;
+
+    const uint32_t wantFlag = kSaurianLiveFlag, wantMode = 4;
+    const float wantAtt = kPinValue;
+    const float wantW = 1.0f;
+    if (!WrSafe((void*)(card + 0x08), &wantFlag, 4)
+        || !WrSafe((void*)(card + 0x0C), &wantMode, 4)
+        || !WrSafe((void*)(card + 0x10), &wantAtt, 4)
+        || !WrSafe((void*)(card + 0x14), &wantW, 4)) {
+        WrSafe((void*)(card + 0x08), &flag, 4);
+        WrSafe((void*)(card + 0x0C), &mode, 4);
+        WrSafe((void*)(card + 0x10), &att, 4);
+        WrSafe((void*)(card + 0x14), &weight, 4);
+        PinAnomaly(R.body, "saurian-card-wake: WrSafe failed");
+        return 1;
+    }
+    uint32_t backFlag = 0, backMode = 0;
+    float backAtt = 0.0f, backW = 0.0f;
+    if (!Rd((void*)(card + 0x08), &backFlag, 4) || backFlag != wantFlag
+        || !Rd((void*)(card + 0x0C), &backMode, 4) || backMode != wantMode
+        || !Rd((void*)(card + 0x10), &backAtt, 4) || backAtt != wantAtt
+        || !Rd((void*)(card + 0x14), &backW, 4) || backW != wantW) {
+        WrSafe((void*)(card + 0x08), &flag, 4);
+        WrSafe((void*)(card + 0x0C), &mode, 4);
+        WrSafe((void*)(card + 0x10), &att, 4);
+        WrSafe((void*)(card + 0x14), &weight, 4);
+        ++s_pinRollbacks;
+        logFile << "Aggro: PIN ROLLBACK saurian-card-wake @"
+                << std::hex << R.body << std::dec
+                << " card +0x" << std::hex << S.off << std::dec
+                << std::endl;
+        return 2;
+    }
+    ++s_pinWrites;
+    ++s_directorWrites;
+    logFile << "Aggro: DIRECTOR saurian-card-wake @"
+            << std::hex << R.body << std::dec
+            << " card +0x" << std::hex << S.off << std::dec
+            << "  " << (who ? who : "?")
+            << "  0/0 -> BF800001/4 att=300 w=1.0" << std::endl;
+    return 0;
+}
+
 // --- GOBCARD / CARDRECON (84.16, универсализирован в 84.18) -------------
 //
 // Универсальный карточный рекон для ЛЮБОГО вида врага. Метод тот же,
@@ -762,7 +872,7 @@ static const int      kReconTrackMax   = 4;
 static const uint32_t kReconCardCap    = 0x400;   // потолок чтения карты
 static const int      kReconCardDwords = (int)(kReconCardCap / 4);
 static const DWORD    kReconSnapMs     = 300;     // каденс снимка на тело
-static const DWORD    kReconStillMs    = 15000;   // heartbeat «тихо» (84.19: 5c спамило)
+
 static const DWORD    kReconHeadThrottleMs = 1000;
 static const DWORD    kReconRediscoverMs   = 5000; // перескан ростера
 // Волчий референс (замер 76.1, AGGRO_RECON §15.2) — для строки refmatch.
@@ -1016,12 +1126,7 @@ void CardReconTick()
         bool any = false;
         for (int c = 0; c < T.cards && c < kMaxParty; ++c)
             if (CardReconDiffCard(T, c, now)) any = true;
-        if (!any && now - T.lastStillMs >= kReconStillMs) {
-            T.lastStillMs = now;
-            logFile << "Aggro: GOBCARD-STILL @" << std::hex << T.body
-                    << std::dec << " " << T.kind << " " << T.cards
-                    << " cards stable" << std::endl;
-        }
+        (void)any;
     }
 }
 
@@ -1055,14 +1160,18 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
     // Гейт формы специфичен для вида: волк — flag==1 && fC∈{4,2};
     // гоблин (84.17) — (flag&1)==1 && fC∈{4,5}, константа старших битов
     // не трогается. Пустая оболочка гоблина 0/0/0/0 — только wake.
-    const bool goblin = !strcmp(R.kind, "uEm0100");
+    const bool goblin = IsGoblinFamily(R.kind);
+    const bool saurian = IsSaurianKind(R.kind);
     float pinCeil = 0.0f, maxNative = 0.0f;
     const bool live = goblin
         ? LiveGoblinCardMode(flag, c4, &pinCeil, &maxNative)
-        : LiveWolfCardMode(flag, c4, &pinCeil, &maxNative);
+        : (saurian
+            ? LiveSaurianCardMode(flag, c4, &pinCeil, &maxNative)
+            : LiveWolfCardMode(flag, c4, &pinCeil, &maxNative));
     if (!live) {
         if (director && want != kSuppValue) {
-            const int woke = TryGoblinEmptyCardWake(R, S, who);
+            const int woke = goblin ? TryGoblinEmptyCardWake(R, S, who)
+                                    : TrySaurianEmptyCardWake(R, S, who);
             if (woke == 0) return 0;
             if (woke > 0) return woke;
         }
@@ -1072,6 +1181,9 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         char buf[96] = {};
         if (goblin)
             sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live goblin head)",
+                      flag, c4, f10, f14);
+        else if (saurian)
+            sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live saurian head)",
                       flag, c4, f10, f14);
         else
             sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live 1/4 or 1/2)",
@@ -1272,7 +1384,7 @@ static uintptr_t s_fhSignalLease = 0;
 static void GoblinFakehitCard(Row& R, Slot& S, const char* who, DWORD now,
                               bool director)
 {
-    if (strcmp(R.kind, "uEm0100") != 0) return;
+    if (!IsGoblinFamily(R.kind)) return;
     if (director && !DirectorIdentityExactNow()) {
         DirectorFocusSet(MEMBER_NONE, 0);
         return;
@@ -1468,7 +1580,7 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
             const int rc = PinWriteCard(R, S, who, kPinValue, now, director);
             if (rc == 0) {
                 if (fakehit) {
-                    if (!strcmp(R.kind, "uEm0100"))
+                    if (IsGoblinFamily(R.kind))
                         GoblinFakehitCard(R, S, who, now, director);
                     else
                         PinFakehitCard(R, S, who, now, director);
@@ -1488,7 +1600,7 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
 static void PinSummary(int nWolves, int nLeft, DWORD now, int targetMember, int scope,
                        bool suppress, bool fakehit, bool director)
 {
-    // First summary is immediate; unchanged leases then report at most once
+    // First summary is immediateiate; unchanged leases then report at most once
     // per ten seconds. Engagement/release transitions are logged elsewhere.
     if (s_pinLastLog && now - s_pinLastLog < 10000) return;
     s_pinLastLog = now;
@@ -1653,10 +1765,16 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     if (member > MEMBER_HIRED2 || !expectedBody
         || (response != DIRECTOR_RESPONSE_ALERT
             && response != DIRECTOR_RESPONSE_ALARM)
-        || !exactKind || !exactKind[0]
-        || (strcmp(exactKind, "uEm0200") != 0
-            && strcmp(exactKind, "uEm0100") != 0))
+        || !IsDirectorKind(exactKind)) {
+        if (exactKind && exactKind[0] && !IsDirectorKind(exactKind)
+            && !s_directorIdentityBlockLogged) {
+            logFile << "Aggro: DIRECTOR response blocked: kind=" << exactKind
+                    << " not in {uEm0200,uEm0100,uEm0101,uEm0400} no-write"
+                    << std::endl;
+            s_directorIdentityBlockLogged = true;
+        }
         return false;
+    }
 
     uintptr_t resolved = 0;
     if (!ResolveMemberBody(member, &resolved) || resolved != expectedBody) {
@@ -2144,9 +2262,11 @@ void Tick()
         // не даётся: он не проверен на виде (видоспецифичный допуск).
         const bool goblinLease = directorActive && s_directorKind[0]
                                && !strcmp(s_directorKind, "uEm0100");
+        const bool hobLease = directorActive && s_directorKind[0]
+                           && !strcmp(s_directorKind, "uEm0101");
         const bool activeSuppress = directorActive ? directorAlarm : s_pinSuppress;
         const bool activeFakehit = directorActive
-            ? (directorAlarm || goblinLease) : s_pinFakehit;
+            ? (directorAlarm || goblinLease || hobLease) : s_pinFakehit;
         uintptr_t mBody = 0;
         for (int p = 0; p < nParty; ++p) {
             if (party[p].member != activeMember) continue;

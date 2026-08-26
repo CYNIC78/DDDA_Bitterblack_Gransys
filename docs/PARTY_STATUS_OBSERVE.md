@@ -63,25 +63,32 @@ PS: MainPawn children (scan cStatus): cAICtrl@+0x2E64 cActionManager@+0x... ...
 известному якорю (вражеский аналог `rStatusParam` живёт в теле
 гоблина на `+0x2710` — STATUS_EFFECTS_RECON §3).
 
-### B. Downed/revive FSM (закрывает техдолг)
+### B. Downed/revive FSM (84.24: с тела, которое упало)
 
-Переходы по имени live-акта (набор downed совпадает с кандидатным
-списком PartyRecon + предшественник `cPlActCmcNeardeath`):
+Пешки ГГ не воскрешают. `cPlReviveCMC` — акт **Аризена** «я поднимаю
+пешку». На теле пешки его нет (атлас: отдельного `cPlActCmcRevive`
+тоже нет). Состояние падения/подъёма читается с live-акта **этого** тела.
 
 ```text
-* -> downed act                  DOWNED
-downed -> cPlReviveCMC           REVIVE   (разово за down)
-downed/revive -> обычный акт     RECOVERED (был REVIVE: последовательность
-                                      подтверждена) / DOWN-END (без REVIVE)
+пешка:
+  * -> CmcNeardeath|CmcDead|DmgDownDead     DOWNED   (ждёт succor)
+  neardeath -> CmcReturn                    RIFTED
+  neardeath -> обычный акт                  RAISED   (тело встало)
+  * -> DmgDown|DmgDownDamage                KNOCKDOWN (не succor)
+  knockdown -> StandUp/обычный              KNOCKDOWN-END
+  cPlReviveCMC на пешке                     игнор
+
+Аризен:
+  cPlReviveCMC                              RAISE (поднимает пешку, не DOWNED)
+  cPlActDead                                DEAD  (не succor-жертва)
+  DmgDown                                   KNOCKDOWN, как у пешки
 ```
 
 Заполнение снапшота (`FillMemberStatus`, только кэш FSM, без чтений):
 
-- `downedValid` — только на подтверждённом переходе FSM (тело реально
-  в downed-акте) и при свежести ≤5 с;
-- `downedRevivable` — `downedValid` **и** полная последовательность
-  воскрешения наблюдалась на этом теле хотя бы раз (живая валидация,
-  а не «скорее всего воскрешаемо»).
+- `downedValid` — тело в neardeath или knockdown, свежесть ≤5 с;
+- `downedRevivable` — пешка, сейчас neardeath, и на этом теле уже был
+  `RAISED`. Аризен всегда false.
 
 `statusMask`/`statusValid` **остаются 0/false**: 84.16 ни одно поле
 блока ещё не маппит на именованный статус — маппинг появится, когда
@@ -89,14 +96,19 @@ possession-замер даст именованное поле (POSSESSION_RECON
 
 ## Как тестировать
 
-1. Тег `MOD_BUILD_TAG 84.16-dual-observe`; Director можно не включать.
+**84.30:** лагерь. F12 → Enemy AI Overhaul → Monster director →
+`snapshot to log`. В логе `PS: SHEET` / `PS: REC` / `PS: BODY`.
+Яд (фласка/стрела) на пешку → второй snapshot. Дрейк/вода не нужны.
+
+1. Тег `MOD_BUILD_TAG 84.30-party-sheet`; Director можно не включать.
 2. **На берегу (сразу доступно):** ночной бой, пешка хватает гоблина
    (`GrabStart`/`Hagaijime`) — рестрейнт форсирует discovery-проход;
    в логе `PS: MainPawn cStatus found ...` (или `scanning` ещё 1–2
    прохода) и дельты, если блок реагирует на захват. Пешка падает
-   (QTE) и её поднимают: `DOWNED` -> `REVIVE` -> `RECOVERED`.
-3. `snapshot to log` (кнопка Director) печатает `PS: ===== manual
-   party-status snapshot =====` с полными блоками найденных статусов.
+   (HP=0) и её поднимает игрок: `DOWNED` → `RAISED` на пешке,
+   `RAISE act=cPlReviveCMC` на Аризене. Таймер без подъёма: `RIFTED`.
+3. `snapshot to log` (кнопка Director) печатает FSM + `PS: SHEET`
+   (запись + тело hex). `cStatus not-found` на детях тела — ожидаемо.
 4. **Possession (отдельная сессия, Грейтволл/Даймон):** драконид
    хватает пешку -> одержимость. Снимать A/B: `snapshot to log` ДО
    захвата, ВО ВРЕМЯ (красные глаза) и ПОСЛЕ (Panacea/добивание).

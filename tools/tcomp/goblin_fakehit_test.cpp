@@ -17,6 +17,7 @@ int EnemyCount() { return 0; }
 uintptr_t EnemyBodyAt(int, const char**) { return 0; }
 uintptr_t ArisenBody() { return 0; }
 bool PartyRecordInfo(int, int*, int*, uintptr_t*) { return false; }
+int PartyRecordBodyClaimCount(int) { return 0; }
 int PartyRecordPawnCount() { return 0; }
 bool ReadLiveAct(uintptr_t, char*, int) { return false; }
 

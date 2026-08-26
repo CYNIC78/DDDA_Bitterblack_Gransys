@@ -1,0 +1,33 @@
+84.25-fullbody-scan — Devilfire Drake (сканер)
+
+Вы были правы: в 84.24 на Devilfire Grove сидел Дрейк (uEm8100).
+Големов там нет. Сканер забил 32 слота деталями
+(uEmDragonBase::DragonAttackRange, uEm5000_1, uEm0100_3) и
+настоящее тело не показал. Ванильный захват/одержимость пешки
+были. Слот 7 (Possession) по-прежнему UNVALIDATED.
+
+Сборка: Release|Win32 → dinput8.dll в папку с DDDA.exe.
+Первая строка лога после ВЫХОДА: 84.25-fullbody-scan
+F9 не трогать. Nightmare enabled=0. wolfActuator=off.
+Пока игра открыта, лог в RAM — файл появится при выходе.
+
+--- Devilfire Grove ---
+
+1. До боя: F12 → Monster director → snapshot to log.
+2. Дрейк хватает пешку (красные глаза / бьёт вас): сразу snapshot.
+3. Сняли / бой кончился: snapshot.
+4. Выйти из игры. Прислать КУСОК, не весь файл:
+   - первая строка (тег)
+   - MD: enemy ... (ищем kind=uEm8100, act=cEm5800Catch)
+   - PS: вокруг DOWNED / RAISED / RIFTED / RAISE / DEAD
+   - три snapshot
+
+Должно быть:
+  MD: enemy uEm8100 @... act=cEm5800Catch ...
+  нет: enemy uEm5000 / uEmDragonBase / uEm0100_3 как «враг»
+  лог не 4 МБ от DragonAttackRange
+  пешка после smash: PS: MainPawn DOWNED act=cPlActDmgCrumbleDead
+                     затем RAISED, когда подняли
+
+Не обещаем: байт Possession (cStatus not-found). Модуля нет.
+Это не наложение — только чтение. Occupancy 84.23 не трогали.

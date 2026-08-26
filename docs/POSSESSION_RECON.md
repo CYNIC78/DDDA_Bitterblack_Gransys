@@ -1,5 +1,12 @@
 # Разведка: одержимость пешки по нашему желанию (в любой момент)
 
+> Протокол охоты: [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) §12.
+> CATALOG: слот **7** = Possession (`mTimer=180`), слот 6 = Drenched —
+> [`generated/STATUS_PARAM.md`](generated/STATUS_PARAM.md).
+> Live-массив — на ЗАПИСИ персонажа (SoT §12.1.2 CONFIRMED). Тело — нет.
+> Пишет `src/pawnai/Possession.cpp`. Apply 84.34 = thiscall на inline
+> `cStatus`, не poke записи. Смещение «статус-байта на теле» сюда не писать.
+
 > Постановка от 24.08.2026: «откопать и подготовить фичу одержимости
 > (possession) пешки по нашему желанию в любой момент».
 >
@@ -9,8 +16,9 @@
 > павшую в бою пешку, а получает одержимую скверной острова пешку-врага
 > прямо в бою. Этап — исследование, кода пока нет.
 >
-> Статус: **категория (4) НЕИЗВЕСТНО** по `FIX_RULES.md` §1. До первого
-> живого замера — только read-only разведка и список файлов.
+> Статус: apply id=7 CONFIRMED (84.34 лог, 84.35 без воды). Кнопка —
+> отладка. Сюжет скверны: `NIGHTMARE.md` (sidecar, не сейв). id≠7 не
+> канон. Revive лечит — не вешать.
 
 ## 0. Три механики под одним словом «possession»
 
@@ -45,7 +53,7 @@ no equipped weapon will stand still».
 | `em0300.arc` Harpy | `uEm0700/0701/0702` Harpies/Snow Harpies/Succubi |
 | `em0500.arc` Undead | `uEm0500` Skeleton, `uEm0600` Undead |
 | `em0600.arc` Cyclops | `uEm2000` Cyclops, `uEm6000` **Wight** |
-| `em1000.arc` Drake / Dragon | **`uEm1000` в атласе нет вовсе**; Drakes = `uEm8100`, The Dragon/Ur-Dragon = `uEm8000` |
+| `em1000.arc` Drake / Dragon | **`uEm1000` в атласе нет**. Live Devilfire Drake = **`uEm5900` / `em5900.arc`** (SoT §8.5). Подпись `uEm8100`=Drake в `.h` — guess |
 | `em5000.arc` Cursed Dragon | `uEm5000` Golem; Cursed Dragons = **`uEm8300`** |
 | `em6000.arc` Death | `uEm6000` Wight, `uEm6003` Death |
 | `em7000.arc` Daimon | `uEm7000` Living Armor, Daimon = **`uEm7002`** |
@@ -58,9 +66,10 @@ em0400 Saurian · em0500 Skeleton · em0600 Undead · em0700 Harpy
 em0900 Gargoyle · em1200 Phantom/Specter · em1201 Phantasm/Wraith
 em2000 Cyclops · em2001 Ogre · em5000 Golem · em5200 Chimera
 em5301 Gorechimera · em5400 Hydra · em5500 Eliminator · em5501 Elder Ogre
-em5900 Evil Eye · em6000 Wight · em6001 Lich · em6002 Dark Bishop
+em5900 Drake (live Devilfire + FluffyQuack; .h ошибочно пишет Evil Eye)
+em6000 Wight · em6001 Lich · em6002 Dark Bishop
 em6003 Death · em7000 Living Armor · em7002 Daimon
-em8000 The Dragon / Ur-Dragon · em8100 Drake · em8200 Wyrm · em8201 Wyvern
+em8000 The Dragon / Ur-Dragon · em8100 ? (FluffyQuack; .h пишет Drake)
 em8300 Cursed Dragon · em8900 The Seneschal
 ```
 
@@ -110,7 +119,7 @@ cEmWightActOneKillAtk           224 B  RVA 0xF64D0A  vt 0x15D5D1C
 | Семейство | Классов действий | Есть possess/grab-pawn? |
 |---|---:|---|
 | `cEm8000` The Dragon / Ur-Dragon | 4 | нет |
-| `cEm8100` Drake | 5 | нет |
+| `cEm8100` (каталог «Drake», не Devilfire) | 5 | нет (HoverCeiling…) |
 | `cEm8200` Wyrm | 2 | нет |
 | `cEm8201` Wyvern | **0** | нет |
 | `cEm8300` Cursed Dragon | 8 | нет |
@@ -125,7 +134,7 @@ Wight-овского. Полный перебор по `Grab|Catch|Hold|Press` �
 именованным FSM-классом атакующего. Остаются три候选:
 
 1. **motion event** внутри `.lmt` драконида (движок поднимает статус по кадру
-   анимации) — тогда всё живёт в `em8100` motion-данных, а не в AI;
+   анимации) — якорь архива **`em5900`**, не `em8100`;
 2. **сторона жертвы**: у пешки уже есть `cPlActGrabStart` (120 B) —
    наш `TacticalCues` ловит именно его как `PACK-GRAB-ALERT`;
 3. **общий слой статусов** (`cStatus` / `uCharacterBase::StatusEffect`), куда
@@ -220,7 +229,7 @@ static const char* kCandidate[] = {
 | Приоритет | Что | Зачем |
 |---|---|---|
 | 🔥 0 | `dir nativePC\rom\enemy\` (просто листинг) | сверить имена архивов с рантайм-id (§1) |
-| 🔥 1 | архив Драконов: `em8100*` / `em8000*` / `em8200*` (по листингу) | motion-событие grab-possess (§3, гипотеза 1) |
+| 🔥 1 | архив Devilfire Drake: **`em5900*`** (EAP уже сверен, §8.5.1) | motion-событие grab-possess (§3, гипотеза 1) |
 | 🔥 1 | `game_main.arc` → `param/` всё со `Status`/`Debuff` в имени | id и параметры Possession |
 | 🔥 1 | `game_main.arc` → `AI/Character/Pawn/`, `AI/AINpcActionParameter/` | есть ли у пешки строка под одержимое поведение |
 | 2 | архив Wight/Lich/Dark Bishop: `em6000*` | разбор `cEmWightActPossesion` как донора эффекта (§2) |
@@ -244,8 +253,8 @@ static const char* kCandidate[] = {
    uCharacterBase::StatusEffect, cEffectStatus, rStatusParam
    (Runtime::FindChildByClass уже умеет, FIX_RULES §6);
 4. раскладка блока → запись в FIELD_MAP.md, контракт → SOURCE_OF_TRUTH.md;
-5. только после 4 — модуль src/pawnai/Possession.{h,cpp} по образцу
-   WandRange: Init/Tick/Restore/Shutdown/Get/SetEnabled + ini-ключ + F12.
+5. модуль src/pawnai/Possession.{h,cpp} (84.31) пишет слой C на MainPawn.
+   write-WATCH в лагере — этот зип. Revive не вешаем.
 ```
 
 ## 9. Риски и границы

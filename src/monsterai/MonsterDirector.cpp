@@ -28,7 +28,7 @@ static const DWORD kTickMs         = 150;
 static const DWORD kWorldFreshMs   = 450; // three situation scans; stale fails closed
 static const DWORD kDecisionMs     = 500;
 static const DWORD kMinHoldMs      = 2500;
-static const DWORD kHeartbeatMs    = 10000;
+// HEARTBEAT removed: log only SELECT/SWITCH/MODE/CLEAR (state change).
 static const float kSwitchMargin   = 1.20f;
 static const float kBiasIsolation  = 0.20f;
 // Data-driven first commit boundary: in the validated fight MainPawn became a
@@ -55,6 +55,8 @@ static Runtime::PartyCombatSnapshot s_cueParty;
 static TargetScore s_score[Runtime::PARTY_COMBAT_SLOTS];
 static int         s_order[Runtime::PARTY_COMBAT_SLOTS] = { -1, -1, -1, -1 };
 static int         s_wolfCount = 0;
+static int         s_hobCount = 0;
+static int         s_saurCount = 0;
 static int         s_mark = -1;
 static int         s_runner = -1;
 static DWORD       s_markSince = 0;
@@ -140,6 +142,16 @@ static const char* ModeName(int mode)
 static bool IsWolf(const MonsterView& v)
 {
     return !strcmp(v.kind, "uEm0200");
+}
+
+static bool IsHob(const MonsterView& v)
+{
+    return !strcmp(v.kind, "uEm0101");
+}
+
+static bool IsSaur(const MonsterView& v)
+{
+    return !strcmp(v.kind, "uEm0400");
 }
 
 struct FirstSeen { uintptr_t body; DWORD ms; };
@@ -513,7 +525,11 @@ static uint64_t PartyTopologySignature(const Runtime::PartyCombatSnapshot& p)
     // Build 002 treated level/maxHP/core/loadout changes as party composition.
     // A real level-up therefore reset the hold. Build 003+ hashes topology only:
     // slot presence, record address and stable record index. Current HP, max HP,
-    // level, stats, skills, body and position cannot reset tactical memory.
+    // level, stats, skills, body POINTER and position cannot reset tactical memory.
+    //
+    // 84.23: occupancy (on-field vs rifted) IS topology. A pawn leaving for
+    // the Rift or returning is a new encounter-local party. Hash the boolean,
+    // never the body address (zone-load flicker of the pointer itself).
     //
     // Exact occupant identity is still unvalidated. That is acceptable for an
     // encounter-local observer: party hiring normally occurs outside a live
@@ -526,6 +542,7 @@ static uint64_t PartyTopologySignature(const Runtime::PartyCombatSnapshot& p)
         h = HashAdd(h, (uint64_t)m.slot);
         h = HashAdd(h, (uint64_t)m.pawnRecordIdx);
         h = HashAdd(h, (uint64_t)m.record);
+        h = HashAdd(h, (uint64_t)((m.bodyValid && m.body) ? 1 : 0));
     }
     return h;
 }
@@ -568,14 +585,22 @@ static void ScoreParty()
 {
     memset(s_score, 0, sizeof(s_score));
     s_wolfCount = 0;
-    for (int i = 0; i < s_nView; ++i)
+    s_hobCount = 0;
+    s_saurCount = 0;
+    for (int i = 0; i < s_nView; ++i) {
         if (IsWolf(s_view[i])) ++s_wolfCount;
+        if (IsHob(s_view[i])) ++s_hobCount;
+        if (IsSaur(s_view[i])) ++s_saurCount;
+    }
 
     float highestHp = 0.0f;
     for (int i = 0; i < Runtime::PARTY_COMBAT_SLOTS; ++i) {
         const Runtime::PartyCombatMember& m = s_party.member[i];
         TargetScore& q = s_score[i];
-        q.hpValid = m.recordValid && m.hpValid && m.currentHp > 0.0f;
+        // On-field only. Запись в Разломе жива, но охотить её нельзя:
+        // тела нет. Downed на земле — bodyValid, слот остаётся в скоре.
+        q.hpValid = m.recordValid && m.hpValid && m.currentHp > 0.0f
+                 && m.bodyValid && m.body;
         if (q.hpValid && m.currentHp > highestHp)
             highestHp = m.currentHp;
     }
@@ -711,7 +736,7 @@ static void LogDecision(const char* event, DWORD now, bool withScores)
         "markHp=%s runnerHp=%s isolation=%+.1f%% targetDepth=%+.1f%% "
         "focusIntent=%s reason=%s "
         "hold=%lu/%lu ms decision=%lu ms switchMargin=20%% isolationBias=20%% isolationFocus=100%% "
-        "wolves=%d hp=[A:%.1f,M:%.1f,H1:%.1f,H2:%.1f] "
+        "wolves=%d hobs=%d saurs=%d hp=[A:%.1f,M:%.1f,H1:%.1f,H2:%.1f] "
         "eligible=[%d,%d,%d,%d] body/position/native=UNVALIDATED/ignored "
         "DEF/ATK/maxHP%%/skills/vocation/status/downed=ignored "
         "focus/tempo=synchronized-if-gated actuator=%s observerOnly=%d writes=%d",
@@ -724,7 +749,7 @@ static void LogDecision(const char* event, DWORD now, bool withScores)
         isolation * 100.0f, depth * 100.0f, ModeName(s_mode), s_reason,
         (unsigned long)(s_markSince ? now - s_markSince : 0),
         (unsigned long)kMinHoldMs, (unsigned long)kDecisionMs,
-        s_wolfCount,
+        s_wolfCount, s_hobCount, s_saurCount,
         s_party.member[0].currentHp, s_party.member[1].currentHp,
         s_party.member[2].currentHp, s_party.member[3].currentHp,
         s_score[0].valid ? 1 : 0, s_score[1].valid ? 1 : 0,
@@ -753,9 +778,9 @@ static void UpdateStatus(DWORD now)
             situation, actuator, s_policyStatus, s_gameplayWrites);
         return;
     }
-    if (s_wolfCount <= 0) {
+    if (s_wolfCount <= 0 && s_hobCount <= 0 && s_saurCount <= 0) {
         sprintf_s(s_status,
-            "Monster Director: PackMark+tactics | no uEm0200 wolves | "
+            "Monster Director: PackMark+tactics | no pack (wolf/hob) | "
             "situation %s | actuator %s | policy %s | writes %d",
             situation, actuator, s_policyStatus, s_gameplayWrites);
         return;
@@ -763,8 +788,8 @@ static void UpdateStatus(DWORD now)
     if (s_mark < 0) {
         sprintf_s(s_status,
             "Monster Director: PackMark+tactics | no eligible positive-current-HP record | "
-            "%d wolves | situation %s | actuator %s | policy %s | writes %d",
-            s_wolfCount, situation, actuator, s_policyStatus, s_gameplayWrites);
+            "%d wolves %d hobs %d saurs | situation %s | actuator %s | policy %s | writes %d",
+            s_wolfCount, s_hobCount, s_saurCount, situation, actuator, s_policyStatus, s_gameplayWrites);
         return;
     }
 
@@ -793,6 +818,8 @@ static void Decide(DWORD now)
         ClearPriorityOrder();
         ResetDecisionMemory("party-unavailable");
         s_wolfCount = 0;
+        s_hobCount = 0;
+        s_saurCount = 0;
         UpdateStatus(now);
         return;
     }
@@ -807,7 +834,7 @@ static void Decide(DWORD now)
 
     ScoreParty();
     BuildPriorityOrder();
-    if (s_wolfCount <= 0) {
+    if (s_wolfCount <= 0 && s_hobCount <= 0 && s_saurCount <= 0) {
         if (s_mark >= 0) {
             ResetDecisionMemory("wolf-pack-gone");
             LogDecision("CLEAR", now, false);
@@ -859,8 +886,6 @@ static void Decide(DWORD now)
                     now, true);
     } else if (modeChanged) {
         LogDecision("MODE", now, true);
-    } else if (!s_lastLog || now - s_lastLog >= kHeartbeatMs) {
-        LogDecision("HEARTBEAT", now, false);
     }
 
     UpdateStatus(now);
@@ -1043,7 +1068,14 @@ static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
         const bool skipEmptyHired =
             (slot == Runtime::PARTY_HIRED1 || slot == Runtime::PARTY_HIRED2)
             && strstr(bridge, "-record-unavailable") != 0;
-        if (skipEmptyHired) continue;
+        // 84.23: запись жива, тел 0 — пешка в Разломе (таймер / обрыв /
+        // камень не трогали). Это не дыра identity. Аризен так не скипается.
+        const bool skipRifted =
+            (slot == Runtime::PARTY_MAIN
+             || slot == Runtime::PARTY_HIRED1
+             || slot == Runtime::PARTY_HIRED2)
+            && strstr(bridge, "-absent") != 0;
+        if (skipEmptyHired || skipRifted) continue;
         if (!strstr(bridge, "-exact")) {
             if (reasonOut) *reasonOut = bridge;
             return false;
@@ -1076,8 +1108,16 @@ static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
 
 static const char* PolicyResponderKind(int situation)
 {
-    return situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT
-        ? "uEm0100" : "uEm0200";
+    if (situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT)
+        return "uEm0100";
+    if (situation == TACTICAL_SITUATION_HOB_GRAB_ALERT)
+        return "uEm0101";
+    if (situation == TACTICAL_SITUATION_NONE) {
+        if (s_wolfCount > 0) return "uEm0200";
+        if (s_hobCount > 0) return "uEm0101";
+        if (s_saurCount > 0) return "uEm0400";
+    }
+    return "uEm0200";
 }
 
 static int CollectEligibleResponders(uintptr_t* out, int cap,
@@ -1085,6 +1125,8 @@ static int CollectEligibleResponders(uintptr_t* out, int cap,
                                      const char** reasonOut)
 {
     const bool goblin = kind && !strcmp(kind, "uEm0100");
+    const bool hob = kind && !strcmp(kind, "uEm0101");
+    const bool saur = kind && !strcmp(kind, "uEm0400");
     int n = 0;
     for (int i = 0; i < s_nView; ++i) {
         const MonsterView& v = s_view[i];
@@ -1094,24 +1136,35 @@ static int CollectEligibleResponders(uintptr_t* out, int cap,
             if (out[k] == v.body) {
                 if (reasonOut)
                     *reasonOut = goblin ? "goblin-duplicate-body"
-                                        : "wolf-pack-duplicate-body";
+                               : hob ? "hob-duplicate-body"
+                               : saur ? "saurian-duplicate-body"
+                               : "wolf-pack-duplicate-body";
                 return -1;
             }
         }
         if (n >= cap) {
             if (reasonOut)
-                *reasonOut = goblin ? "goblin-too-large" : "wolf-pack-too-large";
+                *reasonOut = goblin ? "goblin-too-large"
+                           : hob ? "hob-too-large"
+                           : saur ? "saurian-too-large"
+                           : "wolf-pack-too-large";
             return -1;
         }
         out[n++] = v.body;
     }
     if (!n) {
         if (reasonOut)
-            *reasonOut = goblin ? "goblin-no-free-responder" : "wolf-pack-lost";
+            *reasonOut = goblin ? "goblin-no-free-responder"
+                       : hob ? "hob-no-free-responder"
+                       : saur ? "saurian-no-free-responder"
+                       : "wolf-pack-lost";
         return 0;
     }
     if (reasonOut)
-        *reasonOut = goblin ? "goblin-eligible" : "wolf-pack-eligible";
+        *reasonOut = goblin ? "goblin-eligible"
+                   : hob ? "hob-eligible"
+                   : saur ? "saurian-eligible"
+                   : "wolf-pack-eligible";
     return n;
 }
 
@@ -1285,7 +1338,11 @@ static void ApplyPolicies()
     if (nResponder <= 0) {
         const char* none = !strcmp(responderKind, "uEm0100")
                          ? "goblin-no-free-responder"
-                         : "wolf-pack-no-free-responder";
+                         : (!strcmp(responderKind, "uEm0101")
+                            ? "hob-pack-no-free-responder"
+                            : (!strcmp(responderKind, "uEm0400")
+                               ? "saurian-pack-no-free-responder"
+                               : "wolf-pack-no-free-responder"));
         ReleasePolicy(excludedBody && nResponder == 0 ? none : reason, true);
         return;
     }
@@ -1369,7 +1426,7 @@ static void ApplyPolicies()
                             : Runtime::Aggro::DIRECTOR_RESPONSE_ALARM;
     if (!Runtime::Aggro::DirectorFocusSet(targetSlot, targetBody, excludedBody,
                                            aggroResponse, responderKind)) {
-        ReleasePolicy("aggro-focus-identity-rejected", true);
+        ReleasePolicy("aggro-focus-rejected", true);
         return;
     }
     ++s_gameplayWrites;
@@ -1387,6 +1444,8 @@ static void ResetRuntimeState(const char* reason)
     s_havePartySignature = false;
     s_partySignature = 0;
     s_wolfCount = 0;
+    s_hobCount = 0;
+    s_saurCount = 0;
     memset(&s_party, 0, sizeof(s_party));
     memset(&s_cueParty, 0, sizeof(s_cueParty));
     memset(&s_tactical, 0, sizeof(s_tactical));
@@ -1446,13 +1505,15 @@ void Init()
             << " decision=500ms; situationScan=150ms; hold=2500ms;"
             << " grabAlert=GrabStart/750ms/pin-only-Aggro;"
             << " goblinGrab=GrabStart|Hagaijime/4000ms/pin+goblin-fakehit+std-rush-no-suppress+empty-card-wake+live-gate(f8&1,fC45);"
+            << " hobPack=uEm0101 PackMark+HOB-GRAB/pin+goblin-family-card/2FA0-28C;"
+            << " saurPack=uEm0400 PackMark-only/no-grab/pin+saurian-head;"
             << " groundAlarm=Hagaijime4Feet/4000ms/independent;"
             << " liftAlarm=literal-lift/2500ms/separate;"
             << " allAdmittedUrgency=1.0; Tempo=immutable-uEm0200-endpoints/1400ms-decay;"
             << " switchMargin=20%; focusIntent=NONE/BIAS/FOCUS-WINDOW;"
             << " isolation=20%/100%; depth=highestHP/markHP-1;"
             << " tacticsActuator=" << (s_actuatorEnabled ? "ON" : "OFF")
-            << " exact4+same-kind+unique-spatial-admission+sticky-exact-continuation;"
+            << " occupied-on-field+rifted-skip+same-kind+unique-spatial-admission;"
             << " observerOnly=" << (s_actuatorEnabled ? 0 : 1)
             << " writes=0" << std::endl;
     PackObserveInit();
@@ -1467,6 +1528,14 @@ void Shutdown()
     Runtime::Aggro::SetObserverDemand(false);
     ResetRuntimeState("shutdown");
     lstrcpynA(s_status, "Monster Director: disabled", sizeof(s_status));
+}
+
+void OnWorldUnload()
+{
+    const DWORD now = GetTickCount();
+    TacticalRelease("world-unload", false, true, now);
+    ReleasePolicy("world-unload", true);
+    ResetRuntimeState("world-unload");
 }
 
 void Tick()
@@ -1526,7 +1595,7 @@ void SetActuatorEnabled(bool on)
         SetPolicyStatus("actuator-off", false);
     }
     logFile << "Monster Director: tactics actuator " << (on ? "ON" : "OFF")
-            << " (same consent switch; uEm0200 pack + uEm0100 grab pin+fakehit+std-rush;"
+            << " (same consent switch; uEm0200 pack + uEm0100 grab + uEm0101 pack/grab + uEm0400 pack;"
             << " GrabStart ALERT + ground/lift ALARM + PackMark;"
             << " occupied-exact; every admitted order urgency=1.0;"
             << " immutable rage endpoints + automatic decay)" << std::endl;
@@ -1603,6 +1672,8 @@ void DumpSnapshot()
         memset(s_score, 0, sizeof(s_score));
         ClearPriorityOrder();
         s_wolfCount = 0;
+        s_hobCount = 0;
+        s_saurCount = 0;
     } else {
         ScoreParty();
         BuildPriorityOrder();
@@ -1614,6 +1685,8 @@ void DumpSnapshot()
             << " observerOnly=" << (s_actuatorEnabled ? 0 : 1)
             << " writes=" << s_gameplayWrites << " enemies=" << s_nView
             << " wolves=" << s_wolfCount
+            << " hobs=" << s_hobCount
+            << " saurs=" << s_saurCount
             << " situation=" << (s_tactical.active
                                   ? TacticalSituationName(s_tactical.situation) : "-")
             << " response=" << (s_tactical.active

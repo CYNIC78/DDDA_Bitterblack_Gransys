@@ -123,6 +123,9 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
 void ReleaseDirectorMobilization(uintptr_t body);       // ordinary decay
 void HardResetDirectorMobilization(uintptr_t body);     // unsafe immediate reset
 void HardResetAllDirectorMobilization();                // disable/shutdown/rollback
+// Выгрузка мира: хуки и ряд анимации гасятся СЕЙЧАС, без WrSafe в мёртвые тела.
+// Generic PawnHaste-override тоже снимается — тел партии больше нет.
+void OnWorldUnload();
 int  DirectorMobilizationCount();
 
 // Живая настройка диапазона из UI: применяется со следующим обновлением

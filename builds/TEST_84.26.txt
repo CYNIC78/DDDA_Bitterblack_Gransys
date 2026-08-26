@@ -1,0 +1,6 @@
+84.26-hob-pack
+- SpeciesCard uEm0101: grab=goblin (GrabStart/Hagaijime), PackMark=weakest HP like wolf
+- rage loco 1.21..1.23 anim 1.24..1.32 (below small-goblin ceiling)
+- NO copy of goblin roster wake / goblin flag-bit fakehit onto hob
+- wolfActuator still default off
+- Snapshot: F12 Enemy AI Overhaul -> Monster director -> snapshot to log

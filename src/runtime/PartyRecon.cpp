@@ -416,6 +416,18 @@ bool PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut)
     return true;
 }
 
+int PartyRecordBodyClaimCount(int idx)
+{
+    if (idx < 0 || idx > 2) return 0;
+    int hits = 0;
+    for (int i = 0; i < g_nParty; ++i) {
+        if (strcmp(g_party[i].dti, "uCmc") || g_party[i].pawnRecordIdx != idx)
+            continue;
+        ++hits;
+    }
+    return hits;
+}
+
 // --- EXACT PAWN RECORD <-> LIVE BODY BRIDGE (session Build 007) ------------
 //
 // В живых замерах уже подтверждены обе стороны одного и того же поля:
@@ -588,8 +600,10 @@ static bool CombatDownedActionHint(const char* act)
     // promoted to downedValid until the observer log aligns them with a live
     // pawn fall/revival sequence.
     static const char* kCandidate[] = {
-        "cPlActCmcDead", "cPlActDead", "cPlActDmgDown",
-        "cPlActDmgDownDamage", "cPlActDmgDownDead", "cPlReviveCMC"
+        "cPlActCmcNeardeath", "cPlActCmcDead", "cPlActCmcReturn",
+        "cPlActDead", "cPlActDmgDown",
+        "cPlActDmgDownDamage", "cPlActDmgDownDead"
+        // cPlReviveCMC — акт Аризена «поднимаю пешку», не downed-hint.
     };
     for (int i = 0; i < (int)(sizeof(kCandidate) / sizeof(kCandidate[0])); ++i)
         if (!strcmp(act, kCandidate[i])) return true;
@@ -683,7 +697,8 @@ bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
 
 void PartySetExpectedPawns(int n)
 {
-    if (n < 1) n = 1;
+    // 0 законно: все пешки в Разломе, на поле только Аризен.
+    if (n < 0) n = 0;
     if (n > 4) n = 4;
     InterlockedExchange(&g_partyExpectPawns, (LONG)n);
 }
@@ -1163,8 +1178,9 @@ void PartyReadPositions()
         g_pawnPosX = g_pawnPosY = g_pawnPosZ = 0;
         // Диагностика: только при ПЕРЕХОДЕ в сбой (было ок → стало ок-нет),
         // плюс редко (раз в 60с), чтобы не спамить лог каждые 3 секунды.
+        // 84.23: пешка в Разломе — pawnIdx=-1. Это не сбой чтения.
         DWORD now = MsNow();
-        if ((g_pawnPosWasOk || now - g_pawnPosLastFailLog >= 60000u)) {
+        if (pawn >= 0 && (g_pawnPosWasOk || now - g_pawnPosLastFailLog >= 60000u)) {
             g_pawnPosLastFailLog = now;
             logFile << "PartyPositions: pawn read FAILED nParty=" << g_nParty
                     << " pawnIdx=" << pawn << std::endl;
@@ -1379,21 +1395,16 @@ void PartyPositionsTick()
         // четырьмя чтениями и врать не могут.
         {
             const int wantPawns = PartyRecordPawnCount();
-            if (wantPawns > 0) PartySetExpectedPawns(wantPawns);
             int havePawns = 0;
             for (int i = 0; i < g_nParty; ++i)
                 if (!strcmp(g_party[i].dti, "uCmc")) ++havePawns;
 
             // ОТСТУПАЕМ, ЕСЛИ ПЕРЕСКАН НЕ ПОМОГАЕТ.
             //
-            // В логе 75.9 строка «party composition changed - rescanning»
-            // повторилась несколько десятков раз подряд: записи говорят
-            // «три пешки», скан находит меньше, и запрос выставлялся
-            // заново каждые пять секунд. Это не поиск, это цикл.
-            //
-            // Правило: если после пересканирования число тел не выросло,
-            // ещё две попытки — и замолкаем до реальной смены состава
-            // (изменения числа записей).
+            // Записи переживают рифт: want=1 при нуле тел — это не дыра
+            // состава, а пешка в Разломе. Три попытки, потом occupancy
+            // считается полной (Аризен + кто на поле). Иначе PartyFindBodies
+            // ходит по куче каждые 20 с весь соло-прогон.
             static int  s_failedRescans = 0;
             static int  s_lastWant = -1;
             if (wantPawns != s_lastWant) { s_lastWant = wantPawns; s_failedRescans = 0; }
@@ -1401,18 +1412,28 @@ void PartyPositionsTick()
                 if (s_failedRescans < 3) {
                     ++s_failedRescans;
                     PartyRequestRescan();
-                } else if (s_failedRescans == 3) {
-                    ++s_failedRescans;
-                    char l[200];
-                    sprintf_s(l, "PartyRecon: records show %d pawns, the body scan"
-                                 " finds %d - giving up until the party changes"
-                                 " (probes will read the bodies we do have)",
-                              wantPawns, havePawns);
-                    logFile << l << std::endl;
+                    if (wantPawns > 0) PartySetExpectedPawns(wantPawns);
+                } else {
+                    if (s_failedRescans == 3) {
+                        ++s_failedRescans;
+                        char l[200];
+                        sprintf_s(l, "PartyRecon: records show %d pawns, the body scan"
+                                     " finds %d - treating missing as rifted"
+                                     " (on-field only, stop hunting)",
+                                  wantPawns, havePawns);
+                        logFile << l << std::endl;
+                    }
+                    PartySetExpectedPawns(havePawns);
                 }
             } else {
                 s_failedRescans = 0;
+                if (wantPawns > 0) PartySetExpectedPawns(wantPawns);
             }
+
+            // 84.23: полная картина = Аризен есть и либо все записи имеют
+            // тело, либо мы сдались искать rifted-слоты.
+            if (arisen >= 0 && (havePawns >= wantPawns || s_failedRescans >= 3))
+                complete = true;
         }
 
         // Состав мог измениться: наняли или уволили пешку. Тела старых при

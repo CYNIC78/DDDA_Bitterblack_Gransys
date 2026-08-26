@@ -127,6 +127,22 @@ static const TacticalRule kRules[] = {
         2.00f,
         4000,
         true
+    },
+    {
+        TACTICAL_SITUATION_HOB_GRAB_ALERT,
+        "HOB-GRAB-ALERT",
+        "tactical-hob-grab-alert",
+        88,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0101",
+        kGoblinGrabAlertActs,
+        (int)(sizeof(kGoblinGrabAlertActs) / sizeof(kGoblinGrabAlertActs[0])),
+        0, 0,
+        false,
+        2.00f,
+        4000,
+        true
     }
 };
 

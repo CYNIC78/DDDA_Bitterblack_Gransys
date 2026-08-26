@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.21-species-rage"
+#define MOD_BUILD_TAG "84.37-xmm-params"

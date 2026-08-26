@@ -4,7 +4,15 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** tag `84.21-species-rage` — rage-профили (мин-макс скорости атаки и локомоции при std-rush) теперь поля карточки вида (SpeciesCard); roll берёт из них. Волк: 1.20–1.25 / 1.20–1.26 (сбалансированный, без изменений); гоблин: 1.21–1.24 / 1.32–1.40 (атака быстрее локомоции). Нагрузка нулевая: roll один раз на тело, эндпоинты неизменны.
+**Текущий milestone:** tag `84.34-status-call` — thiscall `cStatus`
+после воды. 84.33: рецепт не собрался (`stk8=id`).
+(`ids[k]=7`). Ещё: `84.30-party-sheet`
+(дамп записи). Ещё: `84.29-saurian-pack`.
+(карточка вида без agrо-двери). `84.25-fullbody-scan` — в слот только
+полное тело. Devilfire Drake live = `uEm5900`, не каталожный `uEm8100`.
+Ещё ранее: `84.23-on-field`. Лог в RAM до выхода. Канон: [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md).
+
+**Предыдущий milestone:** tag `84.21-species-rage` — rage-профили (мин-макс скорости атаки и локомоции при std-rush) теперь поля карточки вида (SpeciesCard); roll берёт из них. Волк: 1.20–1.25 / 1.20–1.26 (сбалансированный, без изменений); гоблин: 1.21–1.24 / 1.32–1.40 (атака быстрее локомоции). Нагрузка нулевая: roll один раз на тело, эндпоинты неизменны.
 
 **Предыдущий milestone:** tag `84.18-card-recon` — универсальный CARDRECON (см. 84.19-доки).
 
@@ -65,7 +73,7 @@ Build 011 cue model сохранён: `GrabStart` остаётся слабым 
 continuation приклеен к исходной exact holder/victim паре. Новых F12 controls
 нет. Absolute-current-HP PackMark, Guardian, принятый стабильный Tempo profile,
 HP/damage/stagger/immunity/inclinations и native combat вне приказа не изменены.
-Подробно: [`docs/MONSTER_TARGETING_PROTOTYPE.md`](docs/MONSTER_TARGETING_PROTOTYPE.md).
+Подробно: [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §8; прототип — `docs/archive/MONSTER_TARGETING_PROTOTYPE.md`.
 
 ## Что уже работает
 
@@ -123,8 +131,9 @@ Priority profiles не запускают действие насильно. О�
 wolf-условие внутри Director. Таблица сохраняет три независимые рецепта:
 
 - `cPlActGrabStart` / `cPlActHagaijime` + exact `uEm0100` →
-  `GOBLIN-GRAB-ALERT`, priority 90, pin-only, без Tempo, lease до 4000 ms;
-  пустая карта `0/0` на `+0x2FA0` будится в `1/4`;
+  `GOBLIN-GRAB-ALERT`, priority 90, pin + goblin-fakehit (без suppress),
+  **std-rush Tempo** (`SpeciesCard` 84.21: loco `1.21..1.24`, anim `1.32..1.40`),
+  lease до 4000 ms; пустая карта `0/0` на `+0x2FA0` будится в `1/4`;
 - `cPlActGrabStart` → `PACK-GRAB-ALERT`, priority 100, pin-only focus, lease до
   750 ms;
 - `cPlActHagaijime4Feet` → `PACK-GROUND-PIN-ALARM`, priority 200, полный alarm,
@@ -153,8 +162,8 @@ lease. Exact restrained body не получает ни Aggro write, ни Direct
 Композиция: stable baseline → Director envelope → generic override → final clamp.
 
 Обе существующие галки `[monsterAI] enabled` и `wolfActuator` по умолчанию
-выключены; новых элементов F12 нет. Occupied-exact party identity (Arisen +
-Main обязательны; пустой Hired пропускается), свежесть world snapshot, exact
+выключены; новых элементов F12 нет. Occupied-on-field identity (84.23: слот без тела = рифт, не авария;
+пустой Hired и rifted Main/Hired пропускаются; Аризен без тела — нет), свежесть world snapshot, exact
 `uEm0200`, уникальность body/pair, bounded lease, downstream readback и
 rollback продолжают fail closed. Для Arisen одного имени DTI `uPlayer`
 недостаточно само по себе: claim берёт pointer evidence (тело / первые `0x7F0`
@@ -254,7 +263,7 @@ fixed-record gate и отдельным duplicate-claim regression.
   приоритета, то есть доступны транзакционному `AddS32`;
 - **текущее HP существа** — смещение не найдено; без него не сделать
   политики вроде «ярости агонии» (протокол поиска описан в
-  `docs/MONSTER_AI_ARCHITECTURE.md`);
+  `docs/SOURCE_OF_TRUTH.md` §13);
 - **человеческие враги** — оружие, вокации и аугменты образуют отдельную
   систему; темп на них намеренно не переносится;
 - поводок (follow-дистанция) — роль-зависимый, НЕ найден (см. GUARDIAN_LEASH_MATRIX.md);
@@ -360,22 +369,19 @@ Sensors / target selection
 | Документ | Назначение |
 |---|---|
 | [`docs/VISION.md`](docs/VISION.md) | замысел: три слоя и философия проекта |
-| [`docs/NEXT_MILESTONE_OPTIONS.md`](docs/NEXT_MILESTONE_OPTIONS.md) | три трека после Build 73: спринт пешек, память места, дышащий мир |
 | [`docs/TEMPO_SYSTEM.md`](docs/TEMPO_SYSTEM.md) | система темпа: примитив, две ручки, связка, пресеты, замеры |
-| [`docs/MONSTER_AI_ARCHITECTURE.md`](docs/MONSTER_AI_ARCHITECTURE.md) | две стороны и одна шина; контракт режиссёра; замыслы политик |
 | [`docs/SPECIES_ROLLOUT.md`](docs/SPECIES_ROLLOUT.md) | перенос темпа на остальные виды: допуск вида, классификация атак |
 | [`docs/GOBLIN_PACK_OBSERVE.md`](docs/GOBLIN_PACK_OBSERVE.md) | ночной observe-прибор exact `uEm0100`: протокол берега |
 | [`docs/PAWN_SPRINT_RECON.md`](docs/PAWN_SPRINT_RECON.md) | трек спринта/уклонения: коды целей, приоритетные строки, компенсация темпа |
 | [`docs/WAND_RANGE.md`](docs/WAND_RANGE.md) | **эррата посоха пешки**: 15 м eligibility, не игрок |
 | [`docs/PAWN_IDLE_RECON.md`](docs/PAWN_IDLE_RECON.md) | разнообразие простоя вне боя: почему пул НПЦ закрыт и что взамен |
 | [`docs/HIRED_PAWNS_SCOPE.md`](docs/HIRED_PAWNS_SCOPE.md) | наёмные пешки: что можно, что нельзя, и замер общего ресурса приоритетов |
-| [`docs/MONSTER_TEMPO_RECON.md`](docs/MONSTER_TEMPO_RECON.md) | история охоты за темпом: что исключили и как нашли |
-| [`docs/STATUS_EFFECTS_RECON.md`](docs/STATUS_EFFECTS_RECON.md) | статусы и торпор; карта `cCharParamEnemy` (72 поля) |
-| [`docs/TEMPO_HUNT_PROTOCOL_RU.md`](docs/TEMPO_HUNT_PROTOCOL_RU.md) | протокол исследования: что вводить и когда жать |
+| [`docs/generated/STATUS_PARAM.md`](docs/generated/STATUS_PARAM.md) | 40 слотов статусов; слот 7 = Possession (CATALOG) |
+| [`docs/archive/`](docs/archive/) | замороженные дневники охоты и старые контракты |
 | [`docs/ANATOMY_EM0100.md`](docs/ANATOMY_EM0100.md) | анатомия гоблина — справочник для модеров |
 | [`docs/README.md`](docs/README.md) | индекс документации |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | архитектура платформы |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md) | актуальный план |
+| [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §13 | открытые пробелы |
 | [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) | подтверждённые контракты |
 | [`docs/FIELD_MAP.md`](docs/FIELD_MAP.md) | offsets |
 | [`docs/ASSET_FORMATS.md`](docs/ASSET_FORMATS.md) | игровые resource formats |

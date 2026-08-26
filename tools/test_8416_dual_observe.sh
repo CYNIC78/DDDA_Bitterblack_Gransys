@@ -34,7 +34,7 @@ TMP="$(mktemp -d /tmp/dual_observe_8416.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.21-species-rage' "$TAG"
+grep -Fq '84.37-xmm-params' "$TAG"
 grep -Fq '84.15-goblin-grab-hold' "$README"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.16-dual-observe' "$README"
@@ -101,6 +101,7 @@ grep -Fq 'cStatus' "$PS_CPP"
 grep -Fq 'cEffectStatusManager' "$PS_CPP"
 grep -Fq 'cPlReviveCMC' "$PS_CPP"
 grep -Fq 'cPlActCmcNeardeath' "$PS_CPP"
+grep -Fq 'cPlActDmgCrumbleDead' "$PS_CPP"
 grep -Fq 'M.statusMask = 0' "$PARTY"
 grep -q 'statusMask/statusValid остаются' "$PS_CPP" \
   || grep -q 'statusMask' "$PS_CPP"

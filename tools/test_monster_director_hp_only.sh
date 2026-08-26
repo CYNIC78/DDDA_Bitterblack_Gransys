@@ -13,7 +13,7 @@ TEMPO_H="$ROOT/src/runtime/MonsterTempo.h"
 AGGRO="$ROOT/src/runtime/AggroWatch.cpp"
 TAG="$ROOT/src/BuildTag.h"
 README="$ROOT/README.md"
-DOC="$ROOT/docs/MONSTER_TARGETING_PROTOTYPE.md"
+DOC="$ROOT/docs/archive/MONSTER_TARGETING_PROTOTYPE.md"
 INI="$ROOT/ddda_ai_overhaul.ini"
 DEF_INI="$ROOT/ddda_ai_overhaul.default.ini"
 FIXTURE="$ROOT/tools/tcomp/director_moment_priority_test.cpp"
@@ -23,7 +23,7 @@ TMP="$(mktemp -d /tmp/director_build012.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.21-species-rage' "$TAG"
+grep -Fq '84.37-xmm-params' "$TAG"
 grep -Fq '84.9-pilot012-urgency-mobilization' "$README"
 grep -Fq '84.10-goblin-pack-observe' "$README"
 grep -Fq '84.12-wolf-combat-card' "$README"
@@ -33,6 +33,7 @@ grep -Fq '84.15-goblin-grab-hold' "$README"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.21-species-rage' "$README"
+grep -Fq '84.23-on-field' "$README"
 grep -Fq '84.9-pilot012-urgency-mobilization' "$DOC"
 grep -q 'session Build 012' "$PRODUCT"
 grep -q 'Build 012' "$HEADER"
@@ -172,6 +173,7 @@ grep -q 'policy RELEASED reason=tempo-general-hook-missing.*mobilization=HARD-RE
 grep -q 'policy FAIL-CLOSED reason=identity-Arisen-body-unresolved-or-duplicate.*mobilization=HARD-RESET-ONCE' "$LOG"
 grep -q 'policy RECOVERED priorFailClosed=identity-Arisen-body-unresolved-or-duplicate coalesced=6' "$LOG"
 grep -q 'policy ENGAGED reason=tactical-goblin-grab-alert.*response=ALERT.*urgency=1.*responders=2 tempoOwned=2.*mobilization=HOLD' "$LOG"
+grep -q 'policy ENGAGED reason=tactical-hob-grab-alert' "$LOG"
 
 # Direct PartyRecon fixture: DTI alone never claims Arisen. Exactly one body
 # carrying the fixed player-record pointer wins; zero/multiple claims fail
@@ -198,7 +200,10 @@ card = open(root + "/src/monsterai/SpeciesCard.h", encoding="utf-8").read()
 assert "rageLocoLo, rageLocoHi" in card and "rageAnimLo, rageAnimHi" in card
 w = re.search(r'uEm0200.*?1\.20f, 1\.25f, 1\.20f, 1\.26f', card, re.S)
 g = re.search(r'uEm0100.*?1\.21f, 1\.24f, 1\.32f, 1\.40f', card, re.S)
-assert w and g, "species rage profiles missing/changed"
+h = re.search(r'uEm0101.*?1\.21f, 1\.23f, 1\.24f, 1\.32f', card, re.S)
+s = re.search(r'uEm0400.*?1\.20f, 1\.22f, 1\.20f, 1\.23f', card, re.S)
+assert w and g and h and s, "species rage profiles missing/changed"
+assert "HOB-GRAB-ALERT" in open(root + "/src/monsterai/TacticalCues.cpp", encoding="utf-8").read()
 tempo_h = open(root + "/src/runtime/MonsterTempo.h", encoding="utf-8").read()
 tempo = open(root + "/src/runtime/MonsterTempo.cpp", encoding="utf-8").read()
 director = open(root + "/src/monsterai/MonsterDirector.cpp", encoding="utf-8").read()

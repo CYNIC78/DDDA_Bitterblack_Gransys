@@ -46,7 +46,7 @@ namespace Aggro {
 
 enum {
     kMaxRows     = 32,  // особей под наблюдением
-    kMaxSlots    = 12,  // target slots + forced uEm0100 roster (4 cards)
+    kMaxSlots    = 12,  // target slots + forced goblin-family roster (4 cards)
     kMaxParty    = 4,   // Аризен + до трёх пешек
     kMemberSlots = 5    // + графа «неразрешённая пешка», см. MEMBER_OTHERPAWN
 };
@@ -205,7 +205,7 @@ bool ResolveMemberBody(int member, uintptr_t* bodyOut);
 const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut);
 
 // Product response lease for Monster Director. exactKind is a full DTI name
-// (uEm0200 pack or uEm0100 grab pin). ALERT reapplies only the validated
+// (uEm0200 pack, uEm0100 grab, or uEm0101 hob pack/grab). ALERT reapplies only the validated
 // attention pin: free same-kind bodies (not the restrained body, and not a
 // wolf already in combat with someone else) turn toward the acting pawn
 // without fake-hit attack pressure. A wolf chewing another member is left

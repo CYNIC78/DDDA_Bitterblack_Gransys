@@ -1,0 +1,24 @@
+84.37-xmm-params
+Кастомные timer/p0/p1 на нашем apply id=7.
+
+Собрать: Release | Win32. Тег: 84.37-xmm-params.
+Лагерь. Актуатор OFF. Не пауза. К Дрейку не идти.
+
+A. Каталог (контроль)
+1. F12 Pawn AI Overhaul → arm writes
+   custom params ВЫКЛ
+2. apply
+3. Лог: vanilla-call inject=0  и  BuffApply id=7 t=180 p0=0.2 p1=0.35
+4. clear
+
+B. Короткий приступ
+1. custom params ВКЛ
+   timer s = 15   param0 = 0.2   param1 = 0.35
+2. apply (игра идёт)
+3. Лог: inject=1 t=15  и  BuffApply id=7 … inject t=15
+4. F12 Enemy AI Overhaul → Monster director → snapshot to log
+5. Значок должен погаснуть ~через 15 с (не 3 мин)
+6. clear если ещё висит. Выйти. Лог.
+
+Панель: status id=7. live t в кадрах (15 с ≈ 450).
+Не ждать need-water. F9 не жать.

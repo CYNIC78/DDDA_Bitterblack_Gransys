@@ -1,0 +1,20 @@
+84.34-status-call
+Вызов ванильного apply: cStatus+0x7C / cStatus / id=7.
+
+Собрать: Release | Win32. Тег: 84.34-status-call.
+В логе: buff-hook armed  и  buff-fn 0x… (prologue)
+
+Лагерь. Актуатор OFF.
+
+1. F12 → Pawn AI Overhaul → arm writes
+2. 5 секунд в воде главной. Выйти на сушу.
+   Панель: recipe yes
+   Лог: recipe this=cStatus+0x7C arg0=cStatus arg1=id
+3. apply
+4. Смотреть: значок одержимости (не мокрота), глаза, бьёт ли
+5. clear. Выйти. Лог.
+
+В логе ждать: vanilla-call id=7  затем  vanilla-applied / watch-ok
+или vanilla-no-record / vanilla-call AV / recipe-miss.
+
+В панели status id=7 — одержимость. status id=6 — всё ещё мокрота.

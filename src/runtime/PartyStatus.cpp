@@ -43,7 +43,7 @@ static const uint32_t kPartyBodyBytes = 0x5A40;
 static const DWORD kTickMs          = 500;    // каденс прибора
 static const DWORD kDiscoverMs      = 3000;   // один класс на тело за проход
 static const DWORD kDeltaThrottleMs = 200;    // дельта-строка на блок
-static const DWORD kHeartbeatMs     = 30000;  // строка живучести на тело (84.19: 10c спамило)
+
 static const DWORD kFreshMs         = 5000;   // свежесть FSM для снапшота
 // 84.17: опрос имён детей (лог 24: cStatus не найден по указателю —
 // видно, что на самом деле висит на теле партии).
@@ -52,19 +52,33 @@ static const DWORD  kSurveyLogMs    = 15000;  // строка опроса на 
 
 // --- действия ----------------------------------------------------------
 //
-// Набор downed совпадает с кандидатным списком PartyRecon (kCandidate),
-// плюс предшественник cPlActCmcNeardeath — вход последовательности.
-static const char* kDownedActs[] = {
+// 84.24: состояние падения читается с ТЕЛА, которое упало.
+// Пешка HP=0: CmcNeardeath / CmcDead / DmgDownDead.
+// Пешка в Разлом: CmcReturn. Подъём succor: выход из neardeath в обычный
+// акт (не Return) — отдельного cPlActCmcRevive в атласе нет.
+// Нокдаун: DmgDown → DmgStandUp, это не succor.
+// cPlReviveCMC — акт Аризена «я поднимаю пешку». На теле пешки игнор.
+// cPlActDead на Аризене — не succor-жертва (пешки ГГ не воскрешают).
+static const char* kKnockdownActs[] = {
+    "cPlActDmgDown",
+    "cPlActDmgDownDamage"
+};
+static const int kKnockdownActCount =
+    (int)(sizeof(kKnockdownActs) / sizeof(kKnockdownActs[0]));
+static const char* kNeardeathActs[] = {
     "cPlActCmcNeardeath",
     "cPlActCmcDead",
-    "cPlActDead",
-    "cPlActDmgDown",
-    "cPlActDmgDownDamage",
-    "cPlActDmgDownDead"
+    "cPlActDmgDownDead",
+    "cPlActDmgCrumbleDead"
 };
-static const int kDownedActCount =
-    (int)(sizeof(kDownedActs) / sizeof(kDownedActs[0]));
-static const char* kReviveAct = "cPlReviveCMC";
+static const int kNeardeathActCount =
+    (int)(sizeof(kNeardeathActs) / sizeof(kNeardeathActs[0]));
+static const char* kRiftAct  = "cPlActCmcReturn";
+static const char* kRaiseAct = "cPlReviveCMC";   // только слот Arisen
+static const char* kArisenDeadAct = "cPlActDead";
+static const int kKindNone      = 0;
+static const int kKindKnockdown = 1;
+static const int kKindNeardeath = 2;
 
 // Действия, форсирующие немедленный discovery-проход: restraint =
 // воспроизводимое «ослабленное» состояние на берегу Кассардиса (мы его
@@ -104,11 +118,13 @@ struct BodyTrack {
     DWORD     lastActMs;
     char      lastAct[48];
 
-    // FSM downed/revive (канал B).
+    // FSM падения (канал B) — на этом теле, не на чужом.
     bool      downedNow;
+    int       downedKind;   // kKindNone / Knockdown / Neardeath
     DWORD     downedSinceMs;
-    bool      reviveSeen;   // cPlReviveCMC наблюдался в текущем down
-    bool      everRevived;  // полная последовательность наблюдалась когда-либо
+    bool      everRevived;  // пешка: RAISED из neardeath хотя бы раз
+    bool      raiseNow;     // Arisen stretch cPlReviveCMC
+    bool      deadNow;      // Arisen stretch cPlActDead
 
     // Статусные блоки (канал A, якорный поиск).
     uintptr_t blockPtr[kNBlocks];
@@ -160,49 +176,112 @@ static void SyncBodies(const uintptr_t* bodies, const int* slots, int n)
     }
 }
 
-// --- канал B: downed/revive FSM -----------------------------------------
+// --- канал B: падение/подъём с тела, которое упало (84.24) --------------
 //
-// Переходы:
-//   * -> downed act                  DOWNED
-//   downed -> cPlReviveCMC           REVIVE (разово за down)
-//   downed/revive -> обычный act     RECOVERED (если было REVIVE) /
-//                                    DOWN-END (без REVIVE — добита?)
-// Полная последовательность = живая валидация: именно её мы передаём
-// в downedRevivable, а не угаданную «скорее всего воскрешаемо».
+// Пешка:
+//   * -> CmcNeardeath|CmcDead|DmgDownDead     DOWNED (ждёт succor)
+//   neardeath -> CmcReturn                    RIFTED
+//   neardeath -> обычный акт                  RAISED (тело встало)
+//   * -> DmgDown|DmgDownDamage                KNOCKDOWN (не succor)
+//   knockdown -> StandUp/обычный              KNOCKDOWN-END
+//   knockdown -> neardeath                    эскалация в DOWNED
+//   cPlReviveCMC на пешке                     игнор (акт Аризена)
+// Аризен:
+//   cPlReviveCMC                              RAISE (поднимает пешку)
+//   cPlActDead                                DEAD (не succor-жертва)
+//   DmgDown                                   KNOCKDOWN, как у пешки
+static void ClearDowned(BodyTrack& T)
+{
+    T.downedNow = false;
+    T.downedKind = kKindNone;
+}
+
 static void FsmTick(BodyTrack& T, const char* act, DWORD now)
 {
-    const bool isDowned = ActInSet(act, kDownedActs, kDownedActCount);
-    const bool isRevive = !strcmp(act, kReviveAct);
+    const bool isPawn = (T.slot != PARTY_ARISEN);
+    const bool isKnockdown = ActInSet(act, kKnockdownActs, kKnockdownActCount);
+    bool isNeardeath = ActInSet(act, kNeardeathActs, kNeardeathActCount);
+    if (isPawn && !strcmp(act, kArisenDeadAct))
+        isNeardeath = true;
+    const bool isRift = !strcmp(act, kRiftAct);
+    const bool isPlayerRaise = !strcmp(act, kRaiseAct);
+    const bool isArisenDead = !isPawn && !strcmp(act, kArisenDeadAct);
 
-    if (isDowned && !T.downedNow) {
+    if (isPlayerRaise) {
+        if (isPawn)
+            return;
+        if (!T.downedNow && !T.raiseNow) {
+            T.raiseNow = true;
+            logFile << "PS: Arisen RAISE act=cPlReviveCMC" << std::endl;
+        }
+        return;
+    }
+    if (T.raiseNow) T.raiseNow = false;
+
+    if (isArisenDead) {
+        if (T.downedNow) ClearDowned(T);
+        if (!T.deadNow) {
+            T.deadNow = true;
+            logFile << "PS: Arisen DEAD act=cPlActDead" << std::endl;
+        }
+        return;
+    }
+    if (T.deadNow) {
+        T.deadNow = false;
+        logFile << "PS: Arisen DEAD-END act=" << act << std::endl;
+        return;
+    }
+
+    if (isNeardeath && T.downedKind != kKindNeardeath) {
+        const bool first = !T.downedNow;
         T.downedNow = true;
-        T.downedSinceMs = now;
-        T.reviveSeen = false;
+        T.downedKind = kKindNeardeath;
+        if (first) T.downedSinceMs = now;
         logFile << "PS: " << SlotName(T.slot) << " DOWNED act=" << act
                 << std::endl;
         return;
     }
-    if (!T.downedNow) return;
-
-    if (isRevive && !T.reviveSeen) {
-        T.reviveSeen = true;
-        logFile << "PS: " << SlotName(T.slot) << " REVIVE act=cPlReviveCMC"
-                << " downed+" << (now - T.downedSinceMs) << "ms" << std::endl;
+    if (isKnockdown && !T.downedNow) {
+        T.downedNow = true;
+        T.downedKind = kKindKnockdown;
+        T.downedSinceMs = now;
+        logFile << "PS: " << SlotName(T.slot) << " KNOCKDOWN act=" << act
+                << std::endl;
         return;
     }
-    if (!isDowned && !isRevive) {
-        if (T.reviveSeen) {
-            T.everRevived = true;
-            logFile << "PS: " << SlotName(T.slot) << " RECOVERED act=" << act
-                    << " (revive sequence confirmed, downed+"
-                    << (now - T.downedSinceMs) << "ms)" << std::endl;
-        } else {
-            logFile << "PS: " << SlotName(T.slot) << " DOWN-END act=" << act
-                    << " (no revive observed)" << std::endl;
-        }
-        T.downedNow = false;
-        T.reviveSeen = false;
+    if (!T.downedNow) {
+        if (isRift && isPawn)
+            logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
+                    << std::endl;
+        return;
     }
+
+    if (T.downedKind == kKindNeardeath) {
+        if (isNeardeath) return;
+        if (isRift) {
+            logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
+                    << " downed+" << (now - T.downedSinceMs) << "ms"
+                    << std::endl;
+            ClearDowned(T);
+            return;
+        }
+        if (isPawn) T.everRevived = true;
+        logFile << "PS: " << SlotName(T.slot) << " RAISED act=" << act
+                << " downed+" << (now - T.downedSinceMs) << "ms" << std::endl;
+        ClearDowned(T);
+        return;
+    }
+
+    if (isKnockdown) return;
+    if (isRift && isPawn) {
+        logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
+                << std::endl;
+        ClearDowned(T);
+        return;
+    }
+    logFile << "PS: " << SlotName(T.slot) << " KNOCKDOWN-END act=" << act
+            << std::endl;
+    ClearDowned(T);
 }
 
 // --- канал A: статусные блоки -------------------------------------------
@@ -258,7 +337,8 @@ static void DiscoverOne(BodyTrack& T, DWORD now, bool force)
         }
     }
 
-    if (now - T.lastSurveyLogMs >= kSurveyLogMs) {
+    // Один раз на тело: повтор каждые 15 с заливал лог, карта детей не меняется.
+    if (nNames > 0 && T.lastSurveyLogMs == 0) {
         T.lastSurveyLogMs = now;
         logFile << "PS: " << SlotName(T.slot) << " children (scan "
                 << kBlocks[want].cls << "):";
@@ -375,16 +455,6 @@ static void BodyTick(BodyTrack& T, DWORD now)
 
     DiscoverOne(T, now, statusAct);
     BlockTick(T, now);
-
-    if (now - T.lastHeartbeatMs >= kHeartbeatMs) {
-        T.lastHeartbeatMs = now;
-        logFile << "PS: " << SlotName(T.slot) << " @" << std::hex << T.body
-                << std::dec << " hb: cStatus="
-                << (T.blockFound[0] ? "found" : "scanning")
-                << " mgr=" << (T.blockFound[1] ? "found" : "scanning")
-                << " downed=" << (T.downedNow ? 1 : 0)
-                << " everRevived=" << (T.everRevived ? 1 : 0) << std::endl;
-    }
 }
 
 void Tick()
@@ -427,9 +497,161 @@ void FillMemberStatus(uintptr_t body, int slot, PartyCombatMember& M)
     const DWORD now = GetTickCount();
     const bool fresh = T->haveAct && (now - T->lastActMs < kFreshMs);
     M.downedValid = fresh && T->downedNow;
-    M.downedRevivable = M.downedValid && T->everRevived;
+    // succor-revivable только у пешки, и только если neardeath уже
+    // заканчивался RAISED на этом теле. Аризен пешками не поднимается.
+    M.downedRevivable = M.downedValid
+                     && T->everRevived
+                     && T->slot != PARTY_ARISEN
+                     && T->downedKind == kKindNeardeath;
     // statusMask/statusValid остаются 0/false: 84.16 не маппит поля блока
     // на именованные статусы (раскладка станет известна из PS-строк).
+}
+
+// 84.30: hex dump of the character RECORD (HP/stam live here) and the
+// scene BODY. Status is not a named child of the body; A/B is a hex
+// diff of these two blobs. Same button as before. Read-only.
+static const uint32_t kSheetRecordBytes = 0x1660;
+static const uint32_t kSheetPlayerBody  = 0x5A10;
+static const uint32_t kSheetPawnBody    = 0x58E0;
+
+static void SheetHex(const char* tag, uintptr_t base, uint32_t bytes)
+{
+    if (!tag || !base || !bytes) return;
+    BYTE row[16];
+    for (uint32_t off = 0; off < bytes; off += 16) {
+        const uint32_t n = (bytes - off >= 16u) ? 16u : (bytes - off);
+        if (!Rd((void*)(base + off), row, n)) {
+            logFile << tag << " +" << std::hex << off << std::dec
+                    << " read-fail" << std::endl;
+            return;
+        }
+        char line[96];
+        int pos = sprintf_s(line, sizeof(line), "%s +%04X", tag, (int)off);
+        for (uint32_t i = 0; i < n && pos > 0 && pos < (int)sizeof(line) - 4; ++i)
+            pos += sprintf_s(line + pos, sizeof(line) - (size_t)pos,
+                             " %02X", row[i]);
+        if (pos > 0) logFile << line << std::endl;
+    }
+}
+
+static uintptr_t SheetRecordOf(int slot)
+{
+    if (!pBase || !*pBase) return 0;
+    if (slot == PARTY_ARISEN)
+        return (uintptr_t)(*pBase) + 0xA7000;
+    if (slot >= PARTY_MAIN && slot <= PARTY_HIRED2)
+        return (uintptr_t)(*pBase) + 0xA7000 + 0x7F0
+             + (uintptr_t)(slot - PARTY_MAIN) * 0x1660;
+    return 0;
+}
+
+static void DumpOneSheet(int slot, uintptr_t rec, uintptr_t body)
+{
+    const char* name = SlotName(slot);
+    logFile << "PS: SHEET " << name
+            << " rec=0x" << std::hex << rec
+            << " body=0x" << body << std::dec << std::endl;
+    if (rec) {
+        float hp = 0, hpMax = 0, hpRec = 0;
+        float sta = 0, staMax = 0, staRec = 0;
+        float str = 0, def = 0, mag = 0, mdef = 0;
+        int32_t voc = 0;
+        uint16_t lvl = 0;
+        const bool okHp  = Rd((void*)(rec + 0x96C), &hp, 4)
+                        && Rd((void*)(rec + 0x970), &hpMax, 4)
+                        && Rd((void*)(rec + 0x974), &hpRec, 4);
+        const bool okSta = Rd((void*)(rec + 0x978), &sta, 4)
+                        && Rd((void*)(rec + 0x97C), &staMax, 4)
+                        && Rd((void*)(rec + 0x980), &staRec, 4);
+        const bool okCore = Rd((void*)(rec + 0x984), &str, 4)
+                         && Rd((void*)(rec + 0x988), &def, 4)
+                         && Rd((void*)(rec + 0x98C), &mag, 4)
+                         && Rd((void*)(rec + 0x990), &mdef, 4);
+        Rd((void*)(rec + 0x6E0), &voc, 4);
+        Rd((void*)(rec + 0xDD0), &lvl, 2);
+        char line[320];
+        sprintf_s(line, sizeof(line),
+            "PS: SHEET %s voc=%d lvl=%u hp=%s%.1f/%.1f rec=%.1f "
+            "sta=%s%.1f/%.1f rec=%.1f core=%s STR=%.1f DEF=%.1f MAG=%.1f MDEF=%.1f",
+            name, (int)voc, (unsigned)lvl,
+            okHp ? "" : "?", hp, hpMax, hpRec,
+            okSta ? "" : "?", sta, staMax, staRec,
+            okCore ? "" : "?", str, def, mag, mdef);
+        logFile << line << std::endl;
+        {
+            int32_t cnt = 0, id0 = -1;
+            Rd((void*)(rec + 0x0A2C), &cnt, 4);
+            char st[220];
+            int n = sprintf_s(st, sizeof(st),
+                              "PS: SHEET %s status count=%d", name, (int)cnt);
+            for (int i = 0; i < 40 && n > 0 && n < 180; ++i) {
+                if (!Rd((void*)(rec + 0x0A30 + (uint32_t)i * 4), &id0, 4))
+                    break;
+                if (id0 == -1) continue;
+                float tm = 0, p0 = 0, p1 = 0;
+                Rd((void*)(rec + 0x0AD0 + (uint32_t)i * 4), &tm, 4);
+                Rd((void*)(rec + 0x0B70 + (uint32_t)i * 4), &p0, 4);
+                Rd((void*)(rec + 0x0C10 + (uint32_t)i * 4), &p1, 4);
+                n += sprintf_s(st + n, sizeof(st) - (size_t)n,
+                               " [%d]=id%d t=%.1f p0=%.2f p1=%.2f",
+                               i, (int)id0, tm, p0, p1);
+            }
+            logFile << st << std::endl;
+        }
+        char tag[40];
+        sprintf_s(tag, sizeof(tag), "PS: REC %s", name);
+        SheetHex(tag, rec, kSheetRecordBytes);
+    } else {
+        logFile << "PS: SHEET " << name << " record unread" << std::endl;
+    }
+    if (body) {
+        char kind[48] = {};
+        NameOfLiveObject(body, kind, sizeof(kind));
+        uint32_t bodyBytes = kSheetPawnBody;
+        if (!strcmp(kind, "uPlayer")) bodyBytes = kSheetPlayerBody;
+        logFile << "PS: SHEET " << name << " bodyKind="
+                << (kind[0] ? kind : "?") << " bytes=" << bodyBytes
+                << std::endl;
+        char tag[40];
+        sprintf_s(tag, sizeof(tag), "PS: BODY %s", name);
+        SheetHex(tag, body, bodyBytes);
+        uintptr_t rsp = 0;
+        if (RdPtr((void*)(body + 0x2710), &rsp) && rsp && LooksHeap(rsp)) {
+            char rn[48] = {};
+            NameOfLiveObject(rsp, rn, sizeof(rn));
+            logFile << "PS: SHEET " << name << " +0x2710 "
+                    << (rn[0] ? rn : "?") << " @0x" << std::hex << rsp
+                    << std::dec << std::endl;
+            if (!strcmp(rn, "rStatusParam")) {
+                sprintf_s(tag, sizeof(tag), "PS: RSP %s", name);
+                SheetHex(tag, rsp, 120);
+            }
+        }
+    } else {
+        logFile << "PS: SHEET " << name << " body unread" << std::endl;
+    }
+}
+
+static void DumpPartySheets()
+{
+    logFile << "PS: ===== party SHEET (record + body hex; status A/B) ====="
+            << std::endl;
+    bool dumped[PARTY_COMBAT_SLOTS] = {};
+    for (int i = 0; i < s_nBody; ++i) {
+        const int slot = s_body[i].slot;
+        DumpOneSheet(slot, SheetRecordOf(slot), s_body[i].body);
+        if (slot >= 0 && slot < PARTY_COMBAT_SLOTS) dumped[slot] = true;
+    }
+    for (int slot = 0; slot < PARTY_COMBAT_SLOTS; ++slot) {
+        if (dumped[slot]) continue;
+        const uintptr_t rec = SheetRecordOf(slot);
+        uintptr_t body = 0;
+        if (slot == PARTY_ARISEN) body = ArisenBody();
+        else PartyRecordInfo(slot - PARTY_MAIN, 0, 0, &body);
+        if (!rec && !body) continue;
+        DumpOneSheet(slot, rec, body);
+    }
+    logFile << "PS: ===== end party SHEET =====" << std::endl;
 }
 
 void DumpSnapshot()
@@ -478,6 +700,7 @@ void DumpSnapshot()
         }
     }
     logFile << "PS: ===== end party-status snapshot =====" << std::endl;
+    DumpPartySheets();
 }
 
 void Init()
@@ -486,8 +709,9 @@ void Init()
     s_nBody = 0;
     s_lastTick = 0;
     lstrcpynA(s_status, "party status: armed", sizeof(s_status));
-    logFile << "PS: observer armed (cStatus + cEffectStatusManager"
-            << " + downed/revive FSM; read-only, no writes)" << std::endl;
+    logFile << "PS: observer armed (cStatus child-scan + SHEET record/body hex"
+            << " + pawn-body downed/raised/rifted; Arisen RAISE="
+            << "cPlReviveCMC; read-only, no writes)" << std::endl;
 }
 
 void Shutdown()

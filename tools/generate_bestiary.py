@@ -72,6 +72,12 @@ def load_bestiary_py():
     return bestiary
 
 # Маппинг bestiaryId -> (uEmName, Family)
+# Наклейка ≠ identity. Правило правки:
+#   стол: Fluffy em.txt + имена cEm* в TypeAtlas
+#   оба совпали → можно двигать строку
+#   разошлись / '?' → не трогать
+#   live snapshot — только если пишем в этот вид (SpeciesCard) или охота
+# Закрыто live+Fluffy+acts: 29 Cyclops=uEm5000, 31 Golem=uEm5100, 45 Drake=uEm5900.
 BESTIARY_UEM_MAP = {
     0: ("uEm0100", "Goblin"),
     1: ("uEm0101", "Goblin"),
@@ -102,17 +108,17 @@ BESTIARY_UEM_MAP = {
     26: ("uHumanEnemy", "Human"),       # Hostile Soldiers
     27: ("uHumanEnemy", "Human"),       # Hostile Bandits
     28: ("uEm9100", "Human"),           # Enemy Wizard
-    29: ("uEm2000", "Cyclops"),
+    29: ("uEm5000", "Cyclops"),         # live Devilfire + Fluffy em5000; cEm5000 Eye/Blind/Weapon
     30: ("uEm2001", "Ogre"),
-    31: ("uEm5000", "Golem"),
-    32: ("uEm5001", "Golem"),           # Metal Golems
+    31: ("uEm5100", "Golem"),           # Fluffy em5100; cEm5100 Laser/Weak/HpDrain
+    32: ("uEm5001", "Golem"),           # Metal Golems — factory still UNVALIDATED
     33: ("uEm5200", "Chimera"),
     34: ("uEm5301", "Chimera"),         # Gorechimeras
     35: ("uEm5400", "Hydra"),
     36: ("uEm5401", "Hydra"),           # Archydras
     37: ("uEm5800", "Griffin"),
     38: ("uEm5801", "Cockatrice"),
-    39: ("uEm5900", "EvilEye"),
+    39: ("uEm5500", "EvilEye"),         # Fluffy em5500; tentacle/gaze acts. Eliminator bid 60 same factory — OPEN
     40: ("uEm5906", "EvilEye"),         # Vile Eyes
     41: ("uEm6000", "Wight"),
     42: ("uEm6001", "Lich"),

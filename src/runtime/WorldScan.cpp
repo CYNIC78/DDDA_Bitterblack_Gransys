@@ -5,6 +5,7 @@
 #include "stdafx.h"
 #include "RuntimeInternal.h"
 #include "MonsterTempo.h"
+#include "AggroWatch.h"
 #include "../ActMap.Generated.h"
 #include "../CombatBus.h"
 
@@ -206,7 +207,9 @@ uintptr_t FindChildByClass(uintptr_t body, uint32_t bodyBytes,
 //
 // Кэш на одно тело: полный перебор двух объектов по именам стоит дорого,
 // а зовут это каждые 150 мс. Смена тела или выгрузка мира кэш сбрасывают.
-static const uint32_t kPawnBodyBytes  = 0x5A10;   // тело uCmc
+// TypeAtlas uCmc = 22752. Не путать с uPlayer (kPartyBodySize = 0x5A10):
+// обход «с запасом» читает 304 B за хвостом и может подцепить чужой heap.
+static const uint32_t kPawnBodyBytes  = kCmcBodySize;
 static const uint32_t kAICtrlBytes    = 704;      // cAICtrl
 static const uint32_t kGoalSlot0      = 0x08;     // массив загруженных целей
 static const int32_t  kMaxGoalCode    = 91;       // коды 0..90
@@ -634,34 +637,44 @@ void DumpActorsFrom(uintptr_t* seed, int ns)
 {
     g_nAct = 0;
     if (!seed || ns <= 0) return;
-    if (ns > 32) ns = 32;
-    for (int s = 0; s < ns && g_nAct < 32; ++s) {
-        uintptr_t p = seed[s];
+
+    // Обход шире списка: Devilfire 84.24 — 32 слота заняли
+    // uEmDragonBase::DragonAttackRange (44 B) и uEm5000_1; Дрейк uEm5900
+    // в g_act не попал. Деталь не кладём, но next/prev обязаны остаться
+    // в walk — иначе тело, видимое только как сосед компоненты, теряется.
+    // Вызывать seed[] за 32 нельзя: у RewalkActors/Tick массив ровно 32.
+    uintptr_t walk[96];
+    const int kWalkCap = (int)(sizeof(walk) / sizeof(walk[0]));
+    int nw = 0;
+    for (int i = 0; i < ns && nw < kWalkCap; ++i) {
+        if (!seed[i] || !LooksHeap(seed[i])) continue;
+        int d = 0;
+        for (int k = 0; k < nw; ++k) if (walk[k] == seed[i]) { d = 1; break; }
+        if (!d) walk[nw++] = seed[i];
+    }
+
+    for (int s = 0; s < nw; ++s) {
+        uintptr_t p = walk[s];
         if (!p || !LooksHeap(p)) continue;
-        int have = 0;
-        for (int k = 0; k < g_nAct; ++k) if (g_act[k].ptr == p) { have = 1; break; }
-        if (have) continue;
+        int seen = 0;
+        for (int k = 0; k < s; ++k) if (walk[k] == p) { seen = 1; break; }
+        if (seen) continue;
         uintptr_t vt = 0;
         if (!RdPtr((void*)p, &vt) || !LooksLikeVtable(vt)) continue;
-        ActorDump& A = g_act[g_nAct];
-        memset(&A, 0, sizeof(A));
-        A.ptr = p;
-        A.vt = vt;
-        BYTE gidb = 0;
-        if (Rd((void*)(p + 0x2D), &gidb, 1)) A.gid = gidb;
-        Rd((void*)(p + 0x40), &A.x, 4);
-        Rd((void*)(p + 0x44), &A.y, 4);
-        Rd((void*)(p + 0x48), &A.z, 4);
-        RdPtr((void*)(p + 0x0C), &A.next);
-        RdPtr((void*)(p + 0x10), &A.prev);
-        if (A.vt == kGoblinInst)
-            A.subOk = RdPtr((void*)(p + 0x6150), &A.subVt);
-        BYTE probe = 0;
-        A.fat29 = Rd((void*)(p + 0x73BF), &probe, 1);
-        { BYTE st = 0; if (Rd((void*)(p + 0x14), &st, 1)) A.st14 = st; }
-        A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
-        A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
-        ScanActSlot(A);
+
+        uintptr_t next = 0, prev = 0;
+        RdPtr((void*)(p + 0x0C), &next);
+        RdPtr((void*)(p + 0x10), &prev);
+        if (next && LooksHeap(next) && nw < kWalkCap) {
+            int d = 0;
+            for (int k = 0; k < nw; ++k) if (walk[k] == next) { d = 1; break; }
+            if (!d) walk[nw++] = next;
+        }
+        if (prev && LooksHeap(prev) && nw < kWalkCap) {
+            int d = 0;
+            for (int k = 0; k < nw; ++k) if (walk[k] == prev) { d = 1; break; }
+            if (!d) walk[nw++] = prev;
+        }
 
         // Имя вида — у самой игры, через DTI.
         //
@@ -673,27 +686,50 @@ void DumpActorsFrom(uintptr_t* seed, int ns)
         // DTI даёт настоящее имя класса любого существа сразу.
         // Известные константы оставлены как быстрый путь: для них имя
         // статическое, без чтения памяти.
-        if (A.vt == kGoblinInst)      A.kind = "uEm0100";
-        else if (A.vt == kNpcInst)    A.kind = "uNpc";
-        else if (A.vt == kEm8000Inst) A.kind = "uEm8000";
-        else if (A.vt == kHareInst)   A.kind = "uEm8600";
-        else {
-            if (NameOfLiveObject(p, A.kindBuf, sizeof(A.kindBuf)) && A.kindBuf[0])
-                A.kind = A.kindBuf;
-            else if (A.vt == kUnk84Inst) A.kind = "u?84";
-            else A.kind = "?";
+        char kindBuf[40] = {};
+        const char* kind = 0;
+        if (vt == kGoblinInst)      kind = "uEm0100";
+        else if (vt == kNpcInst)    kind = "uNpc";
+        else if (vt == kEm8000Inst) kind = "uEm8000";
+        else if (vt == kHareInst)   kind = "uEm8600";
+        else if (NameOfLiveObject(p, kindBuf, sizeof(kindBuf)) && kindBuf[0])
+            kind = kindBuf;
+        else if (vt == kUnk84Inst)  kind = "u?84";
+        else kind = "?";
+
+        // uPlayer/uCmc/uNpc остаются в списке (усыновление партии).
+        // Отсекаем только ложные uEm*: базы, вложенные ::X, детали _N.
+        if (kind[0] == 'u' && kind[1] == 'E' && kind[2] == 'm'
+            && !KindIsLiveEnemyBody(kind))
+            continue;
+        if (g_nAct >= 32) continue;
+
+        ActorDump& A = g_act[g_nAct];
+        memset(&A, 0, sizeof(A));
+        A.ptr = p;
+        A.vt = vt;
+        A.next = next;
+        A.prev = prev;
+        BYTE gidb = 0;
+        if (Rd((void*)(p + 0x2D), &gidb, 1)) A.gid = gidb;
+        Rd((void*)(p + 0x40), &A.x, 4);
+        Rd((void*)(p + 0x44), &A.y, 4);
+        Rd((void*)(p + 0x48), &A.z, 4);
+        if (A.vt == kGoblinInst)
+            A.subOk = RdPtr((void*)(p + 0x6150), &A.subVt);
+        BYTE probe = 0;
+        A.fat29 = Rd((void*)(p + 0x73BF), &probe, 1);
+        { BYTE st = 0; if (Rd((void*)(p + 0x14), &st, 1)) A.st14 = st; }
+        A.win5bOk = Rd((void*)(p + 0x5BD0), A.win5b, 16);
+        A.win60Ok = Rd((void*)(p + 0x6000), A.win60, 64);
+        if (kind == kindBuf) {
+            lstrcpynA(A.kindBuf, kindBuf, sizeof(A.kindBuf));
+            A.kind = A.kindBuf;
+        } else {
+            A.kind = kind;
         }
+        ScanActSlot(A);
         g_nAct++;
-        if (A.next && LooksHeap(A.next) && ns < 32) {
-            int d = 0;
-            for (int k = 0; k < ns; ++k) if (seed[k] == A.next) { d = 1; break; }
-            if (!d) seed[ns++] = A.next;
-        }
-        if (A.prev && LooksHeap(A.prev) && ns < 32) {
-            int d = 0;
-            for (int k = 0; k < ns; ++k) if (seed[k] == A.prev) { d = 1; break; }
-            if (!d) seed[ns++] = A.prev;
-        }
     }
 }
 
@@ -746,7 +782,7 @@ int IsSeedVt(uint32_t val)
 // не находили.
 //
 // Видов в игре 35+, ловить каждый константой нереально. Спрашиваем имя
-// у DTI: uEm* и uHumanEnemy — наши.
+// у DTI. 84.25: полное тело (uEmNNNN / uHumanEnemy), не база и не деталь.
 //
 // Порядок проверок важен для скорости: сначала дешёвые отсечения по
 // памяти, только потом разбор vtable. Функция зовётся на каждом
@@ -762,8 +798,7 @@ bool LooksLikeCreatureAt(uintptr_t obj, uint32_t vt)
 
     char nm[40];
     if (!NameOfLiveObject(obj, nm, sizeof(nm)) || !nm[0]) return false;
-    if (nm[0] == 'u' && nm[1] == 'E' && nm[2] == 'm') return true;
-    return strcmp(nm, "uHumanEnemy") == 0;
+    return KindIsLiveEnemyBody(nm);
 }
 
 uintptr_t PollSeedSlice(uint32_t budget)
@@ -944,6 +979,25 @@ void WorldScan_Tick()
             g_guardianFixRule.resolved = g_guardianFixRule.applied = false;
             g_guardianFixRule.prioPtr = g_guardianFixRule.rulePtr = 0;
             g_guardianFixApplied = false;
+
+            // P0-1 / 84.22: world-policy тоже fail-closed в ЭТОМ тике.
+            // Иначе Director ещё 450 мс считает LastWorld свежим, а naked
+            // Tempo-хуки множат координаты по адресам из мёртвой таблицы.
+            g_nAct = 0;
+            memset(g_act, 0, sizeof(g_act));
+            g_plannerBody = 0;
+            g_plannerPtr = 0;
+            Tempo::OnWorldUnload();
+            {
+                WorldReport empty{};
+                empty.timestampMs = 0;
+                empty.dominantCategory = -1;
+                CombatBus::Instance().PublishWorld(empty);
+            }
+            Aggro::DirectorFocusSet(-1, 0, 0, Aggro::DIRECTOR_RESPONSE_NONE);
+            logFile << "WorldScan: FAIL-CLOSED world-unload"
+                    << " actors=0 world.ts=0 tempo=drop aggro=release"
+                    << std::endl;
         }
         g_wasInWorld = false;
         return;

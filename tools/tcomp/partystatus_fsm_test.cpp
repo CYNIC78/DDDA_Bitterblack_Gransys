@@ -1,14 +1,14 @@
-// 84.16 dual-observe: offline fixture для PartyStatus downed/revive FSM.
+// 84.24 pawn-body FSM: падение/подъём читаются с тела пешки.
 //
-// Скрипт live-актов главной пешки (тело 0xB000):
-//   Walk -> Neardeath -> Neardeath -> cPlReviveCMC -> Walk -> Neardeath -> Walk
-// Проверяется:
-//   1. downedValid — только на подтверждённом переходе FSM;
-//   2. downedRevivable — только после полной последовательности
-//      (downed -> cPlReviveCMC -> первый обычный акт);
-//   3. голос у каждого перехода (DOWNED / REVIVE / RECOVERED / DOWN-END);
-//   4. статусные блоки не пишутся и не находят себя (Rd/RdPtr ложь,
-//      FindChildByClass 0) — прибор остаётся read-only.
+// Главная пешка 0xB000:
+//   Walk -> Neardeath -> Neardeath -> Walk(RAISED) -> Neardeath -> Return(RIFTED)
+//   Walk -> DmgDown -> DmgStandUp (KNOCKDOWN, не succor)
+//   Neardeath + cPlReviveCMC на пешке = игнор (остаётся DOWNED)
+// Аризен 0xA000:
+//   Walk -> cPlReviveCMC (RAISE, не DOWNED) -> Walk
+//   Walk -> cPlActDead (DEAD, не succor-жертва) -> Walk
+//
+// downedRevivable — только пешка после RAISED, и только пока снова neardeath.
 
 #include "partystatus_t.cpp"
 #include <assert.h>
@@ -36,7 +36,7 @@ int g_findChildCalls = 0;
 uintptr_t FindChildByClass(uintptr_t, uint32_t, const char*, uint32_t*)
 {
     ++g_findChildCalls;
-    return 0;   // блоков нет: прибор должен молча оставаться в поиске
+    return 0;
 }
 
 uintptr_t ArisenBody() { return 0xA000; }
@@ -50,11 +50,14 @@ bool PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut)
 }
 
 const char* g_mainAct = "cPlActWalk";
+const char* g_arisenAct = "cPlActWalk";
 
 bool ReadLiveAct(uintptr_t body, char* out, int cap)
 {
     if (!out || cap <= 0) return false;
-    const char* a = (body == 0xB000) ? g_mainAct : "cPlActWalk";
+    const char* a = "cPlActWalk";
+    if (body == 0xB000) a = g_mainAct;
+    else if (body == 0xA000) a = g_arisenAct;
     strncpy(out, a, (size_t)cap - 1);
     out[cap - 1] = 0;
     return true;
@@ -73,8 +76,8 @@ static int CountSubstring(const std::string& hay, const char* needle)
     return n;
 }
 
-static void Step(const char* act, bool expectDownedValid,
-                 bool expectDownedRevivable)
+static void StepMain(const char* act, bool expectDownedValid,
+                     bool expectDownedRevivable)
 {
     Runtime::g_mainAct = act;
     Runtime::PartyStatus::Tick();
@@ -85,22 +88,48 @@ static void Step(const char* act, bool expectDownedValid,
     assert(M.downedRevivable == expectDownedRevivable);
 }
 
+static void StepArisen(const char* act, bool expectDownedValid)
+{
+    Runtime::g_arisenAct = act;
+    Runtime::PartyStatus::Tick();
+    Runtime::PartyCombatMember M;
+    memset(&M, 0, sizeof(M));
+    Runtime::PartyStatus::FillMemberStatus(0xA000, 0, M);
+    assert(M.downedValid == expectDownedValid);
+    assert(M.downedRevivable == false);
+}
+
 int main()
 {
-    // 1. Обычное состояние: downed невалиден.
-    Step("cPlActWalk", false, false);
-    // 2. Neardeath-предшественник: подтверждённый вход в downed.
-    Step("cPlActCmcNeardeath", true, false);
-    // 3. Всё ещё downed: повторного перехода (и повторной строки) нет.
-    Step("cPlActCmcNeardeath", true, false);
-    // 4. Воскрешение: тело всё ещё downed; «воскрешаемо» ещё не подтверждено.
-    Step("cPlReviveCMC", true, false);
-    // 5. Первый обычный акт: последовательность завершена, downed закрыт.
-    Step("cPlActWalk", false, false);
-    // 6. Второй downed: теперь revivable=true — последовательность видана.
-    Step("cPlActCmcNeardeath", true, true);
-    // 7. Вышли из downed без воскрешения: DOWN-END, downed закрыт.
-    Step("cPlActWalk", false, false);
+    // 1. Обычное состояние.
+    StepMain("cPlActWalk", false, false);
+    // 2-3. Neardeath: succor-wait.
+    StepMain("cPlActCmcNeardeath", true, false);
+    StepMain("cPlActCmcNeardeath", true, false);
+    // 4. cPlReviveCMC на ПЕШКЕ игнорируется — остаётся DOWNED.
+    StepMain("cPlReviveCMC", true, false);
+    // 5. Обычный акт на пешке = RAISED (тело встало).
+    StepMain("cPlActWalk", false, false);
+    // 6. Второй neardeath: already RAISED once → revivable.
+    StepMain("cPlActCmcNeardeath", true, true);
+    // 7. CmcReturn = RIFTED, не подъём.
+    StepMain("cPlActCmcReturn", false, false);
+    // 8-9. Нокдаун ≠ succor.
+    StepMain("cPlActWalk", false, false);
+    StepMain("cPlActDmgDown", true, false);
+    StepMain("cPlActDmgStandUp", false, false);
+    // 84.25: smash CrumbleDead — succor-wait, не «просто акт».
+    StepMain("cPlActDmgCrumbleDead", true, true);
+    StepMain("cPlActWalk", false, false);
+
+    // Аризен поднимает пешку — не DOWNED.
+    StepArisen("cPlActWalk", false);
+    StepArisen("cPlReviveCMC", false);
+    StepArisen("cPlActWalk", false);
+    // Аризен cPlActDead — не succor-жертва. DEAD снимает leftover KNOCKDOWN.
+    StepArisen("cPlActDmgDown", true);
+    StepArisen("cPlActDead", false);
+    StepArisen("cPlActWalk", false);
 
     std::ifstream in("/tmp/partystatus_fsm_test.log");
     assert(in.good());
@@ -108,22 +137,26 @@ int main()
     ss << in.rdbuf();
     const std::string log = ss.str();
 
-    // Четыре тела партии отслежены (Arisen + 3 пешки).
     assert(CountSubstring(log, " (read-only status + downed/revive observer)") == 4);
-    // Голос у каждого перехода: DOWNED ровно дважды (шаги 2 и 6).
     assert(CountSubstring(log, "PS: MainPawn DOWNED act=cPlActCmcNeardeath") == 2);
-    // REVIVE разово за down, RECOVERED — подтверждённая последовательность.
-    assert(CountSubstring(log, "PS: MainPawn REVIVE act=cPlReviveCMC") == 1);
-    assert(CountSubstring(log, "PS: MainPawn RECOVERED act=cPlActWalk") == 1);
-    // Второй downed закончился без воскрешения.
-    assert(CountSubstring(log, "PS: MainPawn DOWN-END act=cPlActWalk") == 1);
-    // Блоков нет: ни одной находки, прибор не написал ничего в память
-    // (Rd/RdPtr ложь, FindChildByClass 0 — если бы код пытался писать,
-    // WrSafe отсутствовал бы в PartyStatus.cpp по статическому контракту).
+    assert(CountSubstring(log, "PS: MainPawn RAISED act=cPlActWalk") == 2);
+    assert(CountSubstring(log, "PS: MainPawn RIFTED act=cPlActCmcReturn") == 1);
+    assert(CountSubstring(log, "PS: MainPawn KNOCKDOWN act=cPlActDmgDown") == 1);
+    assert(CountSubstring(log, "PS: MainPawn KNOCKDOWN-END act=cPlActDmgStandUp") == 1);
+    assert(CountSubstring(log, "PS: MainPawn DOWNED act=cPlActDmgCrumbleDead") == 1);
+    assert(CountSubstring(log, "PS: Arisen RAISE act=cPlReviveCMC") == 1);
+    assert(CountSubstring(log, "PS: Arisen DEAD act=cPlActDead") == 1);
+    assert(CountSubstring(log, "PS: Arisen KNOCKDOWN act=cPlActDmgDown") == 1);
+    assert(CountSubstring(log, "PS: Arisen DEAD-END act=cPlActWalk") == 1);
+    // Старый бред ролей: REVIVE/RECOVERED/DOWN-END на пешке — запрещён.
+    assert(log.find("REVIVE act=cPlReviveCMC") == std::string::npos);
+    assert(log.find("RECOVERED") == std::string::npos);
+    assert(log.find("no revive observed") == std::string::npos);
+    assert(log.find("PS: Arisen DOWNED") == std::string::npos);
     assert(log.find("found @") == std::string::npos);
     assert(Runtime::g_findChildCalls >= 0);
 
-    fprintf(stderr, "PartyStatus 84.16 FSM fixture passed "
-                    "(downed/revive sequence, read-only).\n");
+    fprintf(stderr, "PartyStatus 84.25 FSM fixture passed "
+                    "(CrumbleDead DOWNED; Arisen DEAD clears knockdown).\n");
     return 0;
 }

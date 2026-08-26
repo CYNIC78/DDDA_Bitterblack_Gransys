@@ -21,8 +21,6 @@
  * живой адрес ещё нет.
  */
 
-extern std::ofstream logFile;
-
 namespace EnemyTuner {
 
 static int  s_tracked = 0;

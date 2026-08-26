@@ -1,6 +1,7 @@
 #pragma once
 
-extern std::ofstream logFile;
+#include "src/runtime/LogMem.h"
+// logFile — ostream в RAM; на диск пишет LogMem::FlushToDisk().
 extern iniConfig config;
 extern BYTE **pBase;
 extern BYTE **pWorld;

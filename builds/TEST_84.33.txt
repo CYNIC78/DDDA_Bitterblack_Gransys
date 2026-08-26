@@ -1,0 +1,19 @@
+84.33-buff-call
+После воды вызываем ванильный apply с id=7. Без Дрейка.
+
+Собрать: Release | Win32. Тег: 84.33-buff-call.
+В логе: Possession: buff-hook armed
+        Possession: buff-fn 0x........ (prologue)
+
+Лагерь. Актуатор OFF.
+
+1. F12 → Pawn AI Overhaul → галка arm writes
+2. 5 секунд в воде главной пешкой. Выйти.
+   В панели: recipe yes
+   В логе: BuffEnter ... / recipe this=... id=...
+3. На суше: кнопка apply
+4. Смотреть: значок одержимости, глаза, бьёт ли
+5. clear. Выйти из игры. Лог.
+
+Не жать snapshot. Не ехать к Дрейку.
+Если apply до воды — need-water-recipe. Так и должно.

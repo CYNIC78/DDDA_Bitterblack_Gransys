@@ -101,6 +101,9 @@ int       PartyRecordPawnCount();
 // Карточка пешки по номеру записи (0 — своя, 1..2 — наёмные): вокация,
 // уровень и живое тело, если оно уже найдено.
 bool      PartyRecordInfo(int idx, int* vocOut, int* lvlOut, uintptr_t* bodyOut);
+// Сколько живых uCmc претендуют на fixed record 0..2.
+// 0 = слот пуст на поле (рифт / ещё не появилась); 1 = exact; ≥2 = дыра identity.
+int       PartyRecordBodyClaimCount(int idx);
 // Имя класса текущего действия существа через DTI (+0x2DC8). Работает и
 // для тел партии: у Аризена там cPlAct*, у пешки — тоже.
 bool ReadLiveAct(uintptr_t body, char* out, int cap);

@@ -27,6 +27,7 @@
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
+#include "pawnai/Possession.h"
 
 using namespace PawnAI;
 
@@ -45,6 +46,17 @@ void UpdatePawnAI(){
     // before the gameplay guards return, even when Pawn AI itself is disabled.
     __try { Runtime::WorldScan_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
+    // P0-1: Director/Pack sidecar сбрасывается на переходе даже если
+    // pawn AI выключен и Tick режиссёра не дойдёт до гейта gameplay.
+    {
+        static bool s_wasGameplay = false;
+        const bool gp = IsInActiveGameplay();
+        if (s_wasGameplay && !gp) {
+            __try { MonsterAI::OnWorldUnload(); }
+            __except(EXCEPTION_EXECUTE_HANDLER) {}
+        }
+        s_wasGameplay = gp;
+    }
     // Read-only night instrument. Must run even if pawn AI / Director are off.
     __try { MonsterAI::PackObserveTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
@@ -55,6 +67,9 @@ void UpdatePawnAI(){
     // 84.16 dual-observe: статусы партии + downed/revive FSM (PS: строки).
     // Read-only; нужен Director-снапшоту (downedValid/downedRevivable).
     __try { Runtime::PartyStatus::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+    // Possession WATCH/unload-clear even if Pawn AI master is off.
+    __try { PawnAI::Possession::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     if(!g_enabled || !pBase || !*pBase) {
@@ -350,6 +365,52 @@ void RenderPawnAIUI(){
 
     if(ImGui::Checkbox("Enable Pawn AI Master", &g_enabled)) config.setBool("pawnAI", "enabled", g_enabled);
     ImGui::Separator();
+
+    {
+        PawnAI::Possession::Status ps = PawnAI::Possession::Get();
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1), "Possession (Main Pawn)");
+        bool arm = ps.armed;
+        if (ImGui::Checkbox("arm writes##poss", &arm)) {
+            PawnAI::Possession::SetArmed(arm);
+            config.setBool("possession", "enabled", arm);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Vanilla apply id=7. Off = no call. Unload clears.");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("apply##poss")) PawnAI::Possession::RequestApply();
+        ImGui::SameLine();
+        if (ImGui::SmallButton("clear##poss")) PawnAI::Possession::RequestClear();
+        ImGui::TextDisabled("  %s | work %d | status id=%d t=%.0f cnt=%d | hook %s | layout %s | recipe %s",
+                            ps.why, ps.slot, ps.liveId, ps.liveTimer, ps.liveCount,
+                            ps.hookArmed ? "armed" : "missing",
+                            ps.layout ? "ready" : "no",
+                            ps.recipe ? "yes" : "no");
+        bool cust = ps.customOn;
+        if (ImGui::Checkbox("custom params##poss", &cust)) {
+            PawnAI::Possession::SetCustom(cust);
+            config.setBool("possession", "customParams", cust);
+        }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("xmm on OUR apply only. Off = catalog 180/0.2/0.35. Not Drake.");
+        if (cust) {
+            float ct = ps.customT, cp0 = ps.customP0, cp1 = ps.customP1;
+            ImGui::PushItemWidth(160);
+            if (ImGui::SliderFloat("timer s##poss", &ct, 5.0f, 180.0f, "%.0f")) {
+                PawnAI::Possession::SetCustomTimer(ct);
+                config.setFloat("possession", "timer", ct);
+            }
+            if (ImGui::SliderFloat("param0##poss", &cp0, 0.05f, 2.00f, "%.2f")) {
+                PawnAI::Possession::SetCustomP0(cp0);
+                config.setFloat("possession", "param0", cp0);
+            }
+            if (ImGui::SliderFloat("param1##poss", &cp1, 0.05f, 2.00f, "%.2f")) {
+                PawnAI::Possession::SetCustomP1(cp1);
+                config.setFloat("possession", "param1", cp1);
+            }
+            ImGui::PopItemWidth();
+        }
+        ImGui::Separator();
+    }
 
     // 1. Acquisitor Manager (бывший Sanitary Cordon)
     ImGui::TextColored(ImVec4(0.3f, 1, 0.3f, 1), "Acquisitor Manager");
@@ -1012,6 +1073,7 @@ void Hooks::PawnAI(){
     PawnAI::Haste::Init();
     PawnAI::DashWatch::Init();
     PawnAI::WandRange::Init();
+    PawnAI::Possession::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
@@ -1040,5 +1102,6 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::Haste::Shutdown();        // снять множители с тел партии до выгрузки
     PawnAI::DashWatch::Shutdown();
     PawnAI::WandRange::Shutdown();
+    PawnAI::Possession::Shutdown();
     g_orch.Shutdown();
 }

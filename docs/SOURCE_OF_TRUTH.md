@@ -1,10 +1,74 @@
 # Source of Truth
 
-Канонические runtime-контракты DDDA AI Overhaul. Если поле/связь отсутствует здесь или в `FIELD_MAP.md`, использовать её в продуктовом коде нельзя без нового подтверждения.
+Канонические runtime-контракты DDDA AI Overhaul / Bitterblack Gransys.
+Если поле, связь или политика отсутствует здесь — **использовать в продуктовом
+коде нельзя** без нового живого подтверждения и записи в этот файл.
 
-**Milestone:** Build 74.0 (`priority-rows`); последняя канонизация раскладки — Build 73.27
+**Milestone:** Build `84.37-xmm-params` (`src/BuildTag.h`).
+Тегов в git remote **нет** (0 tags). Единственный надёжный идентификатор
+сборки — первая строка лога / F12: `MOD_BUILD_TAG`.
 
-**Платформа:** x86, Release/Win32, Steam/GOG через сигнатуры и DTI; transient heap addresses не канонизируются.
+**Платформа:** x86, Release/Win32, Steam/GOG. Резолв через сигнатуры и DTI.
+Transient heap addresses и VA vtable одного запуска **не канонизируются**.
+
+**Как читать статусы строк**
+
+| Метка | Значение |
+|---|---|
+| `CONFIRMED` | чтение и/или запись + readback; можно использовать |
+| `OBSERVED` | живое чтение, семантика или допуск вида ещё узкий |
+| `UNVALIDATED` | гипотеза / протокол охоты; писать нельзя |
+| `DEPRECATED` | утверждение в другом документе или старом абзаце **ложно относительно 84.21** |
+
+---
+
+## 0. Реестр DEPRECATED (аудит 2026-08-25)
+
+Старые md не удаляются: в них история охоты. Они **не источник правды**.
+Ниже — логические противоречия «документ ↔ код 84.21».
+
+### 0.1 Milestone / хаб
+
+| Документ | Утверждает | Код 84.21 | Вердикт |
+|---|---|---|---|
+| этот файл (до аудита) | Build 74.0 / раскладка 73.27 | `MOD_BUILD_TAG "84.21-species-rage"` | **DEPRECATED header** |
+| `PROJECT_HUB.md` | Build 84.18 `card-recon`; ветка `work/player-main-pawn-recon` | HEAD `5cc8ea5` «goblins rush system»; ветка `main` | **DEPRECATED milestone** |
+| `CHANGELOG.md` «Текущий milestone» | 84.18 | 84.21 | **DEPRECATED** |
+| `docs/ROADMAP.md` | Stable 47 / Active 63 | перенесён в `docs/archive/` | **ARCHIVED** |
+| `docs/README.md` | ссылки на `GUARDIAN_VOCATION_MATRIX.md`, `GUARDIAN_LEASH_MATRIX.md`, `REFACTOR_TASK.md` | файлов в дереве нет | **битые ссылки** |
+
+### 0.2 CombatBus / картина мира
+
+| Документ | Утверждает | Код | Вердикт |
+|---|---|---|---|
+| `ARCHITECTURE.md` §3.1 | «точный live current-target главной пешки ещё не закреплён» | `uCmc+0x2EB8` CONFIRMED (этот файл §4); `WorldReport.pawnEngaged` | **DEPRECATED** |
+| `ARCHITECTURE.md` §7 | «monster decision bridge» открыт | `MonsterAI::Director` + `TacticalCues` + `SpeciesCard` | **DEPRECATED граница платформы** |
+| `MONSTER_AI_ARCHITECTURE.md` | сборка `73.4`; режиссёр — наблюдатель; все `uEm*` равны; HP нет; политика = `Tempo::SetOverride` | actuator `wolfActuator`; exact-kind; PackMark по record HP; envelope `AdmitDirectorMobilization` | **DEPRECATED целиком как контракт** (оставить как замысел) |
+| `CombatBus.h` / `WorldScan` | `dominantCategory` только prefix `uEm0100`/`uEm0101` → `0` | `SpeciesCard` / Director — **exact** `strcmp`, без `_0/_3` | не баг, но **два разных предиката «гоблин»** — см. §8.3 |
+
+### 0.3 Rage-профили и допуск вида
+
+| Документ | Утверждает | `SpeciesCard.h` + `MonsterDirector.cpp` + `MonsterTempo.cpp` | Вердикт |
+|---|---|---|---|
+| `SPECIES_ROLLOUT.md` §9 | `uEm0100`: observe=да, **tempoRage=нет**, aggro=pin-only | `tempoRage=true`, rage loco `1.21..1.24`, anim `1.32..1.40`; grab-lease = **std-rush** | **DEPRECATED §9** |
+| `TEMPO_SYSTEM.md` §5 | «в Build 012 допущен только exact `uEm0200`» | профили регистрирует `Director::Init` из карточек; гоблин admitted | **DEPRECATED §5** |
+| `README.md` блок Director | `GOBLIN-GRAB-ALERT` «pin-only, **без Tempo**» | `PolicyResponderKind(GOBLIN_GRAB)` → `uEm0100`; `wantTempo = card->tempoRage` | **DEPRECATED абзац** |
+| `CHANGELOG` 84.14 | `SpeciesCard uEm0100 tempoRage=false` | 84.20/84.21 перевернули | исторический факт 84.14; **не текущая политика** |
+| `MonsterDirector.cpp` шапка / Init-лог | «immutable-**uEm0200**-endpoints»; «Build 012» | `RegisterRageProfile` для всех `tempoRage` карточек | комментарий **отстаёт от 84.21** |
+| `MONSTER_AI_ARCHITECTURE.md` §5–6 | «ярость агонии» ждёт HP тела монстра | PackMark считает **HP записей партии**, не HP `uEm*` | замысел не реализован; HP врага по-прежнему **не найдено** |
+
+### 0.4 Identity / классификация
+
+| Документ / код | Утверждает | Конфликт |
+|---|---|---|
+| `BestiaryData.h` | `uEm8000` = The Dragon / Ur-Dragon, gid `0x61` | `WorldScan::KindIsHarmless` и `CombatIntel` считают **весь** `uEm8000` живностью |
+| `POSSESSION_RECON.md` §1 / `ARC_MAP.txt` | `em1000` = Drake | в атласе нет `uEm1000`. Live Devilfire = **`uEm5900` / `em5900.arc`** (§8.5), не каталожный `uEm8100` |
+| `BestiaryData.h` / `generate_bestiary.py` | `uEm5900` = «Evil Eyes» | ручной `BESTIARY_UEM_MAP` bid 39. Live + `em5900.arc` + FluffyQuack `em.txt` = **Drake**. Подпись в `.h` не identity |
+| `SOURCE_OF_TRUTH` (старый) §2 | `kPartyBodySize` = 23056 | `RuntimeInternal.h`: `kPartyBodySize=0x5A10` (uPlayer), `kCmcBodySize=0x58E0` (uCmc=22752) — **так и есть** |
+| `WorldScan.cpp` `kPawnBodyBytes` (до 84.22) | сканировал uCmc как 23056 | 84.22: `kCmcBodySize` (`0x58E0`). `PartyStatus` `0x5A40` ещё открыт — §11.4 |
+| `PartyStatus.cpp` `kPartyBodyBytes = 0x5A40` | discovery 23104 B на любое тело партии | больше обоих TypeAtlas sizes; тот же класс дыры |
+
+---
 
 ## 1. Глобальные якоря и character records
 
@@ -12,6 +76,8 @@
 pBase  = результат сигнатуры в DDDA.exe
 Arisen record    = *pBase + 0xA7000
 Main Pawn record = Arisen record + 0x7F0
+Hired 1          = Arisen record + 0x7F0 + 0x1660
+Hired 2          = Arisen record + 0x7F0 + 0x1660 * 2
 ```
 
 Character record — save/gameplay data, не live scene body `uPlayer/uCmc`.
@@ -34,7 +100,7 @@ Vocation enum (1-based, подтверждён CE-таблицей 2026-08-16):
 | `+0x978` | float | current stamina |
 | `+0x97C` | float | max stamina |
 | `+0x980` | float | recoverable/secondary stamina |
-| `+0x984` | float | Strength |
+| `+0x984` | float | Strength (CORE, не loadout total) |
 | `+0x988` | float | Defense |
 | `+0x98C` | float | Magick |
 | `+0x990` | float | Magick Defense |
@@ -42,7 +108,7 @@ Vocation enum (1-based, подтверждён CE-таблицей 2026-08-16):
 | `+0x998` | int32 | XP to next level |
 | `+0xDD0` | uint16 | level |
 | `+0x1616` | 322 B | `mStudyFlag` bestiary knowledge |
-| `+0x1B90` | 10×12 B | inclination values (9 inclinations + skill-use slot) |
+| `+0x1B90` | 10×12 B | inclination values (9 + skill-use); stride `0x0C` |
 
 Inclination stride — `0x0C`; нельзя читать значения плотным `float[]`.
 
@@ -54,453 +120,963 @@ Account economy (абсолютные, от `pBase`):
 | `+0xA7A18` | int32 | Gold |
 | `+0xA7A1C` | int32 | Rift Crystals (RC) |
 
+`InWorld()` / `IsInActiveGameplay()`: `level != 0` и `maxHp ∈ (0, 200000]`.
+Титул / загрузка → false.
+
+---
+
 ## 2. Live bodies и action/FSM
 
-Main Pawn определяется динамически как `uCmc`, Arisen как `uPlayer`; hardcoded absolute vtable не является production resolver.
+Main Pawn определяется динамически как `uCmc`, Arisen как `uPlayer`.
+Hardcoded absolute vtable **не** production resolver.
 
-Arisen identity (Build 84.11): live `uPlayer` (TypeAtlas size 23056 = `kPartyBodySize`) клеится к fixed record `*pBase+0xA7000` без обязательного указателя на запись в наружном теле. Порядок доказательств: pointer в теле / child graph; обратный указатель в первых `0x7F0` байтах записи (не заходить в Main Pawn record); полный `cPlayerInfo` (2032 B = `0x7F0`) содержит указатель на запись; иначе ровно один живой `uPlayer` + валидный `CombatRecordCore` + читаемые XYZ. Ноль или два+ `uPlayer` — fail-closed. HP записи (`+0x96C`) лежит за пределами `0x7F0` и в `cPlayerInfo` не ищется.
+TypeAtlas sizes (CONFIRMED):
+
+| DTI | size | константа |
+|---|---:|---|
+| `uPlayer` | 23056 (`0x5A10`) | `kPartyBodySize` |
+| `uCmc` | 22752 (`0x58E0`) | `kCmcBodySize` |
+| `uEm0100` | 29632 (`0x73C0`) | `SpeciesCard` |
+| `uEm0200` | 29888 | `SpeciesCard` |
+| `uEm5900` Devilfire Drake | 31920 | TypeAtlas size; live DTI+gid §8.5 |
+| `uEm8100` (каталожная строка «Drake») | 29280 | TypeAtlas; **не** Devilfire; подпись — guess генератора |
+| `uEm8000` | 29296 | TypeAtlas; **классификация спорная** — §8.4 |
+| `uEm8600` Hare | 29328 | harmless |
+
+### 2.1 Arisen identity (Build 84.11, CONFIRMED)
+
+Live `uPlayer` клеится к fixed record `*pBase+0xA7000` без обязательного
+указателя на запись в наружном теле. Порядок доказательств:
+
+1. pointer в теле / child graph;
+2. обратный указатель в первых `0x7F0` байтах записи (не заходить в Main Pawn record);
+3. полный `cPlayerInfo` (2032 B = `0x7F0`) содержит указатель на запись;
+4. иначе ровно один живой `uPlayer` + валидный `CombatRecordCore` + читаемые XYZ ≠ 0.
+
+Ноль или два+ `uPlayer` — **fail-closed**. HP записи (`+0x96C`) лежит за
+пределами `0x7F0` и в `cPlayerInfo` не ищется.
+
+Pawn record ↔ body (Build 007+): unique match
+`cCmcInfo+0x29C` (HP mirror) == `record+0x96C`, два стабильных снимка.
+Ambiguous / conflict → unresolved. Порядок скана / live-list **не** identity.
+
+Hired: пустой record — не дыра партии (occupied-exact, не exact-4).
 
 | Offset live body | Type | Field |
 |---:|---|---|
+| `+0x0C / +0x10` | ptr | live-list next/prev (`uEm*`) |
+| `+0x2D` | byte | gid/type; **DTI name обязателен** (коллизия `0x61`) |
+| `+0x40/+0x44/+0x48` | float | world XYZ |
+| `+0x60/+0x64/+0x68` | float | body scale W/H/D (EnemyTuner) |
 | `+0x2DC0` | ptr | `cActionManager::cActBank` |
-| `+0x2DC8` | ptr | current `cPlAct*`/enemy Act object |
-| `+0x2DD4` | uint32 | packed current action code (player/main pawn подтверждены) |
-| `+0x2DE8` | ptr | duplicate current Act pointer (player/main pawn observations) |
-| `+0x2E64` | ptr | `cAICtrl` |
-| `+0x40/+0x44/+0x48` | float | world XYZ у live units (единицы НЕ метры — ~сантиметры, см. §2 ниже) |
+| `+0x2DC8` | ptr | current `cPlAct*` / enemy Act |
+| `+0x2DD4` | uint32 | packed current action code (player/main pawn) |
+| `+0x2DE8` | ptr | duplicate current Act |
+| `+0x2E64` | ptr | `cAICtrl` (проверять DTI-имя; слот плавает) |
+| `+0x2EB8` | ptr | primary planner/combat target |
+| `+0x3DEC` | ptr | `cCmcInfo*` (pawn; проверять имя) |
 
-Current Act использует стабильный placement-new buffer: меняется vtable/состояние, а не обязательно адрес. Прямая подмена `+0x2DC8` не является безопасным AI control.
+Current Act использует стабильный placement-new buffer: меняется
+vtable/состояние, не обязательно адрес. Прямая подмена `+0x2DC8`
+не является безопасным AI control.
 
 Подтверждённые packed codes main pawn: Wait `0`, Walk `1`, Run `2`, Dash `5`, Jump `8`.
 
-### 2.1 Масштаб мировых координат
+### 2.2 Масштаб мировых координат
 
-`+0x40/+0x44/+0x48` — это **не метры**. Единицы мира ≈ сантиметры (~100 единиц/метр). Косвенные доказательства:
+`+0x40/+0x44/+0x48` — **не метры**. Единицы мира ≈ сантиметры (~100 единиц/метр).
 
-- `AIPlActParam` — дальности действий `500..4000`: как сантиметры это 5–40 м (осмысленно для удара/лука), как метры — абсурд;
-- гоблин-сенсор `em0100A.sn2` зрение `1500`: ~15 м агро-радиуса (осмысленно), не 1500 м;
-- live `pawn→Arisen ≈ 440` при следовании вплотную: ~4.4 м (нормальная дистанция следования), не 440 м.
+- `AIPlActParam` дальности `500..4000` → 5–40 м;
+- гоблин-сенсор `em0100A.sn2` зрение `1500` → ~15 м;
+- live `pawn→Arisen ≈ 440` при следовании → ~4.4 м.
 
-Точный фактор (100 vs иное) уточняется touch-тестом. В коде доктрины дистанции считаются в raw world-units и переводятся в метры через `worldUnitsPerMeter` (ini `[pawnAI]`, по умолчанию 100.0).
+В коде: raw world-units / `worldUnitsPerMeter` (ini `[pawnAI]`, default 100.0).
+Director/TacticalCues делят на `100.0f` напрямую.
+
+---
 
 ## 3. Main Pawn priority pipeline
 
-### 3.1 Fast main-pawn decision chain (Build 48)
+### 3.1 Fast decision chain (Build 48, CONFIRMED)
 
 ```text
-uCmc + 0x2E64 -> cAICtrl
-cAICtrl + 0x04 -> same uCmc (owner back-reference)
+uCmc + 0x2E64 -> cAICtrl          // имя класса обязательно
+cAICtrl + 0x04 -> same uCmc
 cAICtrl + 0x68 -> cAIGoalPlanning
 cAICtrl + 0x70 -> cAIPriorityThink
 cAIGoalPlanning + 0x04 -> same cAICtrl
 cAIPriorityThink + 0x04 -> same cAICtrl
 ```
 
-Цепочка совпала в Wait/Follow/Combat. После разрешения live `uCmc` глобальный AI heap census для planner/priority roots не требуется.
+После разрешения live `uCmc` глобальный AI heap census не требуется.
 
-### 3.2 Resource/runtime roots
+### 3.2 Resource roots
 
 ```text
 cAIPriorityThink + 0x08 -> rAIPriorityThink (cmc.prt)
-cAIGoalPlanning + 0x08 -> default rAIGoalPlanning (observed Wait resource)
+cAIGoalPlanning + 0x08 -> default rAIGoalPlanning (Wait)
 ```
 
-`rAIGoalPlanning` содержит inline ASCII resource path по `+0x08`. Runtime manifest Build 48 дал 69 уникальных GOAP resources: все 68 импортированных файлов плюс `WpnBowAtk2`.
+`rAIPriorityThink`: 85 `cPrioParam` rows. Runtime: 48 buckets
+(`QUEST`, `PL_Party`, `Situ_Personal`, `Enemy`, `Wait_Follow`, `Etc` × 8).
 
+Ресурс **общий на всех пешек** (Build 75.6): три `cAIPriorityThink`,
+один `rAIPriorityThink`. Правка `AddS32` действует на всю партию.
+Различие поведения — checks `{inclId, rank}`, не отдельный ресурс.
 
-`rAIPriorityThink` содержит 85 `cPrioParam` rows. `cAIPriorityThink` материализует 48 runtime buckets (`QUEST`, `PL_Party`, `Situ_Personal`, `Enemy`, `Wait_Follow`, `Etc`; по 8 slots).
+### 3.3 `cPrioParam` / `cCodeParam` / buckets
 
-### 3.2.1 Ресурс приоритетов ОБЩИЙ на всех пешек (Build 75.6, live, 3 пешки)
+См. `FIELD_MAP.md` §4–5. Кратко:
 
-Перекличка партии при полном составе (своя Страйдерша + наёмные Файтер и Маг):
+- `cPrioParam`: Sensor/Code/Category/ObjectId/Extra + personality/order cArrays;
+- `cCodeParam` (104 B): `AddS32 +0x04`, `AddF32 +0x08`, `BreakAfterApply +0x0C`, checks;
+- bucket: `cAIPriorityThink + 0x38 + slot*0x14`; валидны только `[0, count)`.
+
+`AddS32` = integer bucket displacement (code 45: base 36, −1 → 35, −2 → 34).
+
+Check-объект: `+0x04` InclIdx 0..8, `+0x08` rank 2=primary / 1=secondary / 0=tertiary.
 
 ```text
-roster: 3 pawns, 1 distinct priority resource
+0=Scather 1=Medicant 2=Mitigator 3=Challenger 4=Utilitarian
+5=Guardian 6=Nexus 7=Pioneer 8=Acquisitor
 ```
 
-Каждая пешка имеет **свой** `cAIPriorityThink` (инстанс с 48 рантайм-вёдрами), но `think + 0x08` у всех троих указывает на **один и тот же** `rAIPriorityThink` (`AI\PrioThink\cmc`).
+Guardian code 54 rule[0] `AddS32=-3` (primary) — доказанный «поводок пассивности».
+Code 57 `WpnBowAtk2` personality=0.
 
-Следствия, которые надо держать в голове при любой правке весов:
+Sidecar: `DDDA_AI_Overhaul/ddda_pawn_ai_profiles.ini` schema v2.
+Контракт: validate all → apply all → readback → convergence → rollback.
 
-1. **правка `cCodeParam::AddS32` действует на ВСЮ партию**, включая наёмных пешек. Это область действия, а не ошибка, но она должна быть заявлена;
-2. **различие поведения между пешками даёт не ресурс, а проверки склонностей**: `cCodeParam` несёт check `{inclId, rank}` (§3.5.2), и одно и то же правило применяется только к той пешке, у которой совпала склонность и её ранг. То есть общий набор правил + личные склонности = персональное поведение;
-3. **адресная правка «этой пешке так, а той иначе» на слое ресурса невозможна.** Для неё пришлось бы работать с рантайм-вёдрами конкретного инстанса `cAIPriorityThink`.
+---
 
-### 3.3 `cPrioParam`
-
-| Offset | Type | Field |
-|---:|---|---|
-| `+0x04` | uint32 | Sensor |
-| `+0x08` | uint32 | Code |
-| `+0x0C` | uint32 | Category |
-| `+0x10` | uint32 | Object ID |
-| `+0x14` | uint32 | Extra |
-| `+0x18..+0x28` | cArray | personality `cCodeParam**` |
-| `+0x2C..+0x3C` | cArray | order `cOrderValue**` |
-
-### 3.4 Runtime bucket descriptor
-
-```text
-cAIPriorityThink + 0x38 + slot*0x14:
-  +0x00 cArray vtable
-  +0x04 count
-  +0x08 capacity
-  +0x0C flags
-  +0x10 cPrioParam** mpArray
-```
-
-Только первые `count` pointers действительны. Шаг allocator `0x90` не является размером score object; trailing memory не анализируется как score.
-
-### 3.5 Personality/order rules
-
-`rAIPriorityThink::cCodeParam` (104 B):
-
-| Offset | Field |
-|---:|---|
-| `+0x04` | int32 `AddS32` |
-| `+0x08` | float `AddF32` |
-| `+0x0C` | `BreakAfterApply` |
-| `+0x10..+0x20` | checks cArray |
-
-`rAIPriorityThink::cOrderValue` (12 B): `+0x04 Value`, `+0x08 Type`.
-
-Все 48 personality rules и 41 order rules совпали с `cmc.prt` без validation errors.
-
-`AddS32` доказан как integer bucket displacement:
-
-```text
-code 45 base slot 36
-AddS32 -1 -> slot 35
-AddS32 -2 -> slot 34
-```
-
-Build 46 доказал transaction для codes 45/46 одновременно: slot 34 `[46,45]`, slot 35 `[47]`; vanilla — slot 35 `[47,46,45]`.
-
-### 3.5.1 Guardian-family modifiers (подтверждено Build 57 audit, read-only)
-
-Runtime дамп live `cPrioParam` для Guardian-кодов (85 rows total, совпадает с каноном). Identity-кортеж — полный tuple `{sensor, code, category, objectId, extra}`; каждое правило — отдельный `cCodeParam` с `AddS32/AddF32/break/checks`:
-
-| code | tuple | personality rules (AddS32) | статус |
-|---|---:|---|---|
-| `4` | `{0,·,0,0,1}` | `[+3]` break=0 | CONFIRMED (wait/follow бонус) |
-| `13` | `{1,·,0,0,1}` | `[-4,-2,-2]` break=1 | CONFIRMED (party relation) |
-| `15` | `{0,·,0,0,1}` | `[-2,-2,-2]` break=1 | CONFIRMED (Air) |
-| `54` | `{1,·,0,0,1}` | `[-3,-2,+2,+5,-1]` break=0 | CONFIRMED (WpnDaggerAtk) |
-| `60` | `{1,·,0,0,1}` | `[-3,-3]` break=0 | CONFIRMED (Em0600Cover) |
-| `66` | `{1,·,0,0,1}` | `[-4]` break=0 | CONFIRMED (battle response) |
-
-**Оговорка о полноте (21.08).** Этот аудит был Guardian-scoped: он проверял шесть заранее подозреваемых кодов и печатал количество правил, а не их содержимое. Полная выписка «склонность → какие коды она двигает» по всем 85 строкам появилась только в Build 75.8 (кнопка `Inclination rules`). До неё считать список из шести строк исчерпывающим нельзя.
-
-Важно и то, что уже видно здесь: `code 4` несёт **бонус +3** к wait/follow. Жалобы игроков на Guardian («пешка липнет к игроку и ничего не делает») описывают именно это, а не штраф на атаку — см. `docs/GUARDIAN_REPORTS_MAP.md`.
-
-`code 54` — главный рычаг: rule[0] несёт штраф `-3` (`break=0`, `checks=1`). Это «поводок пассивности» Guardian на WpnDaggerAtk. Бонусы `+2/+5` — другие состояния Guardian (низкая инклинация → бонус к атаке). Build 57.1 снимает именно rule[0] (`-3 → 0`) транзакционно.
-
-### 3.5.1a Поведенческое подтверждение штрафа code 54 (Build 75.24, A/B на живой пешке)
-
-Одна пешка-Страйдер, три боя по ~110 с, менялась только primary-склонность:
-
-| код | Guardian ×2 | Scather |
-|---|---:|---:|
-| `54 WpnDaggerAtk` | **0 / 0 кадров** | **1612 кадров, 19 входов** |
-| `1 Follow` | 1432 / 2784 | 291 |
-| `28 StandOff` | 1204 / 1337 | 152 |
-
-12 467 боевых кадров с Guardian не дали ни одного кадра ближней атаки; 6 526 кадров со Scather дали 1 612.
-
-**Приоритет относителен.** У Guardian НЕТ правила на `Follow` (код 1) — единственное действующее правило это `54(-3)`. Следование растёт не потому, что его повысили, а потому, что понизили то, что его обгоняло. Отсюда и жалоба игроков «пешка липнет и не дерётся»: это побочный эффект одного штрафа, а не отдельное поведение.
-
-Практический вывод: рычагом является ровно `code 54 rule[0]`, а `Follow` трогать не нужно.
-
-### 3.5.2 Семантика checks (подтверждено Build 57.2, read-only)
-
-Каждый `cCodeParam` несёт массив checks (по одному на правило здесь). Check-объект:
-
-```text
-+0x00  vtable (4 байта)
-+0x04  int32  — идентификатор склонности (0-based, СОВПАДАЕТ с нашим InclIdx):
-               0=Scather 1=Medicant 2=Mitigator 3=Challenger 4=Utilitarian
-               5=Guardian 6=Nexus 7=Pioneer 8=Acquisitor
-+0x08  int32  — ранг склонности: 2=primary, 1=secondary, 0=tertiary
-```
-
-Доказательство — идеальная корреляция AddS32 ↔ (склонность, ранг) в code 54:
-
-| AddS32 | check | смысл |
-|---|---:|---|
-| -3 | (Guardian, primary) | Guardian главный → штраф кинжалы |
-| -2 | (Guardian, secondary) | Guardian второй → штраф |
-| +2 | (Scather, secondary) | Scather второй → бонус |
-| +5 | (Scather, primary) | Scather главный → бонус |
-| -1 | (Medicant, tertiary) | Medicant → лёгкий штраф |
-
-Следовательно: агрессивные склонности дают БОНУС к атаке, оборонительные —
-ШТРАФ. Это штатный «поводок», который мы переписываем.
-
-### 3.5.3 Лук (code 57) НЕ имеет personality-модификаторов
-
-`code 57 (WpnBowAtk2)` — `personality=0`. У лука НЕТ склонностных штрафов/бонусов.
-Следствие (подтверждено тестом 57.1): пешка-гибрид с Guardian primary при
-снятом даггер-штрафе вытаскивает кинжалы, но в момент атаки берёт лук —
-потому что лук не штрафуется, а враг дальше даггер-радиуса (GOAP/eligibility
-честно выбирают дистанционное оружие). Фикс должен быть distance-aware:
-поощрять кинжалы только при угрозе в даггер-радиусе, иначе лук работает.
-
-### 3.6 Persistent profiles
-
-Runtime sidecar:
-
-```text
-DDDA_AI_Overhaul/ddda_pawn_ai_profiles.ini
-```
-
-Schema v2 поддерживает 0..48 entries с identity:
-
-```text
-sensor/code/category/objectId/extra/ruleIndex
-```
-
-Контракт: validate all → apply all → readback → convergence → rollback. Адреса после перезапуска разрешаются заново. Build 45 подтвердил persistence между процессами; Build 46 — multi-rule transaction.
-
-**Ограничение:** `cPrioParam` resource может быть общим для нескольких pawn instances. Main-pawn-only тесты подтверждены, но per-instance isolation и однозначная main root association ещё открыты.
-
-## 4. Planner / GOAP
-
-| Contract | Status |
-|---|---|
-| `cAIGoalPlanning + 0x17C` | current priority code; `0xFFFFFFFF` = no selected priority |
-| `planner + 0x190 + code*0x110` | indexed `cPlanCtrl` для валидного code |
-| observed codes | Build 53: 18 valid selected codes plus `0xFFFFFFFF`; full aggregate in `pawn_intent_trace_53.json` |
-| GOAP resources | 68 goals / 167 interfaces в pawn catalog |
-
-Build 48 runtime GOAP manifest: 69 unique `rAIGoalPlanning` paths, включая runtime-only `WpnBowAtk2`. Default pointer planner root всегда указывал на `Wait` и не равен selected plan.
-
-Build 50 подтвердил compiled link:
-
-```text
-cGoalPlanningNode + 0x04 -> rAIGoalPlanning::ActionInterfaceParam
-ActionInterfaceParam + 0x04 = InterfaceID
-ActionInterfaceParam + 0x08 -> cCmc action interface
-```
-
-Primary static PlanCtrl identities, подтверждённые Build 52:
-
-- code `0`: Wait ID 0;
-- code `1`: Follow ID 1;
-- code `35`: VictoryPose ID 117;
-- code `36`: ItemThrow ID 158;
-- code `54`: `WpnDaggerAtk` IDs 9/124/132/133/10; exact action `cPlActWpnDaggerAtckLandL`;
-- code `57`: runtime-only `WpnBowAtk2` IDs 12/107; exact action `cPlActWpnBow`;
-- code `58`: `DmgUkemi` ID 149.
-
-Selected runtime graphs могут одновременно нести transient/auxiliary links (например Follow/Jump или ItemThrow/Follow); их нельзя смешивать с primary slot identity.
-
-Build 52 прошёл все 91 planner slots за один snapshot: 56 slots имеют direct GOAP links, из 70 codes, используемых `cmc.prt`, семантически mapped 42. Build 53 подтвердил стабильность карты 56/91 и впервые поймал live planner-only slots `74 = EscapeNotice2` и `76 = GotoOm`. Следовательно, selected runtime code использует весь диапазон `0..90`, даже если часть slots отсутствует в parsed `cmc.prt` rows. Не применять формулу `PlanCtrl` к `0xFFFFFFFF`.
-
-### 4.0 Код приоритета = слот загруженной цели (Build 73.27, CONFIRMED)
-
-Массив загруженных целей идёт от `planner + 0x08` с шагом 4; ресурс — `rAIGoalPlanning`, путь лежит строкой по `+0x08` самого ресурса.
+## 4. Planner / GOAP / target
 
 ```text
 code = (slotOffset - 8) / 4
 PlanCtrl(code) = planner + 0x190 + code * 0x110
+planner + 0x17C = selected code; 0xFFFFFFFF = промежуток, НЕ код
 ```
 
-Пять сходящихся проверок: `1=Follow` (live, Build 40), `15=Air`, `54=WpnDaggerAtk`, `60=Em0600Cover` (все CONFIRMED по Guardian-таблице), плюс структурная — старший загруженный код `90` против ёмкости массива `PlanCtrl` `(25264-0x190)/0x110 = 91` слот (коды 0..90, хвост 112 B).
+Ёмкость: коды `0..90`. Не применять `PlanCtrl` к `0xFFFFFFFF`.
 
-Полная таблица — `docs/generated/PAWN_GOAL_CODES.md` (пересобирается `tools/goal_codes_from_log.py`, набор целей зависит от вокации пешки). Ключевые коды оружия: `52 WpnSwordAtk`, `53 WpnGSwordAtk`, `54 WpnDaggerAtk`, `55 WpnWandAtk`, `56 WpnShieldAtk`, `57 WpnBowAtk2`; рывок — `84 DashFollow`, `85 DashFollowSt500`.
+`uCmc+0x2EB8` — primary planning/combat target (Build 53: 335/747 rows,
+9 unique bodies). Может жить в near-death при code `0xFFFFFFFF`.
+`+0x4B28` — secondary/previous (OBSERVED). `+0x14E0` — look-at (OBSERVED).
 
-`planner + 0x17C` — текущий выбранный код. Значение `-1` (`0xFFFFFFFF`) — **промежуток между выборами, а не состояние**: считать его отдельным кодом или применять к нему формулу `PlanCtrl` нельзя.
+Оружейные коды: `52 Sword`, `53 GSword`, `54 Dagger`, `55 Wand`,
+`56 Shield`, `57 Bow`. Рывок: `84 DashFollow`, `85 DashFollowSt500` —
+**строк приоритета нет**; живой рывок идёт под code `1 Follow`.
 
-### 4.1 `cAIGoalPlanning::cPlanCtrl` — раскладка блока (Build 73.27, read-only)
+Поводок follow — **не** в priority-слое. Пороги в `cCmcFollow +0x118..+0x130`
+(CONFIRMED read). Роль-зависимый поводок через intent, не запись float.
 
-Построчный дифф `PlanCtrl(1)` против `PlanCtrl(84)` (элементы одного массива одного типа, поэтому смещения сопоставимы):
+`AIPlActParam` range tuple в `cCmc* +0x258..+0x278` — eligibility, не hitbox.
+WandRange errata: RangeMax кастера 15 м (`docs/WAND_RANGE.md`).
 
-| Offset | Field |
-|---:|---|
-| `+0x000` | vtable `cPlanCtrl` |
-| `+0x004` | cArray #1 (`count`, `capacity`, `flags`, `mpArray` по схеме §3.4) |
-| `+0x038` | cArray #2 |
-| `+0x04C` | cArray #3 |
-| `+0x060` | подобъект (vtable `0x015593F4`), внутри cArray по `+0x068` |
-| `+0x0A8..+0x0B4` | 4×`0xFFFFFFFF` — пустые слоты-сентинелы |
-| `+0x0C0/+0x0C4/+0x0C8` | float XYZ — **живая точка назначения плана** (меняется между снимками) |
-| `+0x0D0` | vtable `0x0155A4A8` |
-| `+0x0D4` | ptr на живое тело (кандидат: объект следования) |
-| `+0x0DC/+0x0E0` | флаги исполнения |
+---
 
-Три cArray компилированной части присутствуют у ОБЕИХ целей (`count 1`), а всё, что заполняется при исполнении (`+0x060`-подобъект, XYZ, тело, флаги), у никогда не запускавшейся цели — нули. **`PlanCtrl` хранит состояние исполнения, а не условия выбора; править его для «разрешения» цели бессмысленно.**
-
-### Current target
-
-`uCmc+0x2EB8` подтверждён как current combat target:
-
-- zero в Wait/Follow;
-- Build 49 переключился Wolf A → Wolf B между combat snapshots;
-- Build 51 указывал на тот же Goblin body во время exact dagger и bow actions;
-- Build 53: non-null в 335/747 trace rows, 9 уникальных bodies (`uHumanEnemy`, `uEm0100`, `uMultiNpc`);
-- при `cPlActCmcNeardeath` code был `0xFFFFFFFF`, но target `uHumanEnemy` сохранялся все 16 heartbeat rows и пережил переход в `cPlActCmcReturn`.
-
-Итого: `+0x2EB8` — primary planning/combat target, но не гарантия активного execution: ссылка может сохраняться в planner-disabled damage/near-death states. `+0x4B28` — secondary/previous/lock candidate: может совпадать с current target или хранить предыдущего Wolf. `+0x14E0` появляется позднее/контекстно и похож на look-at/lock reference.
-
-### 4.2 Target-selection / lock-on слой (Build 59.x, read-only)
-
-Цель пешки (`uCmc+0x2EB8`) — это само **тело врага** (`uHumanEnemy`/`uEm*`), не отдельная карточка. Скоринг «кого бить» живёт в объектах, что ссылаются на тело. Вскрытые типы (все в TypeAtlas):
-
-| Тип | Размер | Роль | Статус |
-|---|---:|---|---|
-| `rLockOnTarget` | 120 B | РЕСУРС конфига локона. ASCII-путь `param\lockon\m000cmc` (гл. пешка), `...\HumanEnemy`, `...\m000` | ✅ read-only |
-| `sLockOnManager` | 56 B | менеджер локона | ✅ |
-| `sLockOnManager::cLockOnTarget` | 112 B | живая карточка локона: `+0x38` float радиус (~10.0), `+0x40` owner body ptr (uPlayer/uCmc), в конце world XYZ | ✅ частично |
-| `cLockOnTarget` | 80 B | по одной записи на врага (десятки) | 🧪 раскладка не закреплена |
-| `sRecognition` | 72 B | менеджер распознавания; float 1.0/2.0/10.0, счётчики, ptr | ✅ частично |
-| `sRecognition::cEnemyInfo` | 80 B | карточка врага (в live НЕ инстанцируется как vtable-объект) | 🧪 |
-
-Обратных ссылок «карточка → тело врага» в первых байтах этих объектов НЕ найдено — связь, вероятно, от тела врага к карточке или через индекс. Открыто: найти поле threat-скора для бонуса «враги в радиусе Аризена приоритетнее».
-
-Подтверждение по ресурсу (Build 59.x): `param\lockon\m000cmc.ltg` — конфиг локона
-главной пешки, `mQuality=2`, `mRadius=10.0` (см. ASSET_FORMATS §8). Радиус 10 м
-совпадает с live `cLockOnTarget +0x38` и с Guardian preempt-радиусом.
-
-Build 51 также подписал основные `cAICtrl` children: path/nav traces (`+0x30/+0x34`), sensor (`+0x38`), route (`+0x3C`), action-interface ctrl (`+0x40`), situation (`+0x5C`), message (`+0x60`), grid (`+0x64`), planner (`+0x68`), study (`+0x6C`), priority (`+0x70`), look-at (`+0x74`).
-
-Build 53 подтвердил компактный read-only fast path без heap census: за 570.7 s записано 747 rows, 18 valid selected codes, 33 exact action types и clean DLL-detach stop без ошибок. Semantic intent, selected code, exact `cPlAct`, packed code, primary target `+0x2EB8` и selected PlanCtrl links пишутся только при переходе плюс heartbeat раз в секунду. Compact evidence: `PLAYER_PAWN_WORK/generated/pawn_intent_trace_53.json`.
-
-## 5. Action eligibility
-
-Девять `rAIPlayerActionParameter` resources содержат 352 rows; runtime census видел 353 `cAIPlayerActionParameter` objects (вероятный extra/default object).
-
-Compiled tuple в `cCmc*`:
+## 5. `cCmcInfo`
 
 | Offset | Field |
 |---:|---|
-| `+0x258..+0x26C` | 6 range floats |
-| `+0x270` | ElementAttr |
-| `+0x274` | AtkAttr |
-| `+0x278` | UseAttr |
+| `+0x29C` | current HP mirror (= record `+0x96C`) |
+| `+0x2A4` | recoverable HP mirror |
+| `+0x14B8 + id*0x0C` | `{state,id,float}` × 9 inclinations |
+| `+0x0288/+0x028C/+0x0290` | `rHumanEdit/rBodyEdit/rFaceEdit` |
 
-CSV `PLAYER_PAWN_WORK/generated/AIPlActParam*.csv` — AI target/use ranges и eligibility data, не доказанные physical damage hitboxes. Runtime mutation A/B ещё не выполнен.
+Current target pointer внутри `cCmcInfo` не подтверждён.
 
-### 5.1 Поводок (follow-дистанция) — найдено (Build 64.7)
+---
 
-В `cCmcFollow` (доступен по цепочке: uCmc+0x2E64 → cAICtrl+0x68 → planner →
-PlanCtrl[1] → node+0x04 → ActionInterfaceParam+0x08 → cCmcFollow) есть
-**серия порогов follow-дистанции** (float, сантиметры):
+## 6. CombatBus (CONFIRMED контракт шины)
+
+Два независимых канала. Hit **не** топчет presence.
 
 ```text
-+0x118..+0x130  (float idx 70..76):
-  [70]=1200  [71]=900  [72]=600  [73]=300  [74]=1500  [75]=1000  [76]=150
+CombatIntel.Publish(CombatReport)     // ~150 мс, SRWLOCK exclusive + listeners
+WorldScan.PublishWorld(WorldReport)   // presence; listeners НЕ зовутся
 ```
 
-Интерпретация: лестница дистанций следования — 1500 (15 м) = порог, с которого
-пешка начинает догонять; 1200/1000/900/600/300 = ступени сближения; 150 (1.5 м)
-= дистанция остановки рядом. Значения СТАТИЧНЫ (не меняются «стоит/бежит» —
-это пороги поведения, а не текущая дистанция; текущая снимается отдельно).
+`CombatReport`: удары, distinct types, knowledge, `enemies[8]`.
+`dominantCategory` **никогда** не берётся из `GetEnemyCategory(0x61)`.
 
-`+0x258..+0x26C` (range floats) — НЕ поводок: `71.9` стабильно во всех состояниях
-(это, вероятно, диапазоны атаки). Поводок именно в `+0x118..+0x130`.
+`WorldReport` (32 `WorldPresence`):
 
-Это даёт реализацию роль-зависимого поводка (GUARDIAN_LEASH_MATRIX):
-Assault — сдвинуть пороги ВНИЗ (жмётся к игроку), Support/RangedHold/Protector —
-ВВЕРХ (держится дальше). Требует A/B: поменять один порог и проверить поведение
-догона, транзакционно с rollback.
-
-### 5.2 Поводок — НЕ в priority-слое (Build 65.1, полный аудит)
-
-Прочитаны ОБА массива cPrioParam для всех 85 строк: personality (cCodeParam,
-AddS32 = веса-штрафы) и order (cOrderValue {+0x04 Value, +0x08 Type}).
-Результат: **нигде нет параметра «дистанция следования»**.
-
-- personality: AddS32 = целые смещения (штрафы/бонусы), привязаны к (склонность, ранг).
-- order: `Type` = тип команды (9=attack, 10=move/follow, 11=combat-follow...),
-  `Value` = небольшое число. Это КЛАСС команды, а не метры.
-- Pioneer(7) НЕ встречается в personality ни разу — его «пинок» это НЕ дистанция,
-  а выбор другого intent (Goto/StandOff/DashFollow вместо Follow).
-
-Вывод: поводок — это compiled-параметр из ресурса (Follow.gop класс 752 B или
-его param), общий на всех вокаций (тот самый «статичный на все вокации» из
-наблюдения пользователя). Дистанция — СЛЕДСТВИЕ выбора intent, а не записываемое
-поле. Роль-зависимый поводок делается через приоритет intent (Follow vs Goto),
-а не записью float.
-
-## 6. `cCmcInfo`
-
-| Offset | Field |
-|---:|---|
-| `+0x29C` | current HP mirror |
-| `+0x2A4` | recoverable/secondary HP mirror |
-| `+0x14B8 + id*0x0C` | `{state,id,float value}` для 9 inclinations |
-| `+0x0288/+0x028C/+0x0290` | `rHumanEdit/rBodyEdit/rFaceEdit` |
-| `+0x07EC` | `cPlLoadManager` |
-| `+0x1658` | `cPwnMsgLoadManager` |
-
-Current target pointer не подтверждён.
-
-## 7. Enemy runtime contracts
-
-- `uEm* +0x2D`: observed gid/type byte; DTI name обязателен для kind classification из-за коллизий (`uEm8000` может носить `0x61`).
-- `+0x0C/+0x10`: observed doubly-linked live-unit list.
-- `+0x40/+0x44/+0x48`: world XYZ.
-- `+0x2DC8`: current enemy Act; смерть определяется `Die/DeadBody`, не угадыванием HP.
-- `uEm0200` roster card head (только этот вид; база/шаг по форме, не константа):
-  `+0x00` ptr party body; `+0x08` int live flag `1`; `+0x0C` mode `4`=perception
-  (attention `+0x10` native `0..300`, pin ceiling 300) или `2`=combat
-  (`+0x10` native `0..~500`, pin ceiling 500). Weight `+0x14` (1.0 / 0.2) —
-  read-only. Dead `0/0` and transitional `fC=1` are not writable.
-- `uEm0100` body size `0x73C0`; видоспецифичные offsets нельзя переносить на все `uEm*`.
-- Goblin `cCharParamEnemy` найден по signature; observed copies около `+0x5870/+0x59B0`, size `0x140`.
-- Body scale channels `+0x60/+0x64/+0x68` и charparam scale `+0x12C` используются только через проверяемый EnemyTuner contract.
-
-### 7.1 Применение движения — два пути (подтверждено Build 70.2, живой A/B)
-
-Покадровое смещение применяется к координатам тела в ДВУХ разных местах.
-Хук одного из них даёт «шагом медленно, бегом быстро».
-
-| Путь | Инструкция | Сигнатура | Тело | Где смещения |
-|---|---|---|---|---|
-| обычное движение | `movss xmm6,[esp+30]` | `F3 0F 10 74 24 30` | `esi` | стек `[esp+30/34/38]` |
-| спринт | `addss xmm2,[edi+40]` | `F3 0F 58 57 40` | `edi` | регистры `xmm2/xmm3/xmm6` |
-
-Сигнатура обычного движения **не уникальна**: 317 совпадений в образе.
-Опознаётся по контексту — в пределах 192 байт после неё стоят все три
-записи координат (`F3 0F 11 76 40/44/48`), и такое место ровно одно.
-Адресное разрешение (RVA из внешнего источника) НЕ работает: сборки exe
-различаются.
-
-Умножение горизонтальных составляющих смещения (X и Z) меняет скорость
-перемещения, **не затрагивая анимации**. Вертикаль (Y) не трогать: это
-падение и прыжки.
-
-**Живая проверка (18.08.2026).** Три гоблина, безоружная главная пешка,
-одна и та же сцена:
-
-| Множитель | Исход |
+| Поле | Смысл |
 |---|---|
-| 1.19 | пешку сбивают с ног и не дают подняться, воскрешение не помогает |
-| 0.79 | пешка спокойно уворачивается от всех троих |
+| `units[].ptr/vt/gid/kind/xyz` | кто и где |
+| `units[].inCombatAction` | live Act ∈ боевому эвристическому списку |
+| `units[].actName[40]` | **копия** DTI-имени Act, не указатель |
+| `enemyCount / enemyCombatCount / deadCount / critterCount` | состав |
+| `goblinCount` | prefix `uEm0100*` **или** `uEm0101*` |
+| `dominantCategory` | max `KindCategory`; только small-goblin = 0, иначе −1 |
+| `pawnEngaged` | `uCmc+0x2EB8 != 0` |
+| `timestampMs` | свежесть; Director: stale > **450 мс** → пустой view |
 
-Движок корректно переваривает изменённые смещения: ни рассинхрона
-коллизий, ни провалов сквозь геометрию не наблюдалось.
+Трупы (`ActDie`/`ActDeadBody` anywhere in name) в `units[]` не входят.
+Смерть — FSM-имя, не HP и не `+0x14`.
 
-## 8. Что не является подтверждённым
+Классификация **по DTI-имени**, не по gid:
 
-- универсальный enemy current HP offset внутри body;
-- семантика/GOAP links всех priority codes;
-- physical hitbox из `AIPlActParam` ranges;
-- безопасные generalized GOAP/action-eligibility writes;
-- monster priority/planner bridge.
+```text
+KindIsCreature = uEm* || uHumanEnemy
+KindIsHarmless = uEm8000 || uEm8600     // см. конфликт §8.4
+KindIsEnemy    = creature && !harmless
+```
 
-## 9. Канонические артефакты
+---
 
-- `FIELD_MAP.md` — таблицы offsets;
-- `PLAYER_PAWN_WORK/` — детальный pawn vertical slice;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_catalog.json` — 83 pawn AI resources;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_profile_46_evidence.json` — compact transaction evidence;
-- `PLAYER_PAWN_WORK/generated/pawn_priority_semantics.{json,csv}` — conservative code map;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_semantic_roots_48.json` — fast root/GOAP manifest evidence;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_plan_fingerprint_49.json` — compiled planner/target candidates;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_plan_links_50.json` — direct PlanCtrl→GOAP interface links;
-- `PLAYER_PAWN_WORK/generated/pawn_ai_action_target_51.json` — exact actions, bow/dagger semantics and target evidence;
-- `PLAYER_PAWN_WORK/generated/pawn_planner_semantics.{json,csv}` — all 91 slots, 42/70 `cmc.prt` priority codes mapped;
-- `PLAYER_PAWN_WORK/generated/pawn_intent_trace_53.json` — compact 747-row aggregate, live codes/actions/targets and lifecycle spans;
-- `generated/TYPE_ATLAS.md` / `src/TypeAtlas.Generated.h` — generated type catalog;
-- `ASSET_FORMATS.md` — static resource formats.
+## 7. Enemy runtime + Tempo primitive
+
+- `+0x2D` gid — коллизии; DTI обязателен.
+- Смерть = `Die`/`Dead` в имени Act.
+- Универсального current HP внутри `uEm*` **нет**.
+- Ряд анимации `+0x0EE4…+0x0EF4` (5×float). Покой: хотя бы одно поле `== 1.0`.
+  Пишем **мультипликативно** (торпор/захват живут). Атаки — `ActMap::NameIsAttack`.
+- Допуск вида перед первой anim-записью: TypeAtlas size ≥ `0x0EF8`,
+  все 5 ∈ (0.05, 8.0), есть ровно `1.0`. Иначе skip + лог.
+- Локомоция: хук `movss xmm6,[esp+30]` + контекст трёх store `esi+40/44/48`
+  (сигнатура не уникальна: ~317 hits). Sprint-хук опционален.
+- Hard clamp: loco `0.75..1.30`, anim `0.70..1.40`.
+- Композиция: `stable baseline → Director envelope → generic SetOverride → clamp`.
+
+`uEm0200` roster head (CONFIRMED):
+
+| Off | Field |
+|---:|---|
+| `+0x00` | party body ptr |
+| `+0x08` | live flag `1` |
+| `+0x0C` | mode `4` perception / `2` combat |
+| `+0x10` | attention (pin 300 if fC=4, 500 if fC=2) |
+| `+0x14` | weight 1.0 / 0.2 — **не писать** |
+
+Dead `0/0` и transitional `fC=1` — fail-closed.
+
+`uEm0100` roster (OBSERVED, тот же base/stride `+0x2FA0` / `0x28C` × 4):
+
+| Head | Смысл |
+|---|---|
+| `f8&1==1`, `fC=4` | perception, потолок 300 |
+| `f8&1==1`, `fC=5` | combat, потолок 484 (native max OBSERVED) |
+| `0/0/0/0` | пустая оболочка; Director может wake → `1/4 att=300 w=1.0` |
+| иначе | fail-closed |
+
+Старшие биты `f8` у гоблина — константа карты, писать нельзя.
+Block B fakehit: `+0x274` (младший бит), `+0x27C` value; `+0x278/+0x280` не трогать.
+
+`cCharParamEnemy` (320 B) у гоблина: две копии `+0x5870` / `+0x59B0`.
+Рантайм-раскладка ≠ файл (+8 в первой зоне). Сопротивления (файл+8):
+
+```text
++0x54 res_poison
++0x58 res_TORPOR
++0x64 res_tarred
++0x68 res_drenched
++0x6C res_possession     // сосед Drenched, но это РЕЗИСТ, не live-бит
+```
+
+Это **пороги накопления**, не байт наложенного статуса. Писать их ≠ наложить Possession.
+
+---
+
+## 8. Monster Director + SpeciesCard (84.21)
+
+### 8.1 Политика
+
+Режиссёр **не пишет в память игры**. Только примитивы:
+`Tempo::Admit/Release/HardReset*` и `Aggro::DirectorFocusSet`.
+
+Тик 150 мс. PackMark (стратегия) — 500 мс, hysteresis 2500 мс,
+switch margin 20%, BIAS isolation 20%, FOCUS 100%.
+Счёт: `huntScore = highestAbsHP / currentAbsHP` по **on-field** членам
+(`recordValid && bodyValid && body && currentHp > 0`). Запись в Разломе
+жива, но слот **не** в охоте. Downed на земле — on-field (тело есть).
+Occupancy (on-field vs rifted) входит в topology hash; указатель тела — нет.
+maxHP, vocation, skills, status, downed-флаг в формуле **игнорируются**.
+
+Тактика (`TacticalCues`) временно обгоняет PackMark, не стирая его.
+
+| Cue | kind | response | lease | Aggro | Tempo 84.21 |
+|---|---|---|---:|---|---|
+| `PACK-GROUND-PIN-ALARM` (`Hagaijime4Feet`) | exact `uEm0200` | ALARM | 4000 | pin+suppress+fakehit | rage envelope |
+| `PACK-LIFT-RESCUE` | exact `uEm0200` | ALARM | 2500 | то же | rage envelope |
+| `PACK-GRAB-ALERT` (`GrabStart`) | exact `uEm0200` | ALERT | 750 | pin-only | rage envelope |
+| `GOBLIN-GRAB-ALERT` (`GrabStart`\|`Hagaijime`) | exact `uEm0100` | ALERT | 4000 | pin + goblin-fakehit, **без suppress** | **std-rush** (`tempoRage`) |
+| `HOB-GRAB-ALERT` (те же акты) | exact `uEm0101` | ALERT | 4000 | pin + goblin-family fakehit/wake на `2FA0/28C` (live 84.26: голова как у гоблина, не wolf `flag==1`) | std-rush |
+| PackMark weakest-HP | `uEm0200` / `uEm0101` / `uEm0400` (не смешивать стаи) | FOCUS | — | ALARM | rage envelope |
+| — | exact `uEm0400` Saurian | — | — | **без граба** | wolf-lite 1.20–1.22 / 1.20–1.23 |
+
+Допуск пары: unique holder act + unique spatial pair ≤ 2.0 м (lift 2.5 м).
+Exact restrained body исключается из responders.
+
+Галки: `[monsterAI] enabled`, `[monsterAI] wolfActuator` — default **off**.
+
+### 8.2 SpeciesCard — единственный словарь допуска write
+
+Exact `strcmp` DTI. Prefix / subtype **не** наследуют профиль.
+
+```text
+uEm0200  size=29888  observe tempoRage aggroWrite
+         rageLoco 1.20..1.25   rageAnim 1.20..1.26
+uEm0100  size=29632  observe tempoRage aggroWrite
+         rageLoco 1.21..1.24   rageAnim 1.32..1.40
+uEm0101  size=29632  observe tempoRage aggroWrite
+         rageLoco 1.21..1.23   rageAnim 1.24..1.32
+         // hob: grab=goblin, PackMark=wolf; slower than small goblin
+uEm0400  size=29568  observe tempoRage aggroWrite
+         rageLoco 1.20..1.22   rageAnim 1.20..1.23
+         // saurian: PackMark only, NO grab; live f8&1 + fC 4/2
+```
+
+`Director::Init` зовёт `Tempo::RegisterRageProfile` для каждой `tempoRage` строки.
+Tempo не зависит от `monsterai`; волк имеет встроенный fallback для unit-тестов.
+
+Admission reject, если `!(rageLoco > stableLoco && rageAnim > stableAnim)`
+(`director-mobilization-baseline-outside-profile`) → Director hard-reset
+частичной policy.
+
+Roll детерминирован от адреса тела (murmur3). Повторный Admit refresh/maximize
+одной envelope; endpoint не двигается. Decay 1400 мс. TTL приказа 600 мс
+(fail-safe; нормальный release явный).
+
+### 8.3 Два предиката «гоблин» (не смешивать)
+
+| Предикат | Где | Правило |
+|---|---|---|
+| presence / TacticalSwitch category | `WorldScan::KindCategory`, `goblinCount` | prefix `uEm0100*` / `uEm0101*` |
+| write / rage / cue | `SpeciesCard`, `CollectEligibleResponders`, `TacticalCues` | exact `"uEm0100"` |
+
+`uEm0100_0` / `_3` — детали (typeId 0). До 84.25 они попадали в `g_act` и
+на шину; 84.25 их не кладёт. Prefix-предикат остаётся для полных
+`uEm0100`/`uEm0101`. Director rage/aggro — exact `\"uEm0100\"` / `\"uEm0101\"` / `\"uEm0200\"`.
+84.28: hob pin идёт гоблинским семейством карт (live 84.26).
+
+### 8.5 Devilfire «Дрейк» — live класс `uEm5900` (OBSERVED 84.25)
+
+Наклейка «Evil Eyes» на `uEm5900` была ошибкой `BESTIARY_UEM_MAP`.
+Снято 2026-08-26: `uEm5900` = Drake (live + Fluffy `em5900` + `em5900Dragon.prp`).
+
+Живой спавн Devilfire Grove (три сессии, 84.24–84.25; DUMP `actors[]` +
+три MD snapshot):
+
+| Канал | Значение |
+|---|---|
+| DTI name | `uEm5900` |
+| `+0x2D` gid | `0x5C` (types.tsv groupId 92) |
+| TypeAtlas size | 31920 |
+| Act хвата | `cEm5800Catch` / пешка `cEm5800CatchDamagePL` |
+| Прочие live Act | `cEm5800HabatakiAttack`, `Bite`, `BackBreath`, `Run`, `Turn` |
+| Ваниль | значок Possession + пешка бьёт Аризена из лука (тестер) |
+| Архив | `em5900.arc` → `em5900_enemy_act_param.eap` (ниже) |
+
+Оба независимых канала (имя DTI и байт gid) совпали. Это **не** «сканер
+принял глаз за дракона» и не деталь. Каталожная строка `uEm8100` на этом
+спавне **не появляется**. Циклопа (`uEm2000` / `0x39`) в списках не было:
+тело ~120 м — `uEm5000` gid `0x3F` + `cEm5000ActCommon` (голем за кадром).
+
+Гоблин/волк совпадают с таблицей, потому что у них один класс на спавн
+и угаданный маппинг попал. У драконидов несколько словарей сразу.
+
+`cEm5800*` — семейство актов дракона (breath / catch / tower / habataki).
+Своих `cEm5900*` в атласе **нет**. `cEm8100*` — пять мелких актов
+(`HoverCeilingMove` …), не хват Devilfire.
+
+Писать Tempo/Director в это тело **нельзя** (нет `SpeciesCard`).
+Охота Possession якорится на `uCmc` в окне значка / лука по Аризену
+и на это тело как источник, не на имя `uEm8100`.
+
+### 8.6 Приёмка вида — без туризма
+
+Протокол: `docs/ENEMY_INTAKE.md`. Стол: `tools/enemy_intake.py`.
+Разновидность семьи (скелет/рыцарь/лорд) **не** требует отдельного боя.
+`SpeciesCard` / Tempo / Director не заполняются из лога. Допущены только
+`uEm0100`, `uEm0101`, `uEm0200` и `uEm0400`.
+
+#### 8.5.1 `em5900.arc` EAP — CATALOG, 2026-08-26 (OBSERVED)
+
+Файл заказчика `em5900_enemy_act_param.eap` из `em5900.arc`:
+
+```text
+magic EAP_   ver 14
+67 записей × 232 B  (старт 0x15C; тот же контейнер, что em0100 = 92×232)
+строк нет: ни Catch, ни Drake, ни Eye, ни Possess, ни uEm/cEm
+XFS нет — это таблица чисел (дальности / флаги / motion-id), не имена FSM
+```
+
+Что из этого следует:
+
+- архив на диске **совпал** с live DTI (`em5900` ↔ `uEm5900`);
+- EAP **не спорит** с `cEm5800Catch` — имён классов в нём и не бывает;
+- FluffyQuack `em.txt` (`http://fluffyquack.com/DD/txt/em.txt`):
+  `em5900 - Drake`, `em5800 - Dragon`, `em5500 - Evil eye`, `em8100 - ?`;
+- полный remap `BestiaryData.h` **не делать** из одного совпадения:
+  остальные bid→uEm в той же таблице тоже ручные. Identity Devilfire
+  закрыта (live DTI+gid, имя архива, FluffyQuack, charparam ниже).
+
+#### 8.5.2 Три словаря (не склеивать)
+
+| Словарь | Ключ | Что отвечает | Источник |
+|---|---|---|---|
+| TypeAtlas / `types.tsv` | `uEmXXXX` | имя C++ класса, size, gid | дамп exe |
+| Fluffy `resources/fluffy_em.txt` | `emXXXX.arc` | кто лежит **в файле на диске** | FluffyQuack |
+| `BESTIARY_UEM_MAP` | encyclopedia bid | человеческая наклейка | **ручная догадка, не identity** |
+
+Флаффи **не** подставлять в `BestiaryData.h` / `strcmp` / gid.
+Harpy: архив `em0600`, DTI `uEm0700`. Cyclops: архив `em5000`, DTI `uEm2000`.
+Гоблин/волк/Devilfire Drake (`em5900`↔`uEm5900`) совпали — исключение, не правило.
+Какой `.arc` открывать — Флаффи. Кто живой в памяти — DTI.
+
+#### 8.5.3 `em5900` charparam / motion (CATALOG 2026-08-26)
+
+`em5900.rst`: HP **80000** / KD 20000.
+`em5900_cmn.prp` (320 B `cCharParamEnemy`):
+
+```text
+ATK 1600  DEF 400  MATK 500  MDEF 230  weight 5000  fire 0.2  ice 1.5
+耐敵化 (res_possession) = 10000   // резист САМОГО дрейка, не байт на пешке
+```
+
+`em5900Dragon.prp` (188 B, hash `0x347379CF`):
+
+```text
+CMC掴み右手倍率     5.0     хват пешки
+CMC封印行うダメージ 5000    «печать» на CMC (кандидат inflict, не live-байт)
+башня / сердце / breath / hover / press / backjump
+カースドラゴン復活   1800 фреймов
+```
+
+`e5900_at.lmt`: 36/71 слотов, **129–130 костей**.
+`e5800_pl.lmt`: 4 слота, 71 кость, 8.37 / 4.03 / 2.37 / 3.03 с (player-interact).
+Имён событий LMT-дампер не читает. Слой C на `uCmc` по-прежнему UNVALIDATED.
+
+### 8.4 `uEm8000` / gid `0x61` — ОТКРЫТЫЙ КОНФЛИКТ
+
+- Бестиарий: `uEm8000` = The Dragon / Ur-Dragon, gid `0x61`.
+- WorldScan + CombatIntel: class name `uEm8000` = **harmless critter**.
+- Зайцы live носят gid `0x61`; настоящий заяц = `uEm8600`.
+
+Пока живой A/B не разведёт «лагерный uEm8000» и Григори, **нельзя**:
+маппить gid `0x61` → Dragon; писать Tempo/Director в `uEm8000`;
+считать `KindIsHarmless("uEm8000")` доказанным для финала Nightmare.
+
+---
+
+## 9. Aggro write contract (CONFIRMED)
+
+`DirectorFocusSet(slot, expectedBody, excluded, ALERT|ALARM, exactKind)`:
+
+- `exactKind` ∈ {`uEm0200`,`uEm0100`,`uEm0101`,`uEm0400`} иначе reject;
+- перед **каждой** записью карты: `ResolveMemberBody(slot) == expectedBody`;
+- mismatch → release, no-write;
+- occupied combat card на другом члене (`fC=2` волк / `fC=5` гоблин) — leave-engaged;
+- validate head → WrSafe → readback → rollback.
+
+Manual PIN остаётся research, `uEm0200` only, не включает product lease.
+
+---
+
+## 10. PartyCombatSnapshot (CONFIRMED read layer)
+
+`Runtime::ReadPartyCombatSnapshot` — единственный вход Director в партию.
+Поля записи CONFIRMED. `statusMask/statusValid` = 0/false до A/B Possession.
+`downedValid/downedRevivable` — только из `PartyStatus` FSM (84.16+), не из имени Act.
+`downedHint` — сырое имя, в скоринг не идёт.
+
+`ReadPartyCombatSnapshot` возвращает true при `recordCount > 0`.
+Записи save-layer живут на load screen и в Разломе.
+
+Occupied-exact (84.23) считается **по on-field слотам**:
+
+```text
+on-field = recordValid && bodyValid && unique body
+rifted   = recordValid && PartyRecordBodyClaimCount==0   // skip, как пустой Hired
+empty    = !recordValid                                   // skip Hired
+duplicate / Arisen without body                           // FAIL-CLOSED
+```
+
+Главная пешка в Разломе (таймер воскрешения / обрыв / камень не трогали)
+**не** роняет identity всей партии. Аризен без тела — по-прежнему авария.
+
+---
+
+## 11. Контракт памяти и fail-closed
+
+### 11.1 Что считается безопасным чтением
+
+`Runtime::Mem::Rd` / `WrSafe`: SEH `__try/memcpy`, **без** `IsBadReadPtr`
+(PAGE_GUARD side-effect, краш 19.08).
+`RegionOk`: `VirtualQuery`, не commited / `PAGE_GUARD|NOACCESS` / не целиком
+в одном регионе → false.
+`LooksHeap`: aligned, `≥0x01000000`, `<0x80000000`, не image, не page-round `<0x10000000`.
+`LooksLikeVtable`: vt в rdata, первые два слота в .text.
+DTI: vtable slot `B8 imm32 C3/C2` → DTI card `+4` = ASCII name.
+Кэш `vt → name` 4096 слотов (и отрицательный результат).
+
+Продуктовый тик: каждый модуль в своём `__try` (`UpdatePawnAI`).
+Naked Tempo-хуки **без** SEH: они только множат смещение, если `esi/edi`
+совпал с таблицей. Мусорный body в таблице = запись в чужой объект, не AV.
+
+### 11.2 Когда обязан вызываться `HardResetAllDirectorMobilization`
+
+Код сейчас зовёт его при:
+
+- `Director::Init` / `Shutdown` / `SetEnabled(false)` / `SetActuatorEnabled(false)`;
+- `ReleasePolicy(..., hardReset=true)`: identity/topology/species/readiness
+  failure, urgency NaN, empty responders, Aggro reject, stale-tactical unsafe;
+- `Tempo::Shutdown`, `SetEnabled(false)`, `SetAnimEnabled(false)`,
+  `SetAnimAttacksOnly(false)`;
+- `Tempo::OnWorldUnload` / `MonsterAI::OnWorldUnload` (84.22, переход
+  `inWorld→false`).
+
+Ordinary `decision-none` / `decision-bias` → **decay**, не hard-reset.
+Generic `SetOverride` (PawnHaste) hard-reset **не** чистит.
+
+### 11.3 ДЫРЫ fail-closed (P0 — не соответствуют заявленному «мгновенно»)
+
+**P0-1. World unload — CLOSED в 84.22.**
+
+На переходе `inWorld→false` (тот же тик, не 450 мс, не `s_enabled`):
+
+```text
+g_nAct = 0; memset(g_act)
+PublishWorld(empty, timestamp=0)
+Tempo::OnWorldUnload()          // g_tempoCount=0, drop anim, no WrSafe
+Aggro::DirectorFocusSet(-1)
+MonsterAI::OnWorldUnload()      // оркестратор, всегда; policy HARD-RESET
+PackObserve: ts=0 → PACK-GONE   // без debounce
+```
+
+`Tempo::OnWorldUnload` **не** зовёт `RefreshTable` и **не** пишет ряд
+анимации обратно: тел нет. `WrSafe` в dangling — подозреваемый краш
+загрузки. Лог: `WorldScan: FAIL-CLOSED world-unload`.
+
+`InWorld()` — save-layer (записи). Тела могут умереть раньше; это P0-3,
+не регресс P0-1. Beach-crash после зачистки лагеря барьер не закрывает.
+
+**P0-2. Кривой указатель ≠ мгновенный HardReset.**
+
+`Rd`/`WrSafe` глотают AV и возвращают false. `AdmitDirectorMobilization`
+проверяет `body != 0` и вид, **не** `RegionOk(body)` и не DTI-имя тела.
+Повторный Admit по stale ptr обновляет TTL envelope.
+`AnimTick` при нечитаемом ряде `continue` — envelope остаётся.
+
+Это fail-soft на чтении, не fail-closed на политике.
+
+**P0-3. Identity records переживают мир.**
+
+`ReadPartyCombatSnapshot` = true на одних записях. Без второго гейта
+`ExactPartyIdentity` (тело + Aggro exact) PackMark мог бы жить на load
+screen. Write-path закрыт. Advisory PackMark при `s_nView==0` сбрасывается.
+
+### 11.4 DTI-скан: контракт и промахи размеров
+
+`LooksLikeCreatureAt` (84.25): vtable + `+0x2D` readable + `+0x40` float +
+`KindIsLiveEnemyBody` — `uHumanEnemy` | `uEm`+цифры | `uEmNNNN_DD`
+(голова химеры). **Не** `uEmDragonBase`, `uEm*::*`, `uEm0100_3`,
+`uEm5000_1`. Поллинг: `VirtualQuery`, skip `PAGE_GUARD`, `__try` по slice.
+
+`DumpActorsFrom`: деталь не занимает слот `g_act[32]`, но `next/prev`
+(`+0x0C/+0x10`) всё равно идут в walk (ёмкость 96). Иначе Дрейк,
+достижимый только как сосед компоненты, теряется. `uPlayer`/`uCmc`/`uNpc`
+в списке остаются.
+
+`FindChildByClass(body, bodyBytes, name)`: шаг 4, `LooksHeap`, DTI exact.
+`bodyBytes` обязан быть **TypeAtlas size этого класса**, не «с запасом».
+
+Нарушения:
+
+| Зов | bytes | реальный size | Риск |
+|---|---:|---:|---|
+| `ResolvePawnPlanner` / `kPawnBodyBytes` | `0x58E0` (84.22) | `uCmc 0x58E0` | было 304 B за хвостом; закрыто |
+| `PawnInclinationsLive` | `0x58E0` | `uCmc 0x58E0` | OK |
+| `PartyStatus` discovery | `0x5A40` | 23056 / 22752 | 48–352 B за хвостом |
+| Aggro `kScanBytes=0x6800` | 26624 | волк 29888 / гоблин 29632 | OK (меньше тела) |
+
+Промах за хвостом ловится SEH/`LooksHeap`, но может подцепить чужой
+heap-объект как «ребёнка» (ложный `cAICtrl` / ложный `cStatus`).
+
+`PartyAdoptBody`: `LooksLikeVtable` + `NameOfLiveObject == expected DTI`
+перед записью в roster. Duplicate claim не прунится в unique (84.11).
+
+---
+
+## 12. Статусы партии и протокол Possession (Nightmare)
+
+### 12.0 Два слоя (не путать)
+
+```text
+ЗАПИСЬ  pBase+0xA7000 / +0x7F0+i*0x1660
+        лист персонажа: HP, стамина, STR/DEF, уровень, вокация.
+        Слой C — рабочий массив статусов здесь (§12.1.2).
+
+ТЕЛО    uPlayer / uCmc
+        актёр на сцене: XYZ, Act, анимация, AI. Выполняет команды.
+        Heap-детей cStatus нет. 84.33/84.34: cStatus INLINE @ +0x2698
+        — путь apply (слой E), не лист записи.
+```
+
+`FindChildByClass` видит только указатель на объект с именем. Маска /
+массив слотов на записи ему невидимы. 84.30: та же кнопка
+`snapshot to log` дампит hex ЗАПИСИ (`PS: REC`) и ТЕЛА (`PS: BODY`).
+
+### 12.1 Что подтверждено
+
+- `PartyStatus` — read-only. `cStatus` / `cEffectStatusManager` как
+  **heap-дети тела** не найдены (лог 24, Devilfire 84.25). 84.33:
+  `cStatus` inline `uCmc+0x2698`. statusMask не маппится.
+- Downed FSM (84.24/84.25): читается с тела, которое упало. Пешка
+  `CmcNeardeath|CmcDead|DmgDownDead|DmgCrumbleDead` → `RAISED` (обычный
+  акт) / `RIFTED` (`CmcReturn`). Нокдаун `DmgDown` ≠ succor.
+  `cPlReviveCMC` — акт Аризена `RAISE`, на пешке игнор. Аризен не
+  succor-жертва (`cPlActDead` ≠ `DOWNED`; DEAD снимает leftover
+  `downedNow`). `downedValid` — свежий (<5 с) neardeath/knockdown.
+  `downedRevivable` — только пешка после `RAISED`, и только пока снова
+  neardeath.
+- Vanilla: воскрешение **лечит** Possession (84.34: `cPlReviveCMC` →
+  пешка нормальная). Сюжет Nightmare **не** вешает apply на этот акт.
+  Latch на neardeath + BBI-вектор; Set — на стоячем теле после подъёма.
+- Live Devilfire Drake = **`uEm5900` / gid `0x5C` / `em5900.arc`** (§8.5).
+  Подпись «Drake» на `uEm8100` в `BestiaryData.h` — guess генератора.
+  Possess-класса у `cEm8100*` нет; хват = `cEm5800Catch`.
+- `cEmWightActPossesion` подчиняет Cursed Dragon (`uEm8300`), не `uCmc`.
+- `ListResist`: `17 Drenched`, `19 Possession` — другой индекс, другой слой.
+- `em_wet.esp` — shader UV, не статусный аккумулятор.
+
+### 12.1.1 CATALOG `*.statusparam` — слот 7 = Possession (CONFIRMED identity)
+
+`player.statusparam` и `enemy.statusparam`: 40 слотов, индекс = live status id.
+Полная таблица: `docs/generated/STATUS_PARAM.md`.
+
+```text
+slot 6 Drenched    timer=90    cat=260    p0=0.5   p1=2.0    player==enemy
+slot 7 Possession  timer=180   cat=6657   p0=0.2   p1=0.35   player==enemy
+```
+
+Почему это не догадка:
+
+1. **180 с = 3 мин** — вики Possession.
+2. Слот **пустой в читкоде баффов игрока** (`ListStatus[7]` был `"7: "`):
+   Аризен ванилью не одержим; дебилитация пешек. Подпись в коде теперь
+   `7: Possession (pawns)` — этикетка каталога, не live-доказательство.
+3. Слоты 6 и 7 **соседние** в том же массиве — якорь Drenched для диффа
+   тела остаётся валидным (H2: массив слотов, id=6 → id=7).
+4. `mParam0=0.2` согласуется с «мили-урон сильно урезан»; семантика
+   `mParam1=0.35` и `mCategory=0x1A01` — UNVALIDATED.
+
+Это **id и параметры ресурса**, не смещение байта на `uCmc`/`uEm8100`.
+Писать `statusparam` на диск / в charparam **нельзя** — нужен слой C.
+
+### 12.1.2 LIVE запись персонажа — рабочий массив статусов (CONFIRMED 84.30)
+
+Три снапшота 26.08.2026, `84.30-party-sheet`, лагерь. Контроль: Hired2 сухая
+во всех трёх. Мокрые: MainPawn + Hired1. Arisen сухой (изменения в его
+дампе `+0x121C…` = перекрытие `MainPawn+0x0A2C`, не свой статус).
+
+```text
+character record +0x0A29   u8     «сейчас в воде» (MainPawn 0→1→0; Hired1 не взводился)
+character record +0x0A2C   i32    число занятых слотов (0 / 1)
+character record +0x0A30   i32[40]  id статуса; пусто = -1 (0xFFFFFFFF)
+character record +0x0AD0   f32[40]  таймер, кадры 30 Hz  (90 с ≈ 2700)
+character record +0x0B70   f32[40]  param0
+character record +0x0C10   f32[40]  param1
+```
+
+Четыре параллельных массива, шаг 4, длина 40 = каталог. Индекс массива —
+свободный слот работы, **не** id статуса. Id лежит значением:
+
+```text
+сухо:  ids[0]=-1  timer=0     p0=0    p1=0    count=0
+мокро: ids[0]=6   timer=2669  p0=0.5  p1=2.0  count=1   // 6=Drenched
+сухо2: ids[0]=6   timer=659   p0=0.5  p1=2.0  count=1   // ещё тикает (~22 с)
+```
+
+Hired1 тот же слот, таймер 2281→270 (вошла в воду раньше). Hired2 — ни
+байта. `rStatusParam` общий на партию, к живому слоту не относится.
+
+2669/30 = 89.0 с. Каталог слота 6: timer=90, p0=0.5, p1=2.0. Совпало.
+
+**Possession — тот же массив, CONFIRMED 26.08.2026 (Devilfire, 84.30):**
+
+```text
+snap1 grab     act=cEm5800CatchDamagePL   count=0  ids[0]=-1
+snap2 possess  act=cPlActWpnBow           count=1  ids[0]=7  timer=5306.5  p0=0.2  p1=0.35
+snap3 clear    act=cPlActRun              count=0  ids[0]=-1  timer=0      p0=0    p1=0
+```
+
+5306.5/30 = 176.9 с. Каталог слота 7: timer=180, p0=0.2, p1=0.35.
+Аризен пуст (его `+0x1220` = перекрытие MainPawn `+0x0A30`).
+Граб сам статус не ставит — слот пуст, пока нет значка.
+
+Писать: validate → `count` / `ids[k]=7` / timer=5400 / p0=0.2 / p1=0.35 →
+readback → WATCH 2.5 с → rollback. Модуль `src/pawnai/Possession.cpp`
+пишет **только MainPawn**.
+
+**84.31 live (лагерь, 26.08.2026):** `applied id=7 t=5400 count=1`, затем
+`failed why=watch-engine-cleared` до 2.5 с. Значка / AI нет. Poke массива
+≠ apply. Движок читает слот и стирает неполный набор.
+
+**84.32 live (лагерь, вода, 26.08.2026):** 225× `BuffApply id=6`
+`body=MainPawn uCmc` `ctx=body+0x2698` `t=90 p0=0.5 p1=2.0` (каталог, секунды).
+Poke `id=7` в хук не заходил. Значок Мокрота живёт с таймером записи.
+Хук @ `0x008343E3`.
+
+**84.33 live:** `cStatus` inline @ `uCmc+0x2698` (CONFIRMED name).
+`BuffEnter ecx=cStatus+0x7C stk4=cStatus stk8=6`. Рецепт 84.33 не собрался
+(ждали id в edx). Apply не вызывался.
+
+**84.34 live (лагерь, 26.08.2026, `84.34-status-call` 20:25:17) — CONFIRMED apply:**
+
+```text
+recipe this=cStatus+0x7C arg0=cStatus arg1=id fn=0x8342f0
+vanilla-call id=7 status=0x10d08158 param=0x10d081d4
+BuffApply id=7 body=MainPawn uCmc t=180 p0=0.2 p1=0.35   // каталог 1:1, секунды
+FindId(rec,7) сразу = −1  count=1  why=vanilla-no-record // наш FSM, не ваниль
+тестер: лук по Аризену = Devilfire; бой ~3 мин; HP 505→0 / Аризен 498→237
+DOWNED cPlActDmgCrumbleDead → RIFTED cPlActCmcReturn +5578ms
+RAISE cPlReviveCMC → пешка нормальная (ванильный cure)
+```
+
+Конвенция thiscall **закрыта**. Вода — лагерный замок рецепта, не вектор.
+`vanilla-no-record`: чтение записи в том же кадре, что вызов; `count=1`
+скорее остаток Drenched (181× id=6 за сессию). Снапшота записи в этом
+логе нет — слой C в том же кадре не доказан; слой E + AI тестера — да.
+Poke-путь не вызывался.
+
+Revive **не** вешаем: ваниль этим лечит (этот лог).
+
+**84.35 live (лагерь, тестер, без воды) — OBSERVED apply без рецепта:**
+
+Layout thiscall, пешка атакует первой (= Devilfire). Первый заход сейва
+может задержать AI до удара — не баг (мир/тело). Повтор и apply после
+паузы (запрос висит до гейта) — сразу. Лога 84.35 в репо нет; поведение
+совпало с 84.34. Poke не зовём. Чужой status id этим не доказан.
+
+Замысел градуса скверны (sidecar, не сейв): `docs/NIGHTMARE.md`.
+
+**84.37:** на нашем thiscall, если `[possession] customParams=on`, mid-хук
+подменяет `xmm0/1/2` (timer/p0/p1) **только при esi=7 и s_inject**.
+Дрейк / чужой apply не трогаем. Каталог на диске не пишем. Live ещё нет:
+ждать `inject t=` в `BuffApply id=7` и SHEET p0/p1/таймер записи.
+
+### 12.2 Слои, которые нельзя путать
+
+```text
+A. res_* в cCharParamEnemy     порог накопления (Drenched @+0x68, Possession @+0x6C)
+B. rStatusParam / statusparam  ресурс длительности (секунды в BuffApply)
+C. live work-array на ЗАПИСИ   SoT §12.1.2; иконка живёт с этим таймером
+D. visual                      иконка, красные глаза, облако
+E. cStatus inline uCmc+0x2698  apply path (84.34 thiscall CONFIRMED)
+```
+
+dinput8 `HBuffMods` (upstream Cheats.cpp) — **не inflict**. Mid-сайт
+после загрузки каталога в xmm: `esi=id`, подмена `xmm0/1/2` =
+timer/p0/p1 из `buffModsValues[id]`, гейт `[body+0x3DEC]+8` ≥ 0.
+Наш хук 84.32 слушает тот же сайт. Писать xmm можно только когда
+игра уже вошла в apply; сами мы входим thiscall-ом (84.34).
+
+### 12.3 Протокол дифференциального поиска (UNVALIDATED)
+
+Цель: байт/поле live Possession. Источник ванили на Devilfire — тело
+`uEm5900` gid `0x5C` (§8.5), не каталожный `uEm8100`. Носитель статуса —
+**пешка `uCmc`** в окне значка / лука по Аризену.
+
+**Запрещено до закрытия протокола:** `WrSafe` в кандидата; копирование
+волчьих/гоблинских оффсетов; обход всего процесса (FIX_RULES §5.1);
+подмена `cPlAct*` / target (FIX_RULES §3).
+
+#### Фаза 0 — приборы
+
+1. Тег лога = текущий `MOD_BUILD_TAG` (`84.31-possession`).
+2. Director actuator **off**. Tempo на Devilfire-тело не admitted — не писать.
+3. `PartyStatus` + `snapshot to log` (84.30: hex ЗАПИСИ + ТЕЛА,
+   строки `PS: SHEET` / `PS: REC` / `PS: BODY`). Census только по кнопке
+   вне боя. Текущий снапшот больше не слеп к записи.
+4. Якорь источника: DTI + gid живого тела (§8.5), live Act ≠ Die.
+
+#### Фаза 1 — поймать Drenched на Дрейке
+
+Контроль шума (как торпор-охота):
+
+```text
+A0  дрейк стоит, сухой, не в атаке          DUMP body+дети (DTI names)
+A1  тот же покой, +2 с                      DUMP  (фильтр позы)
+B   наложить Drenched (вода / заклинание)   DUMP сразу, Act в лог
+C   Drenched спал                           DUMP
+```
+
+Искать поля, которые:
+
+- стабильны A0=A1;
+- меняются A→B;
+- возвращаются B→C (или таймер монотонно падает);
+- **не** похожи на XYZ/кватернион/аним-тайм (`+0x40..`, ряд `+0xEE4`);
+- **не** `res_drenched` float в charparam (слой A).
+
+Ожидаемые формы live Drenched (проверять в этом порядке):
+
+| Гипотеза | Сигнатура B | Следствие для Possession |
+|---|---|---|
+| H1 битовая маска | один байт/dword, бит N взводится | Possession = соседний бит той же маски |
+| H2 массив слотов | stride S, слот id=6 активен (таймер>0) | слот Possession = id±1 в том же массиве |
+| H3 `cStatWork` 32 B | новый объект + ptr в родителе | соседний слот массива работ |
+| H4 `StatusEffect` 20 B | фабрика внутри `uCharacterBase` | тот же контейнер, другой id |
+| H5 только визуал | в теле тишина, меняется shader/efl | live-бит на пешке, не на Дрейке |
+
+`ListStatus[6]=Drenched` + CATALOG §12.1.1 задают **H2 как первый ход**:
+слот 6 якорь, слот 7 — Possession. H1 (бит в общей маске) проверять
+рядом: если это bitfield, бит 7 соседствует с битом 6.
+
+Окно соседей после поимки якоря `offD`:
+
+```text
+байты:   offD-16 .. offD+16
+dwords:  offD-32 .. offD+32
+если найден массив: слоты [id-2 .. id+2], id(Drenched)=6
+```
+
+Не расширять окно, пока якорь не стабилен на двух независимых наложениях.
+
+#### Фаза 2 — наложить Possession, не теряя якорь Drenched
+
+Предпочтительно **то же тело Дрейка не нужно** для ванильного Possession
+(он *даёт* статус пешке). Два допустимых пути:
+
+**P-pawn (основной для сюжета):** A/B на `uCmc` Main Pawn.
+
+```text
+P0  пешка здорова                         DUMP uCmc + PartyStatus snapshot
+P1  Дрейк держит пешку (Grab)             DUMP; Act пешки + Дрейка
+P2  красные глаза / облако, бой vs Arisen DUMP
+P3  Panacea / Sobering / unconscious      DUMP
+```
+
+Дифф P0→P2, обратный P2→P3. Пересечение с окном соседей Drenched
+**по смещению относительно известного якоря**, не по абсолютному VA.
+
+Если Drenched-якорь найден на Дрейке в фазе 1 — **перенести смещение**
+на `uCmc` только после проверки, что тот же паттерн (маска/stride)
+читается на пешке в покое (все нули) и в P2 (бит/слот взведён).
+Тела разного размера (`uCmc 22752` vs `uEm8100 29280`): общий префикс
+`uCharacterBase` (12176 B) — единственная зона, куда законно переносить
+смещение без нового A/B.
+
+**P-forced (только если P-pawn недоступен):** искать на Дрейке поле,
+которое взводится на время grab-possess (не статус пешки, а «я наложил»).
+Это другой контракт; не называть его Possession byte.
+
+#### Фаза 3 — канонизация
+
+В `FIELD_MAP` + этот файл попадает только если:
+
+1. два независимых A/B;
+2. поле живёт ровно в окне эффекта;
+3. DTI-имя контейнера записано;
+4. readback после *ванильного* наложения совпал;
+5. WATCH 2–3 с: движок не затирает мгновенно.
+
+После этого — `statusMask` bit, учёт в `ScoreParty`
+(possessed pawn **исключается** из целей; ваниль: враги её игнорируют).
+Модуль `src/pawnai/Possession.{h,cpp}` (84.31) пишет слой C на MainPawn.
+write-WATCH (шаг 5) — живой тест этого зипа. F12 apply/clear + авто-clear
+на unload. Запись: validate → write → readback → WATCH → rollback.
+
+#### Фаза 4 — сюжетный триггер Nightmare (после байта)
+
+**Не** вешать Possession на `cPlReviveCMC`. Ваниль этим лечит; игрок оставит
+пешку лежать. Принудительный подъём = подмена `cPlAct*` / HP+FSM — запрещён
+(FIX_RULES §3).
+
+```text
+в бою + вектор + вход в Neardeath/Dead     → sidecar latch (игра не пишется)
+любой подъём (revive / inn / зона)         → latch жив, ещё не Set
+первый бой, пешка на ногах                 → Possession::Set (слой C)
+верность / нет вектора / !InWorld          → Set отказывает
+unload / actuator off                      → Clear
+```
+
+`PartyStatus` уже видит `DOWNED` / `REVIVE` / `RECOVERED`. Apply — на
+стоячем теле в бою, не на лежачем (иначе ванильный revive сотрёт статус).
+
+`src/Nightmare.cpp` сейчас: UI + сырой write погоды, тик выключен.
+Не строить заражение на weather poke.
+
+### 12.4 Почему Дрейк, а не пешка, как первый якорь Drenched
+
+Вода на Дрейке воспроизводима без Greatwall/Daimon. Один вид, один layout.
+Пешка нужна, чтобы **подтвердить перенос** смещения в `uCharacterBase`.
+Охота «сразу на пешке под Possession» смешивает grab-FSM, downed и статус —
+шум, который уже сжёг торпор-дифф (`ActDmgCollapse`).
+
+---
+
+## 13. Что не является подтверждённым
+
+- универсальный enemy current HP;
+- семантика `p0/p1` Possession (каталог 0.2/0.35 CONFIRMED на apply;
+  «мили режется / лук нет» — вики, не A/B);
+- синхрон слой C в том же кадре, что thiscall (84.34: FindId сразу −1);
+- семантика всех priority codes; physical hitbox из `AIPlActParam`;
+- generalized GOAP writes;
+- monster priority/planner bridge (Director — **не** planner);
+- безопасный emId-swap / LOT hook для Nightmare;
+- hour-offset вечной ночи;
+- флаг квеста Daimon-2;
+- тождество live `uEm8000` ≡ Григори;
+- перенос rage-профиля на любой вид без строки `SpeciesCard`.
+
+---
+
+## 14. Канонические артефакты
+
+- этот файл — единственный продуктовый контракт;
+- `FIELD_MAP.md` — компактные таблицы (сверять с §0 при расхождении);
+- `src/BuildTag.h` — номер сборки;
+- `src/CombatBus.h` — шина;
+- `src/monsterai/SpeciesCard.h` — допуск вида + rage ranges;
+- `src/monsterai/MonsterDirector.cpp` / `TacticalCues.cpp` — политика;
+- `src/runtime/MonsterTempo.cpp` — примитив;
+- `src/runtime/AggroWatch.cpp` — карты / pin / fakehit;
+- `src/runtime/MemProbe.cpp` — SEH/DTI;
+- `src/runtime/PartyRecon.cpp` — identity + snapshot;
+- `src/CharParamEnemy.Generated.h` — резисты (не live status);
+- `PLAYER_PAWN_WORK/generated/*` — pawn vertical slice;
+- `generated/TYPE_ATLAS.md` / `ActMap.Generated.h`;
+- `generated/STATUS_PARAM.md` — 40 слотов `*.statusparam`.
+
+Дневники охоты и старые контракты — `docs/archive/` (не удалять).
+`POSSESSION_RECON.md` ещё живой (протокол), канон слота — §12.
+
+---
+
+## 15. Nightmare Mode — архитектура на сейчас
+
+```text
+замысел: вектор BBI-лут → sidecar latch → приступы id=7 градусом
+         + ночь + кузены (не на revive)
+факт:    apply id=7 CONFIRMED (84.34 лог, 84.35 без воды)
+         Hooks::Nightmare() — UI, тик выключен
+         weather 0xB8780 — сырой указатель, не заражение
+         latch файла нет; кнопка F12 = отладка
+```
+
+Компас скверны: `docs/NIGHTMARE.md`. Канон:
+
+- состояние мода — **sidecar**, не `DDDA.sav`;
+- ванильный статус загрузку сейва не переживает — Set после load из latch;
+- thiscall передаёт **id**, не p0/p1; каталог при вызове не патчим;
+- id≠7 — UNVALIDATED (отдельный A/B);
+- **не** вешать Set на `cPlReviveCMC`;
+- вектор обязателен; верность = иммунитет; только Main Pawn;
+- stage двигает **наш** Clear (длина приступа), не CORE STR/DEF.
+
+Порядок:
+
+1. ~~P0-1~~ 84.22; ~~слой C + apply~~ 84.30–84.35;
+2. sidecar latch + детектор BBI-вектора (ещё нет);
+3. Set на стоячем теле после подъёма, Clear по stage;
+4. night/weather — `WrSafe` + `InWorld` + readback, не `GetBasePtr`;
+5. spawn-id CATALOG; нет кузена → vanilla + лог;
+6. PACK только если GPL отказывает типу.
+
+Не `.arc` swap. Не ярость Tempo на «заражённых». Заражение = статус +
+ванильный AI «бьёт Аризена».

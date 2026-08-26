@@ -1,0 +1,11 @@
+84.36-nightmare-arc
+Майлстоун кнопки id=7 + док скверны. Код apply = 84.35.
+
+Собрать: Release | Win32. Тег: 84.36-nightmare-arc.
+Поведение как 84.35: F12 Pawn AI Overhaul → arm writes → apply (не пауза).
+
+Нового теста не требует, если 84.35 уже зелёный.
+Лог по желанию: layout=1 recipe=0, BuffApply id=7.
+
+Скверна: docs/NIGHTMARE.md — ещё не код.
+Не вешать чужой status id. Не писать DDDA.sav.

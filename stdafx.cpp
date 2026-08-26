@@ -9,7 +9,7 @@ const std::vector<std::pair<int, LPCSTR>> Hooks::ListStatus =
 	{ 4, "4: " }, 
 	{ 5, "5: " },
 	{ 6, "6: Drenched" },
-	{ 7, "7: " },
+	{ 7, "7: Possession (pawns)" },  // statusparam slot7 timer=180s; player cheat gap
 	{ 8, "8: " },
 	{ 9, "9: " },
 	{ 10, "10: Caught Fire" },

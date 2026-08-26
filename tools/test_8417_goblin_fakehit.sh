@@ -28,7 +28,7 @@ TMP="$(mktemp -d /tmp/goblin_fakehit_8417.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.21-species-rage' "$TAG"
+grep -Fq '84.37-xmm-params' "$TAG"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.21-species-rage' "$README"
 [ -f "$DOC1" ] && [ -f "$DOC2" ]
@@ -68,7 +68,12 @@ assert 'PinFakehitCard(R, S, who, now, director)' in row
 
 # Goblin lease gets fakehit (including ALERT); suppress stays ALARM-only.
 assert 'const bool goblinLease = directorActive' in aggro
-assert '(directorAlarm || goblinLease)' in aggro
+assert '(directorAlarm || goblinLease || hobLease)' in aggro
+# 84.28: DirectorFocusSet admits hob; pin/wake/fakehit share goblin-family path.
+assert 'IsDirectorKind' in aggro and 'IsGoblinFamily' in aggro
+assert 'uEm0101' in aggro[aggro.index('static bool IsDirectorKind'):aggro.index('static bool IsGoblinFamily')]
+assert 'uEm0101' in aggro[aggro.index('static bool IsGoblinFamily'):aggro.index('static bool IsPinnableKind')]
+
 assert 'const bool activeSuppress = directorActive ? directorAlarm : s_pinSuppress;' in aggro
 
 # Occupy check: goblin combat mode is fC=5 with the low-byte flag.

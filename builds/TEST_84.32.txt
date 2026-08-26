@@ -1,0 +1,25 @@
+84.32-buff-hook
+Слух на ванильный apply. Функцию не вызываем. Без Дрейка.
+
+Собрать: Release | Win32. Первая строка лога: 84.32-buff-hook.
+В логе сразу: Possession: buff-hook armed
+(если missing — остановись, пришли лог).
+
+Где жать:
+  1. F12 → Pawn AI Overhaul v2.8 Modular
+     галка arm writes → кнопка apply
+     подождать 3 секунды
+     (снова будет стёрто — так и должно)
+  2. Зайди в воду лагеря ГЛАВНОЙ пешкой. Выйди.
+  3. Выйти из игры полностью. Прислать лог.
+
+Не жать snapshot. Не жать Type Atlas. Не ехать к Дрейку.
+Актуатор Director OFF.
+
+В логе ждать:
+  Possession: applied ... id=7
+  Possession: failed ... watch-engine-cleared
+  Possession: BuffApply id=6 ... kind=uCmc   ← вода, ваниль
+  (после apply строки BuffApply id=7 быть НЕ должно)
+
+Сказать: значок Мокрота на главной пешке — да/нет.

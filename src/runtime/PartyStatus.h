@@ -17,11 +17,12 @@
 //      uCharacterBase::StatusEffect, cEffectStatus) по телу НЕ ищутся:
 //      следующий билд расковыряет сам блок cStatus — 152 B = 38 указателей,
 //      это точечный обход, а не перебор.
-//   2. FSM downed/revive: neardeath -> cPlReviveCMC -> первый обычный act.
-//      Закрывает техдолг downedValid/downedRevivable (POSSESSION_RECON §4).
-//      Семантики не угадываются: downedValid — только на подтверждённом
-//      переходе FSM, downedRevivable — только если на этом теле наблюдалась
-//      полная последовательность воскрешения.
+//   2. FSM падения/подъёма ЧИТАЕТСЯ С ТЕЛА, КОТОРОЕ УПАЛО (84.24/84.25).
+//      CrumbleDead = neardeath. Arisen DEAD снимает leftover downed.
+//      Пешка: CmcNeardeath/CmcDead → RAISED (обычный акт) / RIFTED (CmcReturn).
+//      Нокдаун DmgDown → DmgStandUp — не succor. cPlReviveCMC на пешке
+//      игнорируется (это акт Аризена). Аризен: RAISE=cPlReviveCMC, не жертва.
+//      downedRevivable — только пешка, и только после RAISED с neardeath.
 //
 // ЗАПИСЕЙ НЕТ. Новых галок F12 нет. Лог (строки PS:) — основной интерфейс.
 // statusMask/statusValid снапшота остаются false: 84.16 ни одно поле блока
@@ -45,7 +46,8 @@ void Tick();
 // Дёшево: только кэшированное состояние FSM, без чтений памяти.
 void FillMemberStatus(uintptr_t body, int slot, PartyCombatMember& M);
 
-// Ручной дамп (snapshot to log): FSM + полные блоки найденных статусов.
+// Ручной дамп (snapshot to log): FSM + найденные cStatus + SHEET
+// (запись персонажа + тело, hex). Та же кнопка Director.
 void DumpSnapshot();
 
 // Строка статуса устройства (ASCII).

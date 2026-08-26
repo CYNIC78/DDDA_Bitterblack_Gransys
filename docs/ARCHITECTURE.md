@@ -41,7 +41,10 @@ Sensors / target candidates
 
 ### 3.1 Sensors и target selection
 
-Определяют, что существует вокруг и кто является текущей целью. Ресурсы `.sn2/.stg` разобраны, но точный live current-target главной пешки ещё не закреплён.
+Определяют, что существует вокруг и кто является текущей целью. Ресурсы `.sn2/.stg` разобраны.
+
+> **DEPRECATED (аудит 84.21):** «точный live current-target ещё не закреплён».
+> Канон: `uCmc+0x2EB8` CONFIRMED — [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) §4.
 
 ### 3.2 Priority — основной слой управления
 
@@ -164,13 +167,17 @@ Sanitary Cordon; с Build 55 Guardian/Nexus из-под кордона выве�
 
 ## 7. Граница текущей платформы (Build 47)
 
-Полностью доказано для priority resource главной пешки при main-pawn-only тестах. Не закрыто:
+> **DEPRECATED как актуальная граница (аудит 84.21).** Current target и
+> monster Director закрыты иначе, чем «не сделано». Канон пробелов:
+> [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) §13.
 
-- точный current target;
-- однозначная main-pawn association при нескольких planner/priority roots;
+Исторически (Build 47) не закрыто было:
+
+- точный current target; *(закрыто: `+0x2EB8`)*
+- однозначная main-pawn association при нескольких planner/priority roots; *(закрыто: record glue 84.11)*
 - семантическое имя каждого priority code;
 - generalized action-eligibility mutation;
 - GOAP patch framework;
-- аналогичный decision bridge для монстров.
+- аналогичный decision bridge для монстров. *(закрыто не planner-bridge, а Director+SpeciesCard)*
 
-Эти пробелы — следующий слой работы, а не повод обходить штатный AI прямым управлением `cPlAct*`.
+Эти пробелы — не повод обходить штатный AI прямым управлением `cPlAct*`.

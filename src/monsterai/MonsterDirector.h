@@ -62,6 +62,9 @@ struct HuntTelemetry {
 void Init();
 void Shutdown();
 void Tick();
+// Переход inWorld→false. Оркестратор зовёт всегда, даже если Director off
+// и IsInActiveGameplay ещё держит записи. Пишет только в sidecar/примитивы.
+void OnWorldUnload();
 
 bool Enabled();
 void SetEnabled(bool on);

@@ -2,7 +2,16 @@
 
 ## Текущий milestone
 
-**Build 84.18:** `card-recon` — универсальный card recon для любого вида (см. README).
+**Build 84.32:** `buff-hook` — слух на сайт `HBuffMods`. Poke 84.31
+движок стёр. Канон: `MOD_BUILD_TAG` = `84.32-buff-hook`,
+[`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §12.1.2.
+Ветки `work/player-main-pawn-recon` в remote нет (`main`).
+
+**Предыдущий:** Build 84.30 `party-sheet`. Build 84.29 `saurian-pack`.
+Build 84.25 `fullbody-scan`.
+
+**Предыдущий:** Build 84.24 `pawn-fsm`. Build 84.23 `on-field`.
+Build 84.22 `unload-barrier`. Build 84.21 `species-rage`.
 
 **Предыдущий milestone:** Build 84.16 `dual-observe` — GOBCARD + PS,
 read-only (лог 24: блок B goblin на волчьих оффсетах).
@@ -49,7 +58,7 @@ ddda_pawn_ai_profiles.ini generalized priority sidecar template
 | Документ | Роль |
 |---|---|
 | `docs/ARCHITECTURE.md` | слои платформы и правила проектирования |
-| `docs/ROADMAP.md` | актуальный порядок работы после Build 47 |
+| `docs/SOURCE_OF_TRUTH.md` | единственный runtime-контракт (84.23) |
 | `docs/SOURCE_OF_TRUTH.md` | подтверждённые runtime-контракты |
 | `docs/FIELD_MAP.md` | компактная карта offsets |
 | `docs/ASSET_FORMATS.md` | форматы XFS/AI resources |
@@ -106,4 +115,4 @@ python3 tools/xfs_tree_dump.py <resource>
 4. GOAP patch framework только для доказанных дыр;
 5. перенос метода на monster decision layer.
 
-Подробно: `docs/ROADMAP.md`.
+Пробелы: `docs/SOURCE_OF_TRUTH.md` §13. Архив планов: `docs/archive/`.

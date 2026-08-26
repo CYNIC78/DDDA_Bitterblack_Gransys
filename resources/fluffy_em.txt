@@ -1,0 +1,65 @@
+# FluffyQuack em.txt — словарь ИМЁН АРХИВОВ на диске (nativePC/rom/enemy/emXXXX.arc).
+# Источник: http://fluffyquack.com/DD/txt/em.txt  (снимок 2026-08-26)
+#
+# ЭТО НЕ TypeAtlas и НЕ runtime DTI.
+#   emXXXX.arc  = файл на диске
+#   uEmXXXX     = имя C++ класса в exe (types.tsv / TypeAtlas)
+# Номера часто РАСХОДЯТСЯ (Harpy: архив em0600, DTI uEm0700).
+# Склеивать можно только после живого DTI или листинга конкретного .arc.
+# Знаки '?' у Флаффи — он сам не знает. Не заполнять догадкой.
+#
+# Боевой код ключует по DTI-строке (uEm0100 / uEm5900), не по этой таблице.
+
+em0100 - Goblin
+em0102 - Grim Goblin
+em0103 - Goblin Shaman
+em0200 - Wolf
+em0201 - Direwolf
+em0203 - Warg
+em0300 - Skeleton
+em0400 - Saurian
+em0401 - Sulfur saurian
+em0500 - Undead
+em0600 - Harpy
+em0601 - Snow harpy
+em0602 - Succubus
+em0603 - Gargoyle
+em0605 - Siren
+em0700 - Phantom
+em0701 - Phantasm
+em0702 - Specter
+em0800 - Unknown or unused or skeleton knight
+em0900 - Ogre
+em1000 - Bandit
+em1200 - Scarecrow?
+em2002 - Skeleton lord?
+em2004 - Skeleton brute?
+em2101 - Skeleton sorcerer?
+em5000 - Cyclops
+em5001 - Gorecyclops
+em5100 - Golem
+em5101 - Metal golem
+em5101_00 - Metal golem disc?
+em5200 - Chimera
+em5201 - Gorechimera
+em5300 - Hydra
+em5301 - Archydra
+em5400 - Griffin
+em5401 - Cockatrice
+em5500 - Evil eye
+em5501 - Vile eye
+em5700 - Wight
+em5800 - Dragon
+em5802 - Variant of main dragon villain
+em5900 - Drake
+em5901 - Wyrm
+em5902 - Wyvern
+em6000 - Wight
+em6001 - Lich
+em7000 - Daimon
+em8100 - ?
+em8200 - ?
+em8300 - ?
+em8501 - ?
+em8900 - ?
+em9807 - ?

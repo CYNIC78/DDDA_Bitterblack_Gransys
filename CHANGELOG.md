@@ -23,6 +23,62 @@
 
 ## Текущий milestone
 
+**Build 84.37** — `xmm-params`. На нашем Set id=7 можно подменить
+xmm timer/p0/p1 (как HBuffMods). Гейт: только наш thiscall, id=7.
+`customParams = off` → каталог 180/0.2/0.35. Не Drake. Не сейв.
+
+**Build 84.36** — `nightmare-arc`. Кнопка id=7 остаётся отладкой.
+Замысел скверны: sidecar + градус приступа (`docs/NIGHTMARE.md`).
+Чужой status id и p0/p1 как «урон/защита» — не канон. Код apply = 84.35.
+
+**Build 84.35** — `layout-call`. Apply без воды. Тестер: пешка атакует
+первой. Первый заход сейва может задержать AI — не баг.
+
+**Build 84.34** — `status-call`. Live: `BuffApply id=7 t=180 p0=0.2 p1=0.35`
++ лук по Аризену = Devilfire. FindId в том же кадре = −1. Revive лечит.
+
+**Build 84.33** — `buff-call`. Пролог найден (`0x8342f0`). Рецепт не
+собрался: id во втором стековом аргументе.
+
+**Build 84.32** — `buff-hook`. Слушаем сайт `HBuffMods` (ванильный apply).
+Poke 84.31: байты легли, движок стёр, значка нет. Функцию не вызываем.
+
+**Build 84.31** — `possession`. Primitive слоя C: `ids[k]=7` на записи
+главной пешки, WATCH 2.5 с, откат на выгрузке. F12 apply/clear. Revive
+не вешаем. Live: engine-cleared.
+
+**Build 84.30** — `party-sheet`. Та же кнопка `snapshot to log` дампит
+запись персонажа (`PS: REC`) и тело (`PS: BODY`). Статы партии уже на
+записи; живой статус искали среди детей тела — не там.
+
+**Build 84.29** — `saurian-pack`. `uEm0400` PackMark по HP, без граба.
+
+**Build 84.28** — `hob-focus`. `DirectorFocusSet` пускает `uEm0101`. Карты хоба —
+гоблинское семейство (`2FA0/28C`, live 84.26). PackMark на слабейшего пишет.
+
+**Build 84.26** — `hob-pack`. SpeciesCard `uEm0101` + `HOB-GRAB-ALERT` + PackMark.
+Агро-дверь ещё не пускала вид (закрыто 84.28).
+
+**Build 84.25** — `fullbody-scan`. Сканер больше не принимает деталь за врага.
+Devilfire Drake live = `uEm5900` (не каталожный `uEm8100`).
+`KindIsLiveEnemyBody` + walk next/prev без слота. FSM: пешка
+`CrumbleDead` = DOWNED; Аризен DEAD снимает leftover downed.
+
+**Build 84.24** — `pawn-fsm`. Падение/подъём пешки с её тела
+(`DOWNED`/`RAISED`/`RIFTED`). `cPlReviveCMC` = RAISE Аризена.
+
+**Build 84.23** — `on-field`. Пешка в Разломе (тело пропало, запись жива) —
+vacant-слот, не авария identity. PackMark и write считают только тех, кто
+на поле. Скан партии после 3 промахов перестаёт искать `uCmc` у rifted-записей.
+
+**Build 84.22** — `unload-barrier`. P0-1 закрыт: на `inWorld→false` в том же
+тике гасятся акторы, WorldReport (`ts=0`), Tempo-хуки (без записи в мёртвые
+тела), Aggro focus и sidecar Director/PackObserve. Лог в RAM до выхода
+(`LogMem`). Канон: [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §11.3.
+
+**Build 84.21** — `species-rage`. Rage-профили (loco/anim min-max на std-rush)
+переехали в `SpeciesCard`. Волк `1.20–1.25 / 1.20–1.26`; гоблин `1.21–1.24 / 1.32–1.40`.
+
 **Build 84.18** — `card-recon`. GOBCARD универсализирован (любой вид, ростер находит сам, refmatch к волчьему референсу).
 
 ## Предыдущий milestone

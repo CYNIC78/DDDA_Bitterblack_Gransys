@@ -126,6 +126,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <!-- Наши модули -->
     <ClCompile Include="src\dinput8.cpp" />
     <ClCompile Include="src\runtime\Runtime.cpp" />
+    <ClCompile Include="src\runtime\LogMem.cpp" />
     <ClCompile Include="src\runtime\MemProbe.cpp" />
     <ClCompile Include="src\runtime\AggroWatch.cpp" />
     <ClCompile Include="src\runtime\MonsterTempo.cpp" />
@@ -157,6 +158,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\pawnai\VocationCordon.cpp" />
     <ClCompile Include="src\pawnai\DashWatch.cpp" />
     <ClCompile Include="src\pawnai\WandRange.cpp" />
+    <ClCompile Include="src\pawnai\Possession.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -207,6 +209,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\VocationCordon.h" />
     <ClInclude Include="src\pawnai\DashWatch.h" />
     <ClInclude Include="src\pawnai\WandRange.h" />
+    <ClInclude Include="src\pawnai\Possession.h" />
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\devtools\generated\GoapInterfaceMap.inl" />
     <ClInclude Include="src\devtools\generated\PawnPrioritySemantics.inl" />
@@ -217,6 +220,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\EnemyTuner.h" />
     <ClInclude Include="src\DefaultEntitiesIni.h" />
     <ClInclude Include="src\ModPaths.h" />
+    <ClInclude Include="src\runtime\LogMem.h" />
     <ClInclude Include="src\runtime\Runtime.h" />
     <ClInclude Include="src\runtime\MemProbe.h" />
     <ClInclude Include="src\runtime\AggroWatch.h" />

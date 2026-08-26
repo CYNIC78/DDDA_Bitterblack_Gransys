@@ -1,0 +1,15 @@
+84.29-saurian-pack
+Саурианы (обычные, uEm0400): стая бьёт слабейшего по HP. Граба нет.
+
+Что делать:
+1. Собрать builds/DDDA_AI_Overhaul_84.29-saurian-pack.zip как 84.28.
+2. Та же группа ящеров. Никуда не ехать.
+3. F12 → Enemy AI Overhaul → Monster director → актуатор ON.
+4. Бой. Выйти. Прислать лог.
+
+Ожидать:
+- build 84.29-saurian-pack
+- Tempo: species uEm0400 ACCEPTED
+- MD: ... saurs=N
+- Aggro: DIRECTOR ALARM ... kind=uEm0400  когда у кого-то HP заметно ниже
+- shutdown directorWrites>0

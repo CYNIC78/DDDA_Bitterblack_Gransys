@@ -63,11 +63,14 @@ static void TestSpeciesCards()
     const SpeciesCard* gob = FindSpeciesCard("uEm0100");
     assert(wolf && wolf->observe && wolf->tempoRage && wolf->aggroWrite);
     assert(wolf->bodySize == 29888u);
-    assert(gob && gob->observe && !gob->tempoRage && gob->aggroWrite);
+    assert(gob && gob->observe && gob->tempoRage && gob->aggroWrite);
     assert(gob->bodySize == 29632u);
+    const SpeciesCard* hob = FindSpeciesCard("uEm0101");
+    assert(hob && hob->observe && hob->tempoRage && hob->aggroWrite);
+    assert(hob->bodySize == 29632u);
     assert(!SpeciesIsObserveOnly(gob));
     assert(!SpeciesIsObserveOnly(wolf));
-    assert(!FindSpeciesCard("uEm0101"));
+    assert(FindSpeciesCard("uEm0101"));
     assert(!FindSpeciesCard("uEm0100_0"));
     assert(!FindSpeciesCard("uEm0100_2"));
     assert(SpeciesExactKind("uEm0100", "uEm0100"));
@@ -104,7 +107,7 @@ static void TestRabbleTrio()
     assert(PackObserveCount() == 3);
     assert(PackObserveComposition() == PACK_RABBLE);
     const std::string log = Slurp();
-    Need(log, "ADMIT species=uEm0100 size=29632 observe=1 tempoRage=0 aggroWrite=1");
+    Need(log, "ADMIT species=uEm0100 size=29632 observe=1 tempoRage=1 aggroWrite=1");
     Need(log, "PACK n=3 composition=rabble");
     Need(log, "JOIN @0x1001");
 }

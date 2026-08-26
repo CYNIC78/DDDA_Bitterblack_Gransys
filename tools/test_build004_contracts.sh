@@ -19,10 +19,42 @@ pawnai = (root / 'src/PawnAI.cpp').read_text(encoding='utf-8')
 goap = (root / 'src/devtools/GoapProbe.cpp').read_text(encoding='utf-8')
 tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 readme = (root / 'README.md').read_text(encoding='utf-8')
-doc = (root / 'docs/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
+doc = (root / 'docs/archive/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
 dinput = (root / 'src/dinput8.cpp').read_text(encoding='utf-8')
 
-assert '84.21-species-rage' in tag
+assert '84.37-xmm-params' in tag
+worldscan = (root / 'src/runtime/WorldScan.cpp').read_text(encoding='utf-8')
+assert 'KindIsLiveEnemyBody(nm)' in worldscan
+assert 'KindIsLiveEnemyBody(kind)' in worldscan
+assert 'walk[96]' in worldscan
+assert '!KindIsLiveEnemyBody(kind)' in worldscan
+assert 'inline bool KindIsLiveEnemyBody' in runtime_internal
+assert 'uEmDragonBase' in runtime_internal
+party_status = (root / 'src/runtime/PartyStatus.cpp').read_text(encoding='utf-8')
+assert 'cPlActDmgCrumbleDead' in party_status
+assert 'if (T.downedNow) ClearDowned(T);' in party_status
+assert 'DumpPartySheets' in party_status
+assert 'PS: ===== party SHEET' in party_status
+assert 'PS: REC %s' in party_status
+assert 'PS: BODY %s' in party_status
+assert '0x978' in party_status
+# Predicate in the header and the offline fixture must stay byte-identical.
+import re
+def grab_kind_fn(text):
+    m = re.search(
+        r'inline bool KindIsLiveEnemyBody\(const char\* n\)\s*\{.*?\n\}',
+        text, re.S)
+    assert m, 'KindIsLiveEnemyBody missing'
+    return ' '.join(m.group(0).split())
+kind_src = grab_kind_fn(runtime_internal)
+kind_tst = grab_kind_fn(
+    (root / 'tools/tcomp/kind_live_body_test.cpp').read_text(encoding='utf-8'))
+assert kind_src == kind_tst
+# 84.22 LogMem: product logFile is ostream. A leftover ofstream extern
+# is C2371 under MSVC (EntityConfig/EnemyTuner in the first 84.23 pack).
+for p in (root / 'src').rglob('*.cpp'):
+    text = p.read_text(encoding='utf-8', errors='replace')
+    assert 'extern std::ofstream logFile' not in text, p
 assert '84.9-pilot012-urgency-mobilization' in readme
 assert '84.10-goblin-pack-observe' in readme
 assert '84.11-arisen-record-glue' in readme
@@ -32,6 +64,7 @@ assert '84.14-goblin-grab-pin' in readme
 assert '84.15-goblin-grab-hold' in readme
 assert '84.16-dual-observe' in readme
 assert '84.21-species-rage' in readme
+assert '84.23-on-field' in readme
 assert 'Build 012' in doc
 
 # Build 004 HP-only ranking/hold/axes stay intact.
@@ -92,7 +125,14 @@ assert 'P.playerRecordRef' in party
 assert 'if (!PartyIsRecordBackedArisen(g_party[i])) continue;' in party
 assert 'unresolved: no player-record-pointer' in party
 assert 'skipEmptyHired' in director
+assert 'skipRifted' in director
+assert '-absent' in director
 assert 'identity-occupied-exact' in director
+assert 'PartyRecordBodyClaimCount' in party
+assert 'treating missing as rifted' in party
+assert 'if (n < 0) n = 0;' in party
+assert 'h = HashAdd(h, (uint64_t)((m.bodyValid && m.body) ? 1 : 0));' in director
+assert 'pawn >= 0 && (g_pawnPosWasOk' in party
 assert 'if (duplicateFixedClaim) return;' in party
 assert 'kPartyExactSlots     = 4' in runtime_internal
 assert 'g_partyChosen[kPartyExactSlots]' in runtime_internal
@@ -117,6 +157,7 @@ assert 'MEMBER_MAIN + recordIdx' in aggro
 assert 'ResolveMemberBodyStatus' in aggro
 for slot in ('Arisen', 'MainPawn', 'Hired1', 'Hired2'):
     assert f'identity-{slot}-body-unresolved-or-duplicate' in aggro
+    assert f'identity-{slot}-absent' in aggro
 assert 'fixed-slot identity availability' in aggro
 assert 'DirectorIdentityExactNow()' in aggro
 assert 'if (director && !DirectorIdentityExactNow())' in aggro
@@ -126,6 +167,8 @@ assert 'not live 1/4 or 1/2' in aggro
 assert 'if (mode == 2)' in aggro
 assert 'CombatOccupiesOther' in aggro
 assert 'leave-engaged' in aggro
+assert 'IsDirectorKind' in aggro
+assert 'uEm0101' in aggro[aggro.index('static bool IsDirectorKind'):aggro.index('static bool IsGoblinFamily')]
 assert '  left ' in aggro
 assert 'if (director && CombatOccupiesOther' in aggro
 assert 's_pinMember = MEMBER_NONE;' in aggro
@@ -176,3 +219,7 @@ assert 'enabled = off' in a and 'wolfActuator = off' in a
 
 print('Build 004-008 contracts retained in Build 012: PASS (exact slots; HP observer; mobilization cleanup)')
 PY
+g++ -std=c++11 -Wall -Wextra -Werror \
+  "$ROOT/tools/tcomp/kind_live_body_test.cpp" \
+  -o /tmp/kind_live_body_test
+/tmp/kind_live_body_test

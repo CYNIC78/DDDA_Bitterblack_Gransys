@@ -17,7 +17,7 @@ static const int    kMaxMembers     = 16;
 static const DWORD  kTickMs         = 150;
 static const DWORD  kWorldFreshMs   = 450;
 static const DWORD  kEscapeWindowMs = 2000;
-static const DWORD  kHeartbeatMs    = 15000;
+// HEARTBEAT removed: JOIN/LEAVE/HORN/CHARGE/PACK only.
 static const int    kEmptyDebounce  = 4;
 static const int    kRabbleMax      = 4;
 static const int    kFallEscapes    = 2;
@@ -67,7 +67,7 @@ static bool     s_fallConfirmed = false;
 static bool     s_scaleHintLogged = false;
 static int      s_emptyTicks = 0;
 static DWORD    s_lastTick = 0;
-static DWORD    s_lastHeartbeat = 0;
+
 static char     s_status[240] = "PackObserve: idle (exact uEm0100, read-only)";
 static bool     s_skipLogged[8] = {};
 static char     s_skipKind[8][16] = {};
@@ -499,7 +499,6 @@ void PackObserveInit()
     memset(s_skipLogged, 0, sizeof(s_skipLogged));
     memset(s_skipKind, 0, sizeof(s_skipKind));
     s_lastTick = 0;
-    s_lastHeartbeat = 0;
     lstrcpynA(s_status,
               "PackObserve: idle (exact uEm0100, read-only)",
               sizeof(s_status));
@@ -519,6 +518,14 @@ void PackObserveShutdown()
 void PackObserveIngest(const WorldReport& world, uint32_t nowMs)
 {
     if (!s_armed) return;
+
+    // ts=0 — канонический «мира нет» (84.22). Не ждать debounce 4 тика:
+    // иначе прибор жуёт LastWorld ещё ~600 мс после выгрузки.
+    if (!world.timestampMs) {
+        if (s_live > 0) ResetEncounter("world-unload");
+        UpdateStatus();
+        return;
+    }
 
     const bool fresh = world.timestampMs != 0
                     && nowMs >= world.timestampMs
@@ -607,17 +614,6 @@ void PackObserveIngest(const WorldReport& world, uint32_t nowMs)
         && s_leaderCand != 0)
         LogPackChange("PACK");
 
-    if (!s_lastHeartbeat || nowMs - s_lastHeartbeat >= kHeartbeatMs) {
-        int shield = 0, caller = 0, flee = 0;
-        CountRoles(&shield, &caller, &flee);
-        logFile << "PackObserve: HEARTBEAT n=" << s_live
-                << " " << PackCompositionName(s_composition)
-                << " leader=" << s_leaderReason
-                << " shield=" << shield
-                << " caller=" << caller
-                << " flee=" << flee << std::endl;
-        s_lastHeartbeat = nowMs;
-    }
     UpdateStatus();
 }
 

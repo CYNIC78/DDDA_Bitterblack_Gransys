@@ -516,8 +516,10 @@ static int            s_nSpecies = 0;
 static bool SpeciesAllowed(const char* kind, uintptr_t body)
 {
     if (!kind || !kind[0]) return false;
+    if (!KindIsLiveEnemyBody(kind)) return false;
     for (int i = 0; i < s_nSpecies; ++i)
         if (!strcmp(s_species[i].kind, kind)) return s_species[i].allowed;
+    if (s_nSpecies >= 24) return false;
 
     bool ok = true;
     const char* why = "ok";
@@ -1649,6 +1651,21 @@ void HardResetAllDirectorMobilization()
 {
     memset(g_directorMob, 0, sizeof(g_directorMob));
     g_nDirectorMob = 0;
+}
+
+void OnWorldUnload()
+{
+    // Порядок важен: сначала счётчик хуков. Naked HMove* читают g_tempoCount
+    // без SEH; ноль = no-op в этом же кадре, без записи в освобождённые тела.
+    g_tempoCount = 0;
+    g_tempoEnemyEnd = (uintptr_t)&g_tempoTable[0];
+    HardResetAllDirectorMobilization();
+    // Ряд анимации НЕ возвращаем движку: тел уже нет. WrSafe сюда = запись
+    // в чужой heap на load screen (подозрение на краш загрузки).
+    g_animCount = 0;
+    memset(g_animTrack, 0, sizeof(g_animTrack));
+    // Override'ы (PawnHaste) держат те же мёртвые указатели.
+    ClearAllOverrides();
 }
 
 int DirectorMobilizationCount() { return g_nDirectorMob; }

@@ -26,7 +26,6 @@ typedef HRESULT(WINAPI *tDirectInput8Create)(HINSTANCE, DWORD, const IID&, LPVOI
 tDirectInput8Create oDirectInput8Create = nullptr;
 
 BYTE *codeBase, *codeEnd, *dataBase, *dataEnd;
-std::ofstream logFile("ddda_ai_overhaul.log", std::ios_base::out);
 iniConfig config(".\\ddda_ai_overhaul.ini");
 BYTE **pBase = nullptr, **pWorld = nullptr;
 
@@ -97,8 +96,10 @@ void Initialize()
     // Одна итерация была потеряна на том, что тестировалась старая DLL,
     // а понять это удалось только по формату строк. Больше не повторяем:
     // BUILD_TAG правится при каждой сборке, __DATE__/__TIME__ — автоматом.
+    LogMem::Init();
     logFile << "DDDA AI Overhaul - Initializing...  build " << MOD_BUILD_TAG
-            << "  (compiled " << __DATE__ << " " << __TIME__ << ")" << std::endl;
+            << "  (compiled " << __DATE__ << " " << __TIME__ << ")"
+            << "  log=RAM-until-exit" << std::endl;
     logFile << "MH_Initialize: " << MH_StatusToString(MH_Initialize()) << std::endl;
 
     InitHooks();
@@ -146,7 +147,7 @@ void Unitialize()
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;
     logFile << "MH_DisableHook: " << MH_StatusToString(MH_DisableHook(MH_ALL_HOOKS)) << std::endl;
     logFile << "MH_Uninitialize: " << MH_StatusToString(MH_Uninitialize()) << std::endl;
-    if (logFile) logFile.close();
+    LogMem::FlushToDisk();
 }
 
 // --- Hooks namespace helpers ---

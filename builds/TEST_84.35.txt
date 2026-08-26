@@ -1,0 +1,23 @@
+84.35-layout-call
+Apply без воды. thiscall cStatus+0x7C / cStatus / id=7.
+
+Собрать: Release | Win32. Тег: 84.35-layout-call.
+В логе: layout thiscall  и  buff-hook armed (layout apply id=7)
+
+Лагерь. Актуатор OFF. Пешку в воду НЕ бросать.
+
+1. F12 → Pawn AI Overhaul v2.8 Modular → arm writes
+   Панель: layout ready
+2. Не в паузе — apply
+3. Смотреть: значок одержимости, глаза, бьёт ли из лука
+   Панель: status id=7 (не 6)
+4. F12 → Enemy AI Overhaul → Monster director → snapshot to log  (один раз)
+5. clear. Выйти из игры полностью. Лог.
+
+В логе ждать:
+  vanilla-call id=7 layout=1 recipe=0
+  BuffApply id=7 t=180 p0=0.2 p1=0.35
+  applied … vanilla-applied PENDING  или  WATCH
+  record-landed  и/или  watch-ok
+
+Не ждать need-water-recipe. К Дрейку не идти. F9 не жать.

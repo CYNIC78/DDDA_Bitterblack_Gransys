@@ -1,0 +1,31 @@
+84.24-pawn-fsm — сборка + Дрейк (только наблюдение)
+
+Сборка: Release|Win32 → dinput8.dll в папку с DDDA.exe.
+Первая строка лога после выхода: 84.24-pawn-fsm
+F9 не трогать (сейв). Nightmare enabled=0. wolfActuator=off.
+
+Это НЕ наложение Possession. Модуля нет. Ванильный Дрейк может
+одерживать пешку сам — мы только читаем.
+
+--- Дрейк (Greatwall), слот 7 ещё UNVALIDATED ---
+
+1. До боя: F12 → snapshot to log.
+2. Дрейк хватает пешку (не вас).
+3. Красные глаза / бьёт вас: сразу snapshot.
+4. Сняли (Panacea / пешка без сознания / бой кончился): snapshot.
+5. Выйти из игры (лог на диск). Прислать КУСОК:
+   - первая строка (тег)
+   - PS: вокруг DOWNED / RAISED / RIFTED / RAISE / DEAD
+   - три snapshot
+   не весь файл.
+
+Ожидаемые PS-строки 84.24:
+  пешка лежит HP=0     PS: MainPawn DOWNED act=cPlActCmcNeardeath
+  вы подняли           PS: MainPawn RAISED ...
+                       PS: Arisen RAISE act=cPlReviveCMC
+  в Разлом             PS: MainPawn RIFTED act=cPlActCmcReturn
+Не должно быть:        PS: Arisen DOWNED
+                       REVIVE на пешке
+                       no revive observed
+
+Director status/downed=ignored. Occupancy 84.23 не трогали.

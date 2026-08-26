@@ -25,6 +25,7 @@ static bool g_tempoReady = true;
 static const char* g_tempoReason = "ready";
 static uintptr_t g_identityBody[4] = {};
 static bool      g_identityRecordMissing[4] = {};
+static bool      g_identityDuplicate[4] = {};
 static bool g_observerDemand = false;
 static int g_focusMember = -1;
 static uintptr_t g_focusBody = 0;
@@ -81,7 +82,8 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
 {
     if (receipt) memset(receipt, 0, sizeof(*receipt));
     if (!body || !exactKind
-        || (strcmp(exactKind, "uEm0200") && strcmp(exactKind, "uEm0100"))
+        || (strcmp(exactKind, "uEm0200") && strcmp(exactKind, "uEm0100")
+            && strcmp(exactKind, "uEm0101") && strcmp(exactKind, "uEm0400"))
         || body == g_overrideFailBody) {
         if (reasonOut) *reasonOut = "director-mobilization-table-full";
         return false;
@@ -125,6 +127,8 @@ void HardResetDirectorMobilization(uintptr_t body)
     g_decaying.erase(body);
     g_cleared.push_back(body);
 }
+
+void OnWorldUnload() {}
 
 void HardResetAllDirectorMobilization()
 {
@@ -173,13 +177,26 @@ const char* ResolveMemberBodyStatus(int member, uintptr_t* out)
         "identity-Hired1-body-unresolved-or-duplicate",
         "identity-Hired2-body-unresolved-or-duplicate"
     };
+    static const char* absent[4] = {
+        "identity-Arisen-absent", "identity-MainPawn-absent",
+        "identity-Hired1-absent", "identity-Hired2-absent"
+    };
     if (member < 0 || member >= 4) return "identity-invalid-slot";
     if (g_identityRecordMissing[member]) {
         if (out) *out = 0;
         return missingRec[member];
     }
-    const bool ok = ResolveMemberBody(member, out);
-    return ok ? exact[member] : missing[member];
+    if (g_identityDuplicate[member]) {
+        if (out) *out = 0;
+        return missing[member];
+    }
+    if (!g_identityBody[member]) {
+        if (out) *out = 0;
+        // Аризен в рифт не уходит: ноль тел = дыра, не vacant.
+        return member == 0 ? missing[member] : absent[member];
+    }
+    if (out) *out = g_identityBody[member];
+    return exact[member];
 }
 
 bool DirectorFocusSet(int member, uintptr_t expectedBody,
@@ -199,7 +216,9 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
         || (response != DIRECTOR_RESPONSE_ALERT
             && response != DIRECTOR_RESPONSE_ALARM)
         || !exactKind || (strcmp(exactKind, "uEm0200") != 0
-                          && strcmp(exactKind, "uEm0100") != 0))
+                          && strcmp(exactKind, "uEm0100") != 0
+                          && strcmp(exactKind, "uEm0101") != 0
+                          && strcmp(exactKind, "uEm0400") != 0))
         return false;
     g_focusMember = member;
     g_focusBody = expectedBody;
@@ -288,6 +307,8 @@ static void FreshDirector()
     Shutdown();
     memset(&g_snapshot, 0, sizeof(g_snapshot));
     memset(g_identityBody, 0, sizeof(g_identityBody));
+    memset(g_identityRecordMissing, 0, sizeof(g_identityRecordMissing));
+    memset(g_identityDuplicate, 0, sizeof(g_identityDuplicate));
     g_snapshot.recordCount = 4;
     g_snapshotAvailable = true;
     g_overrides.clear();
@@ -316,9 +337,9 @@ static void TestPriorityAndHysteresis()
     FreshDirector();
 
     SetMember(0, 1000.0f, 1000.0f, true);
-    SetMember(1, 900.0f, 10000.0f, false); // only 9%, but not lowest absolute HP
-    SetMember(2, 950.0f, 950.0f, false);
-    SetMember(3, 700.0f, 700.0f, false);   // 100%, yet lowest absolute HP
+    SetMember(1, 900.0f, 10000.0f, true); // only 9%, but not lowest absolute HP
+    SetMember(2, 950.0f, 950.0f, true);
+    SetMember(3, 700.0f, 700.0f, true);   // 100%, yet lowest absolute HP
     SetWolves(2);
 
     Decide(500);
@@ -338,7 +359,7 @@ static void TestPriorityAndHysteresis()
     assert(HuntTelemetryAt(Runtime::PARTY_HIRED2, &h));
     assert(h.priorityRank == 1);
     assert(h.recordValid && h.hpValid && h.scoreValid);
-    assert(!h.bodyValid && !h.positionValid && !h.coreStatsValid);
+    assert(h.bodyValid && h.positionValid && !h.coreStatsValid);
     assert(std::fabs(h.huntScore - (1000.0f / 700.0f)) < 0.001f);
 
     // Raw priority changes immediately, while committed PackMark observes the
@@ -405,9 +426,9 @@ static void TestIsolationDepthSeparation()
     // Build 003 log shape: the committed target is only 10.9% isolated from
     // the runner, while the full party distribution is 140.7% deep.
     SetMember(0, 451.3f, 520.0f, true);
-    SetMember(1, 187.5f, 505.0f, false);
-    SetMember(2, 337.3f, 570.0f, false);
-    SetMember(3, 207.9f, 498.0f, false);
+    SetMember(1, 187.5f, 505.0f, true);
+    SetMember(2, 337.3f, 570.0f, true);
+    SetMember(3, 207.9f, 498.0f, true);
     SetWolves(3);
 
     Decide(10000);
@@ -437,10 +458,12 @@ static void TestValidatedFightReplay()
     FreshDirector();
 
     // Exact HP shape from the first real Build 002 gameplay log.
+    // All four were on-field. bodyMapped=false was the old unvalidated
+    // snapshot, not a rift. 84.23 scores only on-field members.
     SetMember(0, 331.3f, 498.0f, true);
-    SetMember(1, 505.0f, 505.0f, false);
-    SetMember(2, 570.0f, 570.0f, false);
-    SetMember(3, 498.0f, 498.0f, false);
+    SetMember(1, 505.0f, 505.0f, true);
+    SetMember(2, 570.0f, 570.0f, true);
+    SetMember(3, 498.0f, 498.0f, true);
     SetWolves(10);
 
     Decide(10000);
@@ -566,12 +589,14 @@ static void TestBuild012SynchronizedMobilization()
     // all identity failures into a generic exact4 label.
     g_identityBody[Runtime::PARTY_HIRED1] =
         g_snapshot.member[Runtime::PARTY_HIRED1].body;
+    g_identityDuplicate[Runtime::PARTY_HIRED2] = true;
     g_identityBody[Runtime::PARTY_HIRED2] = 0;
     ApplyPolicies();
     assert(!PolicyEngaged());
     assert(std::string(PolicyStatus())
            == "identity-Hired2-body-unresolved-or-duplicate");
     assert(g_overrides.empty() && g_focusMember == -1);
+    g_identityDuplicate[Runtime::PARTY_HIRED2] = false;
     g_identityBody[Runtime::PARTY_HIRED2] =
         g_snapshot.member[Runtime::PARTY_HIRED2].body;
 
@@ -852,9 +877,11 @@ static void TestBuild012TacticalArbitrationAndLifecycle()
     // A visually plausible pair is not admitted until the full party/body
     // bridge is exact. This keeps read-only transition evidence fail-closed too.
     const uintptr_t exactHired2 = g_identityBody[Runtime::PARTY_HIRED2];
+    g_identityDuplicate[Runtime::PARTY_HIRED2] = true;
     g_identityBody[Runtime::PARTY_HIRED2] = 0;
     UpdateTacticalSituations(300000);
     assert(!s_tactical.active);
+    g_identityDuplicate[Runtime::PARTY_HIRED2] = false;
     g_identityBody[Runtime::PARTY_HIRED2] = exactHired2;
 
     // World action evidence older than 450 ms is discarded before matching.
@@ -1222,6 +1249,155 @@ static void TestGoblinOpportunistGrabPin()
     assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALARM);
 }
 
+static void SetHobs(int n)
+{
+    MonsterAI::s_nView = n;
+    for (int i = 0; i < n; ++i) {
+        MonsterAI::MonsterView& v = MonsterAI::s_view[i];
+        memset(&v, 0, sizeof(v));
+        v.body = 0xB000u + (uintptr_t)i * 0x100u;
+        strcpy(v.kind, "uEm0101");
+        strcpy(v.act, "cEm0100ActWait");
+        v.positionValid = true;
+        v.x = 2000.0f + (float)i * 80.0f;
+        v.y = 0.0f;
+        v.z = 0.0f;
+    }
+}
+
+static void TestHobgoblinPackAndGrab()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f, 900.0f, true);
+    SetMember(2, 950.0f, 950.0f, true);
+    SetMember(3, 700.0f, 700.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetHobs(3);
+    Decide(700000);
+    assert(PackMarkSlot() == Runtime::PARTY_HIRED2);
+    assert(Recommendation() == RECOMMEND_BIAS);
+
+    SetActuatorEnabled(true);
+    s_mode = RECOMMEND_FOCUS;
+    s_mark = Runtime::PARTY_HIRED2;
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    assert(strcmp(g_focusKind, "uEm0101") == 0);
+    assert(g_overrides.size() == 3);
+
+    Runtime::PartyCombatMember& holder =
+        g_snapshot.member[Runtime::PARTY_HIRED1];
+    holder.x = 2000.0f;
+    strcpy(holder.liveAct, "cPlActGrabStart");
+    s_view[0].x = 2050.0f;
+    s_view[1].x = 5000.0f;
+    s_view[2].x = 9000.0f;
+    UpdateTacticalSituations(700150);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_HOB_GRAB_ALERT);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "tactical-hob-grab-alert");
+    assert(strcmp(g_focusKind, "uEm0101") == 0);
+    assert(g_overrides.size() == 2);
+}
+
+
+static void SetSaurians(int n)
+{
+    MonsterAI::s_nView = n;
+    for (int i = 0; i < n; ++i) {
+        MonsterAI::MonsterView& v = MonsterAI::s_view[i];
+        memset(&v, 0, sizeof(v));
+        v.body = 0xC000u + (uintptr_t)i * 0x100u;
+        strcpy(v.kind, "uEm0400");
+        strcpy(v.act, "cEm0400ActTurn");
+        v.positionValid = true;
+        v.x = 2000.0f + (float)i * 80.0f;
+        v.y = 0.0f;
+        v.z = 0.0f;
+    }
+}
+
+static void TestSaurianPackNoGrab()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f, 900.0f, true);
+    SetMember(2, 950.0f, 950.0f, true);
+    SetMember(3, 700.0f, 700.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetSaurians(3);
+    Decide(800000);
+    assert(PackMarkSlot() == Runtime::PARTY_HIRED2);
+    assert(Recommendation() == RECOMMEND_BIAS);
+
+    SetActuatorEnabled(true);
+    s_mode = RECOMMEND_FOCUS;
+    s_mark = Runtime::PARTY_HIRED2;
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    assert(strcmp(g_focusKind, "uEm0400") == 0);
+    assert(g_overrides.size() == 3);
+
+    Runtime::PartyCombatMember& holder =
+        g_snapshot.member[Runtime::PARTY_HIRED1];
+    holder.x = 2000.0f;
+    strcpy(holder.liveAct, "cPlActGrabStart");
+    s_view[0].x = 2050.0f;
+    UpdateTacticalSituations(800150);
+    assert(!s_tactical.active);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    assert(strcmp(g_focusKind, "uEm0400") == 0);
+    assert(g_overrides.size() == 3);
+}
+
+static void TestOnFieldRiftedMainPawn()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1200.0f, 1200.0f, true);
+    SetMember(1, 100.0f, 1000.0f, false); // запись жива, тела нет = рифт
+    SetMember(2, 100.0f, 800.0f, true);   // on-field mark; ghost Main HP ignored
+    SetMember(3, 1100.0f, 1100.0f, true);
+    g_identityBody[0] = g_snapshot.member[0].body;
+    g_identityBody[1] = 0; // absent, not duplicate
+    g_identityBody[2] = g_snapshot.member[2].body;
+    g_identityBody[3] = g_snapshot.member[3].body;
+    SetWolves(2);
+
+    Decide(600000);
+    assert(PackMarkSlot() == Runtime::PARTY_HIRED1);
+    assert(PackMarkSlot() != Runtime::PARTY_MAIN);
+    assert(Recommendation() == RECOMMEND_FOCUS);
+    HuntTelemetry rifted;
+    assert(HuntTelemetryAt(Runtime::PARTY_MAIN, &rifted));
+    assert(rifted.recordValid && !rifted.bodyValid && !rifted.scoreValid);
+
+    SetActuatorEnabled(true);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "focus-window-synchronized");
+    assert(g_focusMember == Runtime::PARTY_HIRED1);
+
+    strcpy(g_snapshot.member[0].liveAct, "cPlActGrabStart");
+    s_view[0].x = 80.0f;
+    g_snapshot.member[0].x = 0.0f;
+    UpdateTacticalSituations(600150);
+    assert(s_tactical.active);
+    assert(s_tactical.targetSlot == Runtime::PARTY_ARISEN);
+}
+
 int main()
 {
     TestPriorityAndHysteresis();
@@ -1232,6 +1408,9 @@ int main()
     TestBuild012TacticalArbitrationAndLifecycle();
     TestBuild012TwoStageResponseLifecycle();
     TestGoblinOpportunistGrabPin();
+    TestHobgoblinPackAndGrab();
+    TestSaurianPackNoGrab();
+    TestOnFieldRiftedMainPawn();
     MonsterAI::Shutdown();
     assert(!MonsterAI::Enabled());
 

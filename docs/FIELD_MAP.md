@@ -198,9 +198,35 @@ Offsets of `cCharParamEnemy` inside body must be signature-resolved for other sp
 | `+0x10` | float | attention (pin 300 if `fC=4`, 500 if `fC=2`) | ✅ |
 | `+0x14` | float | weight 1.0 / 0.2 — do not write | ✅ read-only |
 
-## 10. Open fields
+## 10. Status
+
+CATALOG: `param/status/{player,enemy}.statusparam` — 40 slots, index = status id.
+Слот **7** = Possession (`mTimer=180`). Слот **6** = Drenched (`mTimer=90`).
+Таблица: `generated/STATUS_PARAM.md`.
+
+LIVE на **записи персонажа** (CONFIRMED 84.30, SoT §12.1.2):
+
+| Offset | Type | Field | Status |
+|---:|---|---|---|
+| `+0x0A29` | u8 | currently in water (0/1) | 🔎 |
+| `+0x0A2C` | int32 | occupied work-slot count | ✅ |
+| `+0x0A30` | int32[40] | status id; empty = −1 | ✅ |
+| `+0x0AD0` | float[40] | remaining frames @ 30 Hz | ✅ |
+| `+0x0B70` | float[40] | param0 | ✅ |
+| `+0x0C10` | float[40] | param1 | ✅ |
+
+Индекс массива ≠ id. Drenched `ids[k]=6` / Possession `=7`.
+
+Apply (CONFIRMED 84.34/84.35): thiscall `ecx=cStatus+0x7C`, `[esp+4]=cStatus*`,
+`[esp+8]=id`. Без воды с 84.35. Каталог id=7 `t=180 p0=0.2 p1=0.35`.
+Poke ≠ apply. id≠7 не канон. Revive лечит. Скверна: `NIGHTMARE.md`.
+
+## 11. Open fields
 
 - current HP inside generic enemy body;
+- семантика p0/p1 Possession (значения каталога CONFIRMED, смысл нет);
+- синхрон слой C в том же кадре, что thiscall;
+- live statusMask на теле (массив — на ЗАПИСИ; apply — inline cStatus);
 - semantic names/GOAP links for all priority codes;
 - proven runtime fields for GOAP patches;
 - physical damage hitboxes distinct from AI action ranges.

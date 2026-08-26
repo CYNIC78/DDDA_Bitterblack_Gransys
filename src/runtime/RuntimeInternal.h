@@ -27,6 +27,25 @@
 // Заголовок самодостаточен: ActAt() возвращает ActMap::Act*, поэтому
 // таблица подключается здесь, а не порядком include в потребителе.
 #include "../ActMap.Generated.h"
+#include <string.h>
+
+// Полное тело uEmNNNN (Devilfire Drake = uEm5900, гоблин uEm0100).
+// Ложный «враг»: база uEmDragonBase, вложенный uEmDragonBase::X,
+// деталь uEm0100_3 / uEm5000_1. Chimera-голова uEm5200_00 — два знака
+// после '_' — живое тело, пропускаем.
+inline bool KindIsLiveEnemyBody(const char* n)
+{
+    if (!n || !n[0]) return false;
+    if (!strcmp(n, "uHumanEnemy")) return true;
+    if (n[0] != 'u' || n[1] != 'E' || n[2] != 'm') return false;
+    if (n[3] < '0' || n[3] > '9') return false;
+    const char* p = n + 3;
+    while (*p >= '0' && *p <= '9') ++p;
+    if (*p == 0) return true;
+    if (*p == '_' && p[1] >= '0' && p[1] <= '9' && p[2] >= '0' && p[2] <= '9')
+        return true;
+    return false;
+}
 
 namespace Runtime {
 
