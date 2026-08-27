@@ -23,6 +23,28 @@
 
 ## Текущий milestone
 
+**Build 84.40** — `caster-harass`. Вылазка стаи на игрока-кастера (Player-Only Chant Harass).
+`TacticalCues`: ситуация `PLAYER-CHANT-HARASS`. Срабатывает строго на Аризене (`slot == 0`),
+пешки-маги не трогаются. Фильтрует синие и гибридные вокации (3 Mage, 9 Sorcerer, 4 Mystic Knight,
+6 Magick Archer). Перехватывает стойки заклинаний `cPlActWpnWandBase`, `cPlActWpnMagicBow`,
+`cPlActWpnMagicShieldBase`, `cPlActWpnSwordCstmMadouBase`, `cPlActWpnDaggerCstmMadouBase`.
+Ближайший враг стаи в радиусе 10–14 м получает приказ прессинга в режиме `std-rush`. При отмене
+каста/перекате ситуация мгновенно завершается.
+
+**Build 84.39** — `caller-defense`. Проактивная защита призывателей под Monster Director.
+Тактические ситуации в `TacticalCues`: `GOB-HORN-ALERT` (`uEm0100`), `HOB-HORN-ALERT` (`uEm0101`),
+`WOLF-HOWL-ALERT` (`uEm0200`), `SAURIAN-HOWL-ALERT` (`uEm0400`). Горнист/воющий исключается
+из приказа (`excludeEvidenceBody`), стая вычисляет ближайшую к призывателю угрозу из партии
+по 3D-дистанции и бросается наперерез в режиме `std-rush` темпа.
+
+**Build 84.38** — `true-bestiary`. Полная ликвидация конфликтов адресов и имен:
+`BestiaryData.h` перегенерирован на базе DTI, `types.tsv`, `TypeAtlas` и листингов
+29 архивов на диске. Григори (`uEm5800`), Дрейк (`uEm5900`), Вирм (`uEm5901`),
+Виверна (`uEm5902`), Проклятый Дракон (`uEm5906`), Смерть (`uEm6003`), Даймон
+(`uEm7000`), Огры (`uEm0900`/`uEm0901`), Скелеты (`uEm2000`–`2006`), Нежить
+(`uEm0500`–`0506`). «Ловушка зайцев» (`uEm8000`) закрыта — зайцы и лагерная живность
+вынесены в Wildlife (`Category = 0`). Сканеры привязаны к `FindEnemyByUEmName(nm)`.
+
 **Build 84.37** — `xmm-params`. На нашем Set id=7 можно подменить
 xmm timer/p0/p1 (как HBuffMods). Гейт: только наш thiscall, id=7.
 `customParams = off` → каталог 180/0.2/0.35. Не Drake. Не сейв.

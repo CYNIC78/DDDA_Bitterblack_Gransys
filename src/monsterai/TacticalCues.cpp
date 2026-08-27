@@ -36,6 +36,27 @@ static const char* const kGoblinGrabAlertActs[] = {
     "cPlActHagaijime"
 };
 
+// Proactive caller acts: callers are vulnerable while blowing horn or howling.
+static const char* const kGoblinHornCallerActs[] = {
+    "cEm0100ActHornReinforce",
+    "cEm0100ActHornTensionUp"
+};
+static const char* const kWolfHowlCallerActs[] = {
+    "cEm0200Howling"
+};
+static const char* const kSaurianHowlCallerActs[] = {
+    "cEm0400ActFriendHowl"
+};
+
+// Player chanting / casting acts: long incantation stances vulnerable to harass.
+static const char* const kPlayerCasterActs[] = {
+    "cPlActWpnWandBase",
+    "cPlActWpnMagicBow",
+    "cPlActWpnMagicShieldBase",
+    "cPlActWpnSwordCstmMadouBase",
+    "cPlActWpnDaggerCstmMadouBase"
+};
+
 struct TacticalRule {
     int       situation;
     const char* name;
@@ -55,7 +76,16 @@ struct TacticalRule {
     float     maxPairDistanceM;
     uint32_t  maxLeaseMs;
     bool      excludeEvidenceBody;
+    bool      arisenOnly;
+    bool      casterVocationOnly;
 };
+
+static bool IsCasterVocation(int v)
+{
+    // 3 = Mage, 9 = Sorcerer (pure blue)
+    // 4 = Mystic Knight, 6 = Magick Archer (hybrid blue)
+    return v == 3 || v == 9 || v == 4 || v == 6;
+}
 
 // Adding another proved species/restraint is one row plus its action array.
 // Aggro write admission remains independently species-specific downstream.
@@ -75,7 +105,8 @@ static const TacticalRule kRules[] = {
         false,
         2.00f,
         4000,
-        true
+        true,
+        false, false
     },
     {
         TACTICAL_SITUATION_PACK_LIFT_RESCUE,
@@ -94,7 +125,8 @@ static const TacticalRule kRules[] = {
         true,
         2.50f,
         2500,
-        true
+        true,
+        false, false
     },
     {
         TACTICAL_SITUATION_PACK_GRAB_ALERT,
@@ -110,7 +142,8 @@ static const TacticalRule kRules[] = {
         false,
         2.00f,
         750,
-        true
+        true,
+        false, false
     },
     {
         TACTICAL_SITUATION_GOBLIN_GRAB_ALERT,
@@ -126,7 +159,8 @@ static const TacticalRule kRules[] = {
         false,
         2.00f,
         4000,
-        true
+        true,
+        false, false
     },
     {
         TACTICAL_SITUATION_HOB_GRAB_ALERT,
@@ -142,7 +176,144 @@ static const TacticalRule kRules[] = {
         false,
         2.00f,
         4000,
-        true
+        true,
+        false, false
+    },
+    {
+        TACTICAL_SITUATION_GOB_HORN_ALERT,
+        "GOB-HORN-ALERT",
+        "tactical-gob-horn-alert",
+        85,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0100",
+        0, 0,
+        kGoblinHornCallerActs,
+        (int)(sizeof(kGoblinHornCallerActs) / sizeof(kGoblinHornCallerActs[0])),
+        false,
+        12.00f,
+        4500,
+        true,
+        false, false
+    },
+    {
+        TACTICAL_SITUATION_HOB_HORN_ALERT,
+        "HOB-HORN-ALERT",
+        "tactical-hob-horn-alert",
+        84,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0101",
+        0, 0,
+        kGoblinHornCallerActs,
+        (int)(sizeof(kGoblinHornCallerActs) / sizeof(kGoblinHornCallerActs[0])),
+        false,
+        12.00f,
+        4500,
+        true,
+        false, false
+    },
+    {
+        TACTICAL_SITUATION_WOLF_HOWL_ALERT,
+        "WOLF-HOWL-ALERT",
+        "tactical-wolf-howl-alert",
+        80,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0200",
+        0, 0,
+        kWolfHowlCallerActs,
+        (int)(sizeof(kWolfHowlCallerActs) / sizeof(kWolfHowlCallerActs[0])),
+        false,
+        14.00f,
+        3500,
+        true,
+        false, false
+    },
+    {
+        TACTICAL_SITUATION_SAURIAN_HOWL_ALERT,
+        "SAURIAN-HOWL-ALERT",
+        "tactical-saurian-howl-alert",
+        78,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0400",
+        0, 0,
+        kSaurianHowlCallerActs,
+        (int)(sizeof(kSaurianHowlCallerActs) / sizeof(kSaurianHowlCallerActs[0])),
+        false,
+        10.00f,
+        4000,
+        true,
+        false, false
+    },
+    {
+        TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+        "PLAYER-CHANT-HARASS",
+        "tactical-player-chant-harass",
+        75,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0100",
+        kPlayerCasterActs,
+        (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
+        0, 0,
+        false,
+        12.00f,
+        3500,
+        false,
+        true, true
+    },
+    {
+        TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+        "PLAYER-CHANT-HARASS",
+        "tactical-player-chant-harass",
+        75,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0200",
+        kPlayerCasterActs,
+        (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
+        0, 0,
+        false,
+        14.00f,
+        3500,
+        false,
+        true, true
+    },
+    {
+        TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+        "PLAYER-CHANT-HARASS",
+        "tactical-player-chant-harass",
+        74,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0101",
+        kPlayerCasterActs,
+        (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
+        0, 0,
+        false,
+        12.00f,
+        3500,
+        false,
+        true, true
+    },
+    {
+        TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+        "PLAYER-CHANT-HARASS",
+        "tactical-player-chant-harass",
+        73,
+        TACTICAL_RESPONSE_ALERT,
+        1.0f,
+        "uEm0400",
+        kPlayerCasterActs,
+        (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
+        0, 0,
+        false,
+        10.00f,
+        3500,
+        false,
+        true, true
     }
 };
 
@@ -240,7 +411,10 @@ void InspectTacticalContinuation(int situation, uintptr_t targetBody,
     for (int i = 0; i < partyCount; ++i) {
         if (party[i].body != targetBody) continue;
         out->targetBodyPresent = true;
-        if (ExactAction(party[i].act, rule->targetActs, rule->targetActCount)) {
+        if (rule->arisenOnly && party[i].slot != 0) continue;
+        if (rule->casterVocationOnly && !IsCasterVocation(party[i].vocation)) continue;
+        if (rule->targetActCount <= 0
+            || ExactAction(party[i].act, rule->targetActs, rule->targetActCount)) {
             out->targetActionMatched = true;
             target = &party[i];
         }
@@ -282,61 +456,62 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
         diag.name = rule.name;
         diag.response = rule.response;
 
-        for (int p = 0; p < partyCount; ++p) {
-            const TacticalPartyActor& target = party[p];
-            if (!target.body
-                || !ExactAction(target.act, rule.targetActs, rule.targetActCount))
-                continue;
-            ++diag.targetCandidates;
-            if (!diag.firstTargetBody) {
-                diag.firstTargetSlot = target.slot;
-                diag.firstTargetBody = target.body;
-                diag.firstTargetAct = target.act;
-            }
-        }
+        const bool proactiveCaller = (rule.targetActCount <= 0);
 
-        for (int m = 0; m < monsterCount; ++m) {
-            const TacticalMonsterActor& evidence = monsters[m];
-            if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
-                || !EvidenceAction(evidence.act, rule))
-                continue;
-            ++diag.evidenceCandidates;
-            if (!diag.firstEvidenceBody) {
-                diag.firstEvidenceBody = evidence.body;
-                diag.firstEvidenceAct = evidence.act;
-            }
-        }
-
-        // The party actor must always be unique. For action-proved restraint,
-        // many same-kind monsters may exist in the fight; exactly one may be
-        // spatially correlated with the acting pawn. Literal lift additionally
-        // keeps its stricter globally unique victim-action requirement.
-        for (int p = 0; p < partyCount; ++p) {
-            const TacticalPartyActor& target = party[p];
-            if (!target.body
-                || !ExactAction(target.act, rule.targetActs, rule.targetActCount))
-                continue;
-
+        if (proactiveCaller) {
             for (int m = 0; m < monsterCount; ++m) {
                 const TacticalMonsterActor& evidence = monsters[m];
                 if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
                     || !EvidenceAction(evidence.act, rule))
                     continue;
-
-                float distance = -1.0f;
-                if (!DistanceM(target, evidence, &distance)) {
-                    ++diag.positionRejected;
-                    continue;
+                ++diag.evidenceCandidates;
+                if (!diag.firstEvidenceBody) {
+                    diag.firstEvidenceBody = evidence.body;
+                    diag.firstEvidenceAct = evidence.act;
                 }
-                if (diag.nearestDistanceM < 0.0f || distance < diag.nearestDistanceM)
-                    diag.nearestDistanceM = distance;
-                if (distance > rule.maxPairDistanceM) continue;
-                ++diag.pairCandidates;
+            }
 
-                const bool evidenceIdentityAllowed =
-                    !rule.requireGloballyUniqueEvidence
-                    || diag.evidenceCandidates == 1;
-                if (diag.targetCandidates == 1 && evidenceIdentityAllowed) {
+            if (diag.evidenceCandidates > 0) {
+                float bestDist = -1.0f;
+                int bestTargetIdx = -1;
+                uintptr_t bestCallerBody = 0;
+                const char* bestCallerAct = 0;
+
+                for (int m = 0; m < monsterCount; ++m) {
+                    const TacticalMonsterActor& evidence = monsters[m];
+                    if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
+                        || !EvidenceAction(evidence.act, rule))
+                        continue;
+
+                    for (int p = 0; p < partyCount; ++p) {
+                        const TacticalPartyActor& target = party[p];
+                        if (!target.body) continue;
+                        float distance = -1.0f;
+                        if (!DistanceM(target, evidence, &distance)) {
+                            ++diag.positionRejected;
+                            continue;
+                        }
+                        if (diag.nearestDistanceM < 0.0f || distance < diag.nearestDistanceM)
+                            diag.nearestDistanceM = distance;
+                        if (distance > rule.maxPairDistanceM) continue;
+
+                        if (bestDist < 0.0f || distance < bestDist) {
+                            bestDist = distance;
+                            bestTargetIdx = p;
+                            bestCallerBody = evidence.body;
+                            bestCallerAct = evidence.act;
+                        }
+                    }
+                }
+
+                if (bestTargetIdx >= 0) {
+                    const TacticalPartyActor& target = party[bestTargetIdx];
+                    diag.targetCandidates = 1;
+                    diag.pairCandidates = 1;
+                    diag.firstTargetSlot = target.slot;
+                    diag.firstTargetBody = target.body;
+                    diag.firstTargetAct = target.act;
+
                     diag.match.situation = rule.situation;
                     diag.match.name = rule.name;
                     diag.match.policyReason = rule.policyReason;
@@ -345,12 +520,91 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
                     diag.match.urgency = rule.urgency;
                     diag.match.targetSlot = target.slot;
                     diag.match.targetBody = target.body;
-                    diag.match.evidenceBody = evidence.body;
+                    diag.match.evidenceBody = bestCallerBody;
                     diag.match.targetAct = target.act;
-                    diag.match.evidenceAct = evidence.act;
-                    diag.match.pairDistanceM = distance;
+                    diag.match.evidenceAct = bestCallerAct;
+                    diag.match.pairDistanceM = bestDist;
                     diag.match.maxLeaseMs = rule.maxLeaseMs;
                     diag.match.excludeEvidenceBody = rule.excludeEvidenceBody;
+                    diag.match.responderKind = rule.monsterKind;
+                }
+            }
+        } else {
+            for (int p = 0; p < partyCount; ++p) {
+                const TacticalPartyActor& target = party[p];
+                if (!target.body) continue;
+                if (rule.arisenOnly && target.slot != 0) continue;
+                if (rule.casterVocationOnly && !IsCasterVocation(target.vocation)) continue;
+                if (!ExactAction(target.act, rule.targetActs, rule.targetActCount))
+                    continue;
+                ++diag.targetCandidates;
+                if (!diag.firstTargetBody) {
+                    diag.firstTargetSlot = target.slot;
+                    diag.firstTargetBody = target.body;
+                    diag.firstTargetAct = target.act;
+                }
+            }
+
+            for (int m = 0; m < monsterCount; ++m) {
+                const TacticalMonsterActor& evidence = monsters[m];
+                if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
+                    || !EvidenceAction(evidence.act, rule))
+                    continue;
+                ++diag.evidenceCandidates;
+                if (!diag.firstEvidenceBody) {
+                    diag.firstEvidenceBody = evidence.body;
+                    diag.firstEvidenceAct = evidence.act;
+                }
+            }
+
+            // The party actor must always be unique. For action-proved restraint,
+            // many same-kind monsters may exist in the fight; exactly one may be
+            // spatially correlated with the acting pawn. Literal lift additionally
+            // keeps its stricter globally unique victim-action requirement.
+            for (int p = 0; p < partyCount; ++p) {
+                const TacticalPartyActor& target = party[p];
+                if (!target.body) continue;
+                if (rule.arisenOnly && target.slot != 0) continue;
+                if (rule.casterVocationOnly && !IsCasterVocation(target.vocation)) continue;
+                if (!ExactAction(target.act, rule.targetActs, rule.targetActCount))
+                    continue;
+
+                for (int m = 0; m < monsterCount; ++m) {
+                    const TacticalMonsterActor& evidence = monsters[m];
+                    if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
+                        || !EvidenceAction(evidence.act, rule))
+                        continue;
+
+                    float distance = -1.0f;
+                    if (!DistanceM(target, evidence, &distance)) {
+                        ++diag.positionRejected;
+                        continue;
+                    }
+                    if (diag.nearestDistanceM < 0.0f || distance < diag.nearestDistanceM)
+                        diag.nearestDistanceM = distance;
+                    if (distance > rule.maxPairDistanceM) continue;
+                    ++diag.pairCandidates;
+
+                    const bool evidenceIdentityAllowed =
+                        !rule.requireGloballyUniqueEvidence
+                        || diag.evidenceCandidates == 1;
+                    if (diag.targetCandidates == 1 && evidenceIdentityAllowed) {
+                        diag.match.situation = rule.situation;
+                        diag.match.name = rule.name;
+                        diag.match.policyReason = rule.policyReason;
+                        diag.match.priority = rule.priority;
+                        diag.match.response = rule.response;
+                        diag.match.urgency = rule.urgency;
+                        diag.match.targetSlot = target.slot;
+                        diag.match.targetBody = target.body;
+                        diag.match.evidenceBody = evidence.body;
+                        diag.match.targetAct = target.act;
+                        diag.match.evidenceAct = evidence.act;
+                        diag.match.pairDistanceM = distance;
+                        diag.match.maxLeaseMs = rule.maxLeaseMs;
+                        diag.match.excludeEvidenceBody = rule.excludeEvidenceBody;
+                        diag.match.responderKind = rule.monsterKind;
+                    }
                 }
             }
         }

@@ -17,7 +17,12 @@ enum TacticalSituationId {
     TACTICAL_SITUATION_PACK_GRAB_ALERT = 2,
     TACTICAL_SITUATION_PACK_GROUND_PIN_ALARM = 3,
     TACTICAL_SITUATION_GOBLIN_GRAB_ALERT = 4,
-    TACTICAL_SITUATION_HOB_GRAB_ALERT = 5
+    TACTICAL_SITUATION_HOB_GRAB_ALERT = 5,
+    TACTICAL_SITUATION_GOB_HORN_ALERT = 6,
+    TACTICAL_SITUATION_HOB_HORN_ALERT = 7,
+    TACTICAL_SITUATION_WOLF_HOWL_ALERT = 8,
+    TACTICAL_SITUATION_SAURIAN_HOWL_ALERT = 9,
+    TACTICAL_SITUATION_PLAYER_CHANT_HARASS = 10
 };
 
 // ALERT and ALARM keep distinct Aggro bundles and evidence leases. Both are
@@ -34,6 +39,7 @@ struct TacticalPartyActor {
     const char* act;
     bool      positionValid;
     float     x, y, z;
+    int       vocation;
 };
 
 struct TacticalMonsterActor {
@@ -59,6 +65,7 @@ struct TacticalMatch {
     float     pairDistanceM;
     uint32_t  maxLeaseMs;
     bool      excludeEvidenceBody;
+    const char* responderKind;
 };
 
 // Diagnostics are transition-logged by Monster Director. Counts expose why a

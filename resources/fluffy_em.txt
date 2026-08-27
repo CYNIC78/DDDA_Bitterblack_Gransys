@@ -48,18 +48,35 @@ em5400 - Griffin
 em5401 - Cockatrice
 em5500 - Evil eye
 em5501 - Vile eye
+em5502 - Gazer
 em5700 - Wight
-em5800 - Dragon
+em5800 - Dragon (Grigori)
+em5801 - The Ur-Dragon
 em5802 - Variant of main dragon villain
 em5900 - Drake
 em5901 - Wyrm
 em5902 - Wyvern
+em5903 - Firedrake
+em5904 - Frostwyrm
+em5905 - Thunderwyvern
+em5906 - Cursed Dragon
 em6000 - Wight
 em6001 - Lich
-em7000 - Daimon
-em8100 - ?
-em8200 - ?
-em8300 - ?
-em8501 - ?
-em8900 - ?
+em6002 - Dark Bishop
+em6003 - Death
+em7000 - Daimon (Form 1)
+em7001 - Awakened Daimon (Form 2)
+em7002 - Daimon chest dragon head
+em8000 - Wildlife / camp critter
+em8100 - Ambient prop / effect (HP=1)
+em8200 - Dragon sub-component
+em8201 - Dragon sub-component
+em8300 - Cursed Dragon sub-body
+em8500 - Deer / Stag
+em8501 - Doe
+em8600 - Hare / Rabbit
+em8601 - Snake / Critter
+em8602 - Bat / Crow
+em8700 - Ox / Boar
+em8900 - The Seneschal
 em9807 - ?

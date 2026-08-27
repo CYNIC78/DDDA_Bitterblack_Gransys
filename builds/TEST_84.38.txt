@@ -1,0 +1,27 @@
+84.38-true-bestiary
+Полная синхронизация бестиария и сканеров (ликвидация конфликтов DTI / имён / gid).
+
+Собрать: Release | Win32. Тег: 84.38-true-bestiary.
+dinput8.dll в папку с DDDA.exe.
+
+Что закрыто в 84.38:
+1. BestiaryData.h полностью перегенерирован на базе DTI, types.tsv и 29 проверенных архивов:
+   - Skeletons: uEm2000-2002, 2100-2101, 2003-2006 (Living Armor)
+   - Undead: uEm0500-0506 (0506 = Eliminator с horn dash/hammer)
+   - Harpies: uEm0600-0605 (0603 Gargoyle, 0604 Strigoi, 0605 Siren)
+   - Phantoms: uEm0700-0703 (0703 Wraith)
+   - Ogres: uEm0900 (Ogre), uEm0901 (Elder Ogre)
+   - Dragons: uEm5800 (Grigori), uEm5801 (Ur-Dragon), uEm5900 (Drake),
+              uEm5901 (Wyrm), uEm5902 (Wyvern), uEm5906 (Cursed Dragon)
+   - Bosses: uEm6002 (Dark Bishop), uEm6003 (Death), uEm7000 (Daimon Form 1), uEm7001 (Daimon Form 2)
+   - Eyes: uEm5500 (Evil Eye), uEm5501 (Vile Eye), uEm5502 (Gazer), uEm5500_00 (Maneater)
+   - Wildlife: uEm8000 (Camp Critter), uEm8600 (Hare), uEm8500-8700.
+2. Ликвидирована «ловушка зайцев» (uEm8000 / gid 0x61):
+   удар по зайцу/лагерной живности больше не выставляет категорию БОСС.
+3. Сканеры (CombatIntel, WorldScan) корректно опознают монстров через FindEnemyByUEmName(nm).
+
+Тест:
+1. Зайти в игру, подойти к любому врагу (гоблин, волк, ящер, скелет или заяц в лагере).
+2. F12 -> Enemy AI Overhaul -> Monster director -> snapshot to log.
+3. В логе проверить имя и наклейку врага.
+4. Выйти. Лог должен показывать корректные имена видов без сдвигов.

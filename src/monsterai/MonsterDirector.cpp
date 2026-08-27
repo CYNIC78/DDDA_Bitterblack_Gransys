@@ -84,6 +84,7 @@ struct TacticalRuntime {
     float     pairDistanceM;
     char      targetAct[64];
     char      victimAct[64];
+    char      responderKind[16];
 };
 static TacticalRuntime s_tactical;
 static bool             s_policyHardResetPending = false;
@@ -266,6 +267,7 @@ static void TacticalRelease(const char* reason, bool timeoutBlock,
         s_tactical.pairDistanceM = -1.0f;
         s_tactical.targetAct[0] = 0;
         s_tactical.victimAct[0] = 0;
+        s_tactical.responderKind[0] = 0;
     }
 }
 
@@ -291,6 +293,8 @@ static void TacticalEnter(const TacticalMatch& m, DWORD now,
               sizeof(s_tactical.targetAct));
     lstrcpynA(s_tactical.victimAct, m.evidenceAct ? m.evidenceAct : "?",
               sizeof(s_tactical.victimAct));
+    lstrcpynA(s_tactical.responderKind, m.responderKind ? m.responderKind : "",
+              sizeof(s_tactical.responderKind));
     logFile << "Monster Director: situation ENGAGED name=" << m.name
             << " response=" << TacticalResponseName(m.response)
             << " urgency=" << m.urgency
@@ -385,6 +389,7 @@ static void UpdateTacticalSituations(DWORD now)
         a.act = m.liveAct;
         a.positionValid = m.positionValid;
         a.x = m.x; a.y = m.y; a.z = m.z;
+        a.vocation = m.vocation;
     }
 
     TacticalMonsterActor monsters[kMaxViews];
@@ -1108,10 +1113,18 @@ static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
 
 static const char* PolicyResponderKind(int situation)
 {
-    if (situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT)
+    if (s_tactical.active && s_tactical.responderKind[0])
+        return s_tactical.responderKind;
+    if (situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT
+        || situation == TACTICAL_SITUATION_GOB_HORN_ALERT)
         return "uEm0100";
-    if (situation == TACTICAL_SITUATION_HOB_GRAB_ALERT)
+    if (situation == TACTICAL_SITUATION_HOB_GRAB_ALERT
+        || situation == TACTICAL_SITUATION_HOB_HORN_ALERT)
         return "uEm0101";
+    if (situation == TACTICAL_SITUATION_WOLF_HOWL_ALERT)
+        return "uEm0200";
+    if (situation == TACTICAL_SITUATION_SAURIAN_HOWL_ALERT)
+        return "uEm0400";
     if (situation == TACTICAL_SITUATION_NONE) {
         if (s_wolfCount > 0) return "uEm0200";
         if (s_hobCount > 0) return "uEm0101";

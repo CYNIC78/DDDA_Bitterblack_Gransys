@@ -1,11 +1,15 @@
-DDDA AI Overhaul — source package 84.37-xmm-params
+DDDA AI Overhaul — source package 84.40-caster-harass
 ================================================================
-MOD_BUILD_TAG : 84.37-xmm-params
-Дата сборки   : 2026-08-26 (Europe/Moscow)
+MOD_BUILD_TAG : 84.40-caster-harass
+Дата сборки   : 2026-08-27 (Europe/Moscow)
 
 Состав:
-  * 84.35 apply id=7 без воды.
-  * 84.37 xmm timer/p0/p1 на НАШЕМ Set (customParams, default off).
-  * Не Drake. Не id≠7. Не DDDA.sav.
+  * 84.40: Вылазка на игрока-кастера (PLAYER-CHANT-HARASS):
+    - Срабатывает строго на Аризене (slot == 0). Пешки-маги защищены от буллинга.
+    - Фильтр синих и гибридных вокаций: 3 Mage, 9 Sorcerer, 4 Mystic Knight, 6 Magick Archer.
+    - Ловит стойки заклинаний cPlActWpnWandBase, MagicBow, MagicShieldBase, SwordCstmMadouBase.
+    - Ближайший враг в радиусе 10–14 м получает приказ прессинга в режиме std-rush.
+  * 84.39: Проактивная защита призывателей (GOB-HORN-ALERT, WOLF-HOWL-ALERT).
+  * 84.38: Полная ликвидация конфликтов адресов и имен бестиария (72 вида, Григори, дракониды).
 
-Карточка: builds/TEST_84.37.txt
+Карточка: builds/TEST_84.40.txt

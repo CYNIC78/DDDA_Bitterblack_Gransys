@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.37-xmm-params"
+#define MOD_BUILD_TAG "84.40-caster-harass"

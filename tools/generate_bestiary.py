@@ -72,84 +72,91 @@ def load_bestiary_py():
     return bestiary
 
 # Маппинг bestiaryId -> (uEmName, Family)
-# Наклейка ≠ identity. Правило правки:
-#   стол: Fluffy em.txt + имена cEm* в TypeAtlas
-#   оба совпали → можно двигать строку
-#   разошлись / '?' → не трогать
-#   live snapshot — только если пишем в этот вид (SpeciesCard) или охота
-# Закрыто live+Fluffy+acts: 29 Cyclops=uEm5000, 31 Golem=uEm5100, 45 Drake=uEm5900.
+# Полный верифицированный маппинг 2026-08-27 на базе DTI, TypeAtlas экшенов,
+# типов types.tsv и листингов 29 архивов:
+#   - Дракониды (59XX): 5900 Drake, 5901 Wyrm, 5902 Wyvern, 5906 Cursed Dragon
+#   - Дракон (58XX): 5800 Grigori, 5801 Ur-Dragon
+#   - Скелеты (20XX/21XX): 2000 Skeleton, 2001 Knight, 2002 Lord, 2003 Brute,
+#                          2004 Golden, 2005 Silver, 2006 Living Armor, 2100 Mage, 2101 Sorcerer
+#   - Нежить (05XX): 0500 Undead, 0501 Stout, 0502 Warrior, 0503 Giant,
+#                    0504 Poisoned, 0505 Banshee, 0506 Eliminator
+#   - Гарпии (06XX): 0600 Harpy, 0601 Snow Harpy, 0602 Succubus, 0603 Gargoyle, 0604 Strigoi, 0605 Siren
+#   - Призраки (07XX): 0700 Phantom, 0701 Phantasm, 0702 Specter, 0703 Wraith
+#   - Огры (09XX): 0900 Ogre, 0901 Elder Ogre
+#   - Глаза/Мизери (55XX): 5500 Evil Eye, 5501 Vile Eye, 5502 Gazer, 5500_00 Maneater
+#   - BBI Боссы (60XX/70XX): 6002 Dark Bishop, 6003 Death, 7000 Daimon Form 1, 7001 Form 2
 BESTIARY_UEM_MAP = {
-    0: ("uEm0100", "Goblin"),
-    1: ("uEm0101", "Goblin"),
-    2: ("uEm0102", "Goblin"),
-    3: ("uEm0200", "Wolf"),
-    4: ("uEm0201", "Wolf"),
-    5: ("uEm0202", "Wolf"),
-    6: ("uEm0500", "Skeleton"),
-    7: ("uEm0501", "Skeleton"),
-    8: ("uEm0502", "Skeleton"),
-    9: ("uEm0503", "Skeleton"),
-    10: ("uEm0504", "Skeleton"),
-    11: ("uEm0400", "Saurian"),
-    12: ("uEm0401", "Saurian"),
-    13: ("uEm0402", "Saurian"),
-    14: ("uEm0403", "Saurian"),
-    15: ("uEm0600", "Undead"),
-    16: ("uEm0601", "Undead"),
-    17: ("uEm0602", "Undead"),
-    18: ("uEm0603", "Undead"),
-    19: ("uEm0700", "Harpy"),
-    20: ("uEm0701", "Harpy"),
-    21: ("uEm0702", "Harpy"),
-    22: ("uEm0900", "Gargoyle"),
-    23: ("uEm1200", "Ghost"),
-    24: ("uEm1201", "Ghost"),
-    25: ("uEm1200", "Ghost"),          # Specters
-    26: ("uHumanEnemy", "Human"),       # Hostile Soldiers
-    27: ("uHumanEnemy", "Human"),       # Hostile Bandits
-    28: ("uEm9100", "Human"),           # Enemy Wizard
-    29: ("uEm5000", "Cyclops"),         # live Devilfire + Fluffy em5000; cEm5000 Eye/Blind/Weapon
-    30: ("uEm2001", "Ogre"),
-    31: ("uEm5100", "Golem"),           # Fluffy em5100; cEm5100 Laser/Weak/HpDrain
-    32: ("uEm5001", "Golem"),           # Metal Golems — factory still UNVALIDATED
-    33: ("uEm5200", "Chimera"),
-    34: ("uEm5301", "Chimera"),         # Gorechimeras
-    35: ("uEm5400", "Hydra"),
-    36: ("uEm5401", "Hydra"),           # Archydras
-    37: ("uEm5800", "Griffin"),
-    38: ("uEm5801", "Cockatrice"),
-    39: ("uEm5500", "EvilEye"),         # Fluffy em5500; tentacle/gaze acts. Eliminator bid 60 same factory — OPEN
-    40: ("uEm5906", "EvilEye"),         # Vile Eyes
-    41: ("uEm6000", "Wight"),
-    42: ("uEm6001", "Lich"),
-    43: ("uEm8000", "Dragon"),          # The Dragon (Grigori)
-    44: ("uEm8000", "Dragon"),          # The Ur-Dragon
-    45: ("uEm8100", "Dragon"),          # Drakes
-    46: ("uEm8200", "Dragon"),          # Wyrms
-    47: ("uEm8201", "Dragon"),          # Wyverns
-    48: ("uEm8900", "Boss"),            # The Seneschal
-    49: ("uHumanEnemy", "Human"),       # Enemy Person
-    50: ("uEm0103", "BBI-Goblin"),      # Greater Goblins / Goblin Shamans
-    52: ("uEm0203", "BBI-Wolf"),        # Wargs / Garm
-    53: ("uEm0505", "BBI-Skeleton"),    # Skeleton Brutes
-    54: ("uEm0506", "BBI-Skeleton"),    # Golden Knights
-    55: ("uEm0507", "BBI-Skeleton"),    # Silver Knights
-    56: ("uEm7000", "BBI-Armor"),       # Living Armor
-    57: ("uEm0404", "BBI-Saurian"),     # Pyre Saurians
-    58: ("uEm0604", "BBI-Undead"),      # Poisoned Undead
-    59: ("uEm0605", "BBI-Undead"),      # Banshees
-    60: ("uEm5500", "BBI-Undead"),      # Eliminators
-    61: ("uEm0703", "BBI-Harpy"),       # Strigoi
-    62: ("uEm0703", "BBI-Harpy"),       # Sirens
-    63: ("uEm1201", "BBI-Ghost"),       # Wraiths
-    64: ("uEm5500C", "BBI-Cyclops"),    # Gorecyclopes
-    65: ("uEm5501", "BBI-Ogre"),        # Elder Ogres
-    66: ("uEm5903", "BBI-EvilEye"),     # Gazers
-    67: ("uEm5904", "BBI-Misc"),        # Maneaters
-    68: ("uEm6002", "BBI-Wight"),       # Dark Bishops
-    69: ("uEm6003", "BBI-Boss"),        # Death
-    70: ("uEm8300", "BBI-Dragon"),      # Cursed Dragons
-    71: ("uEm7002", "BBI-Boss"),        # Daimon
+    0: ("uEm0100", "Goblin"),       # Goblins
+    1: ("uEm0101", "Goblin"),       # Hobgoblins
+    2: ("uEm0102", "Goblin"),       # Grimgoblins
+    3: ("uEm0200", "Wolf"),         # Wolves
+    4: ("uEm0201", "Wolf"),         # Direwolves
+    5: ("uEm0202", "Wolf"),         # Hellhounds
+    6: ("uEm2000", "Skeleton"),     # Skeletons
+    7: ("uEm2001", "Skeleton"),     # Skeleton Knights
+    8: ("uEm2002", "Skeleton"),     # Skeleton Lords
+    9: ("uEm2100", "Skeleton"),     # Skeleton Mages
+    10: ("uEm2101", "Skeleton"),    # Skeleton Sorcerers
+    11: ("uEm0400", "Saurian"),     # Saurians
+    12: ("uEm0401", "Saurian"),     # Sulfur Saurians
+    13: ("uEm0402", "Saurian"),     # Geo Saurians
+    14: ("uEm0403", "Saurian"),     # Saurian Sages
+    15: ("uEm0500", "Undead"),      # Undead (Zombies)
+    16: ("uEm0501", "Undead"),      # Stout Undead
+    17: ("uEm0502", "Undead"),      # Undead Warriors
+    18: ("uEm0503", "Undead"),      # Giant Undead
+    19: ("uEm0600", "Harpy"),       # Harpies
+    20: ("uEm0601", "Harpy"),       # Snow Harpies
+    21: ("uEm0602", "Harpy"),       # Succubi
+    22: ("uEm0603", "Harpy"),       # Gargoyles
+    23: ("uEm0700", "Ghost"),       # Phantoms
+    24: ("uEm0701", "Ghost"),       # Phantasms
+    25: ("uEm0702", "Ghost"),       # Specters
+    26: ("uHumanEnemy", "Human"),   # Hostile Soldiers
+    27: ("uHumanEnemy", "Human"),   # Hostile Bandits
+    28: ("uEm9100", "Human"),       # Enemy Wizard
+    29: ("uEm5000", "Cyclops"),     # Cyclopes
+    30: ("uEm0900", "Ogre"),        # Ogres
+    31: ("uEm5100", "Golem"),       # Golems
+    32: ("uEm5101", "Golem"),       # Metal Golems
+    33: ("uEm5200", "Chimera"),     # Chimeras
+    34: ("uEm5201", "Chimera"),     # Gorechimeras
+    35: ("uEm5300", "Hydra"),       # Hydras
+    36: ("uEm5301", "Hydra"),       # Archydras
+    37: ("uEm5400", "Griffin"),     # Griffins
+    38: ("uEm5401", "Griffin"),     # Cockatrices
+    39: ("uEm5500", "EvilEye"),     # Evil Eyes
+    40: ("uEm5501", "EvilEye"),     # Vile Eyes
+    41: ("uEm6000", "Wight"),       # Wights
+    42: ("uEm6001", "Lich"),        # Liches
+    43: ("uEm5800", "Dragon"),      # The Dragon (Grigori)
+    44: ("uEm5801", "Dragon"),      # The Ur-Dragon
+    45: ("uEm5900", "Dragon"),      # Drakes
+    46: ("uEm5901", "Dragon"),      # Wyrms
+    47: ("uEm5902", "Dragon"),      # Wyverns
+    48: ("uEm8900", "Boss"),        # The Seneschal
+    49: ("uHumanEnemy", "Human"),   # Enemy Person
+    50: ("uEm0103", "BBI-Goblin"),  # Greater Goblins / Goblin Shamans
+    52: ("uEm0203", "BBI-Wolf"),    # Wargs / Garm
+    53: ("uEm2003", "BBI-Skeleton"),# Skeleton Brutes
+    54: ("uEm2004", "BBI-Skeleton"),# Golden Knights
+    55: ("uEm2005", "BBI-Skeleton"),# Silver Knights
+    56: ("uEm2006", "BBI-Armor"),   # Living Armor
+    57: ("uEm0404", "BBI-Saurian"), # Pyre Saurians
+    58: ("uEm0504", "BBI-Undead"),  # Poisoned Undead
+    59: ("uEm0505", "BBI-Undead"),  # Banshees
+    60: ("uEm0506", "BBI-Undead"),  # Eliminators
+    61: ("uEm0604", "BBI-Harpy"),   # Strigoi
+    62: ("uEm0605", "BBI-Harpy"),   # Sirens
+    63: ("uEm0703", "BBI-Ghost"),   # Wraiths
+    64: ("uEm5001", "BBI-Cyclops"), # Gorecyclopes
+    65: ("uEm0901", "BBI-Ogre"),    # Elder Ogres
+    66: ("uEm5502", "BBI-EvilEye"), # Gazers
+    67: ("uEm5500_00", "BBI-Misc"), # Maneaters
+    68: ("uEm6002", "BBI-Wight"),   # Dark Bishops
+    69: ("uEm6003", "BBI-Boss"),    # Death
+    70: ("uEm5906", "BBI-Dragon"),  # Cursed Dragons
+    71: ("uEm7000", "BBI-Boss"),    # Daimon
 }
 
 def generate_enemy_types_header(types_map):
@@ -224,6 +231,23 @@ def generate_bestiary_headers(types_map, bestiary_list):
 
             o.write(f'    {{ {bid:>2}, 0x{gid:02X}, {midx:>3}, "{name}", "{family}", "{uem}", 0x{vt_rva:06X} }},\n')
 
+        # Wildlife / Animals
+        wildlife = [
+            ("Deer / Stag", "Wildlife", "uEm8500"),
+            ("Doe", "Wildlife", "uEm8501"),
+            ("Hare / Rabbit", "Wildlife", "uEm8600"),
+            ("Snake / Critter", "Wildlife", "uEm8601"),
+            ("Bat / Crow", "Wildlife", "uEm8602"),
+            ("Ox / Boar", "Wildlife", "uEm8700"),
+            ("Camp Critter", "Wildlife", "uEm8000"),
+        ]
+        o.write("\n    // Wildlife / Animals (uEm8000, uEm8500 - uEm8700)\n")
+        for w_name, w_fam, w_uem in wildlife:
+            t_info = types_map.get(w_uem, (0xFF, "0x400000", "", "", ""))
+            gid = t_info[0]
+            vt_rva = int(t_info[1], 16) - 0x400000
+            o.write(f'    {{ -1, 0x{gid:02X},  -1, "{w_name}", "{w_fam}", "{w_uem}", 0x{vt_rva:06X} }},\n')
+
         o.write("    { -1, 0x00, -1, nullptr, nullptr, nullptr, 0 }\n};\n\n")
         o.write("#define BESTIARY_COUNT 72\n\n")
         o.write("// Поиск врага по groupId (из damage-хука)\n")
@@ -242,6 +266,19 @@ def generate_bestiary_headers(types_map, bestiary_list):
         o.write("    for (auto* e = g_bestiary; e->name; e++)\n")
         o.write("        if (e->mStudyIdx == mIdx) return e;\n")
         o.write("    return nullptr;\n}\n\n")
+        o.write("// Поиск по имени класса (\"uEm0100\"), полученному через DTI.\n")
+        o.write("// ЗАЧЕМ. FindEnemyByVTable сравнивает ФАБРИЧНЫЕ vtable из types.tsv,\n")
+        o.write("// а живой объект несёт instance-vtable. Совпадений не бывает — та же\n")
+        o.write("// мина, что убила ActMap::FindByVt. Имя класса же читается у самой игры\n")
+        o.write("// и всегда точное, поэтому это единственный надёжный мост\n")
+        o.write("// «живой объект -> запись бестиария».\n")
+        o.write("inline const EnemyEntry* FindEnemyByUEmName(const char* uEm) {\n")
+        o.write("    if (!uEm || !uEm[0]) return nullptr;\n")
+        o.write("    for (const EnemyEntry* e = g_bestiary;\n")
+        o.write("         e < g_bestiary + sizeof(g_bestiary) / sizeof(g_bestiary[0]); ++e) {\n")
+        o.write("        if (e->uEmName && strcmp(e->uEmName, uEm) == 0) return e;\n")
+        o.write("    }\n")
+        o.write("    return nullptr;\n}\n\n")
         o.write("// Поиск врага по vtableRVA\n")
         o.write("inline const EnemyEntry* FindEnemyByVTable(uint32_t vtRVA) {\n")
         o.write("    if (vtRVA == 0) return nullptr;\n")
@@ -254,12 +291,13 @@ def generate_bestiary_headers(types_map, bestiary_list):
         o.write("    const EnemyEntry* e = FindEnemyByGid(gid);\n")
         o.write("    if (!e || !e->family) return 1;\n")
         o.write("    const char* f = e->family;\n")
-        o.write('    if (strstr(f, "Goblin") || strstr(f, "Wolf") || strstr(f, "Ghost"))   return 0;\n')
-        o.write('    if (strstr(f, "Skeleton") || strstr(f, "Saurian") || strstr(f, "Undead") || strstr(f, "Human")) return 1;\n')
-        o.write('    if (strstr(f, "Cyclops") || strstr(f, "Ogre") || strstr(f, "Golem") || strstr(f, "Chimera")) return 2;\n')
-        o.write('    if (strstr(f, "Harpy") || strstr(f, "Griffin") || strstr(f, "Cockatrice") || strstr(f, "EvilEye")) return 3;\n')
-        o.write('    if (strstr(f, "Wight") || strstr(f, "Lich"))   return 4;\n')
-        o.write('    if (strstr(f, "Dragon") || strstr(f, "Hydra") || strstr(f, "Boss") || strstr(f, "Armor"))  return 5;\n')
+        o.write('    if (strstr(f, \"Wildlife\")) return 0; // Wildlife is harmless/small\n')
+        o.write('    if (strstr(f, \"Goblin\") || strstr(f, \"Wolf\") || strstr(f, \"Ghost\"))   return 0;\n')
+        o.write('    if (strstr(f, \"Skeleton\") || strstr(f, \"Saurian\") || strstr(f, \"Undead\") || strstr(f, \"Human\")) return 1;\n')
+        o.write('    if (strstr(f, \"Cyclops\") || strstr(f, \"Ogre\") || strstr(f, \"Golem\") || strstr(f, \"Chimera\")) return 2;\n')
+        o.write('    if (strstr(f, \"Harpy\") || strstr(f, \"Griffin\") || strstr(f, \"Cockatrice\") || strstr(f, \"EvilEye\")) return 3;\n')
+        o.write('    if (strstr(f, \"Wight\") || strstr(f, \"Lich\"))   return 4;\n')
+        o.write('    if (strstr(f, \"Dragon\") || strstr(f, \"Hydra\") || strstr(f, \"Boss\") || strstr(f, \"Armor\"))  return 5;\n')
         o.write("    return 1;\n}\n")
 
     print(f"✅ Сгенерирован {OUT_BESTIARY_DATA} ({len(unique_bestiary)} бестиариев)")

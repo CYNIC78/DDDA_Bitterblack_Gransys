@@ -59,11 +59,11 @@ Transient heap addresses и VA vtable одного запуска **не кан�
 
 ### 0.4 Identity / классификация
 
-| Документ / код | Утверждает | Конфликт |
+| Документ / код | Утверждает | Конфликт / Статус |
 |---|---|---|
-| `BestiaryData.h` | `uEm8000` = The Dragon / Ur-Dragon, gid `0x61` | `WorldScan::KindIsHarmless` и `CombatIntel` считают **весь** `uEm8000` живностью |
-| `POSSESSION_RECON.md` §1 / `ARC_MAP.txt` | `em1000` = Drake | в атласе нет `uEm1000`. Live Devilfire = **`uEm5900` / `em5900.arc`** (§8.5), не каталожный `uEm8100` |
-| `BestiaryData.h` / `generate_bestiary.py` | `uEm5900` = «Evil Eyes» | ручной `BESTIARY_UEM_MAP` bid 39. Live + `em5900.arc` + FluffyQuack `em.txt` = **Drake**. Подпись в `.h` не identity |
+| `BestiaryData.h` | `uEm8000` = The Dragon / Ur-Dragon, gid `0x61` | **ЗАКРЫТО (84.38)**: `uEm8000` перенесён в Wildlife (лагерная живность). Настоящий Григори — **`uEm5800`** (gid `0x5A`), Ур-Дракон — **`uEm5801`** (gid `0x5B`) |
+| `POSSESSION_RECON.md` §1 / `ARC_MAP.txt` | `em1000` = Drake | **ЗАКРЫТО (84.25–84.38)**: `uEm1000` в атласе нет. Дрейк = **`uEm5900` / `em5900.arc`** (gid `0x5C`), не каталожный `uEm8100` |
+| `BestiaryData.h` / `generate_bestiary.py` | `uEm5900` = «Evil Eyes» | **ЗАКРЫТО (84.38)**: `BESTIARY_UEM_MAP` перемаплен по DTI+TypeAtlas. `uEm5900` = Drake; Evil Eye = **`uEm5500`**; Vile Eye = **`uEm5501`**; Gazer = **`uEm5502`**; Cursed Dragon = **`uEm5906`** |
 | `SOURCE_OF_TRUTH` (старый) §2 | `kPartyBodySize` = 23056 | `RuntimeInternal.h`: `kPartyBodySize=0x5A10` (uPlayer), `kCmcBodySize=0x58E0` (uCmc=22752) — **так и есть** |
 | `WorldScan.cpp` `kPawnBodyBytes` (до 84.22) | сканировал uCmc как 23056 | 84.22: `kCmcBodySize` (`0x58E0`). `PartyStatus` `0x5A40` ещё открыт — §11.4 |
 | `PartyStatus.cpp` `kPartyBodyBytes = 0x5A40` | discovery 23104 B на любое тело партии | больше обоих TypeAtlas sizes; тот же класс дыры |
@@ -549,15 +549,24 @@ CMC封印行うダメージ 5000    «печать» на CMC (кандидат 
 `e5800_pl.lmt`: 4 слота, 71 кость, 8.37 / 4.03 / 2.37 / 3.03 с (player-interact).
 Имён событий LMT-дампер не читает. Слой C на `uCmc` по-прежнему UNVALIDATED.
 
-### 8.4 `uEm8000` / gid `0x61` — ОТКРЫТЫЙ КОНФЛИКТ
+### 8.4 `uEm8000` / gid `0x61` vs Григори — ЗАКРЫТО (84.38)
 
-- Бестиарий: `uEm8000` = The Dragon / Ur-Dragon, gid `0x61`.
-- WorldScan + CombatIntel: class name `uEm8000` = **harmless critter**.
-- Зайцы live носят gid `0x61`; настоящий заяц = `uEm8600`.
+Разведение лагерной живности и сюжетного Дракона подтверждено:
+- **Григори (The Dragon)** = **`uEm5800` / `em5800.arc`**, size 32976, gid `0x5A`, RVA `0x11CF280`. Все экшены `cEm5800*` (`BreathSuper`, `HoukouCmc`, `Catch`, `Gakenobori`) принадлежат ему. В бестиарии: `bid 43`.
+- **Ур-Дракон (The Ur-Dragon)** = **`uEm5801` / `em5801.arc`**, size 31888, gid `0x5B`. В бестиарии: `bid 44`.
+- **Лагерная живность (`uEm8000`)** = `em8000.arc`, size 29296, gid `0x61`. Это мелкая живность (наряду с зайцем `uEm8600`). В бестиарии `BestiaryData.h` перенесена в Wildlife (`bid -1`, Category 0).
+- Ловушка `GetEnemyCategory(0x61) -> Boss` ликвидирована: удар по зайцу больше не триггерит боевой режим битвы с боссом.
 
-Пока живой A/B не разведёт «лагерный uEm8000» и Григори, **нельзя**:
-маппить gid `0x61` → Dragon; писать Tempo/Director в `uEm8000`;
-считать `KindIsHarmless("uEm8000")` доказанным для финала Nightmare.
+### 8.5 Семейство драконидов `em5900`–`em5906` (CONFIRMED 84.38)
+
+Линейка подтверждена по листингам ассетов и `TypeAtlas`:
+- `uEm5900` (`em5900.arc`, size 31920, gid `0x5C`): **Drake** (Devilfire Red Dragon);
+- `uEm5901` (`em5901.arc`, size 31936, gid `0x5D`): **Wyrm** (Watergod Altar Ice Dragon);
+- `uEm5902` (`em5902.arc`, size 31936, gid `0x5E`): **Wyvern** (Thunder Dragon);
+- `uEm5903`–`uEm5905` (gid `0xB1`–`0xB3`): **BBI Dire-драконы** (Firedrake, Frostwyrm, Thunderwyvern);
+- `uEm5906` (`em5906.arc`, size 31936, gid `0xB4`): **Cursed Dragon** (звук `em_mgc_revive`, воскрешение Епископом).
+
+Все 72 слота бестиария в `src/BestiaryData.h` синхронизированы через `tools/generate_bestiary.py`. Истинное имя всегда определяется через `NameOfLiveObjectSafe(body)` $\to$ `FindEnemyByUEmName(nm)`.
 
 ---
 

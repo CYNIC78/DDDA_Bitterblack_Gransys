@@ -4,13 +4,12 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 > Умеем изменить живую политику — делаем LIVE. Игровые архивы используются как каталог, а не как основной способ установки.
 
-**Текущий milestone:** tag `84.34-status-call` — thiscall `cStatus`
-после воды. 84.33: рецепт не собрался (`stk8=id`).
-(`ids[k]=7`). Ещё: `84.30-party-sheet`
-(дамп записи). Ещё: `84.29-saurian-pack`.
-(карточка вида без agrо-двери). `84.25-fullbody-scan` — в слот только
-полное тело. Devilfire Drake live = `uEm5900`, не каталожный `uEm8100`.
-Ещё ранее: `84.23-on-field`. Лог в RAM до выхода. Канон: [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md).
+**Текущий milestone:** tag `84.40-caster-harass` — тактический прессинг
+игрока-кастера (`PLAYER-CHANT-HARASS`, Аризен-онли, синие/гибридные вокации)
+плюс проактивная защита призывателей (`84.39-caller-defense`: горнисты гоблинов,
+воющие волки). Ранее: `84.38-true-bestiary` (полная синхронизация 72 видов,
+Григори, дракониды, снятие босс-статуса с зайцев uEm8000). Ранее: `84.37-xmm-params`.
+Канон: [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md).
 
 **Предыдущий milestone:** tag `84.21-species-rage` — rage-профили (мин-макс скорости атаки и локомоции при std-rush) теперь поля карточки вида (SpeciesCard); roll берёт из них. Волк: 1.20–1.25 / 1.20–1.26 (сбалансированный, без изменений); гоблин: 1.21–1.24 / 1.32–1.40 (атака быстрее локомоции). Нагрузка нулевая: roll один раз на тело, эндпоинты неизменны.
 
@@ -139,7 +138,17 @@ wolf-условие внутри Director. Таблица сохраняет т�
 - `cPlActHagaijime4Feet` → `PACK-GROUND-PIN-ALARM`, priority 200, полный alarm,
   lease до 4000 ms;
 - `cPlActLift* + cEm0200Lifted` → отдельный `PACK-LIFT-RESCUE`, priority 150,
-  lease до 2500 ms.
+  lease до 2500 ms;
+- `cEm0100ActHorn*` + exact `uEm0100`/`uEm0101` → `GOB-HORN-ALERT` / `HOB-HORN-ALERT` (Build 84.39),
+  priority 85/84, проактивная защита горниста: сам горнист исключается (`excludeEvidenceBody`),
+  а стая находит ближайшую угрозу из партии (до 12 м) и бросается наперерез в режиме `std-rush`,
+  выстраивая защитный заслон;
+- `cEm0200Howling` / `cEm0400ActFriendHowl` → `WOLF-HOWL-ALERT` (до 14 м) / `SAURIAN-HOWL-ALERT` (до 10 м),
+  защита воющего волка и зовущего ящера;
+- `cPlActWpnWandBase` / `MagicBow` / `MagicShieldBase` + Arisen only → `PLAYER-CHANT-HARASS` (Build 84.40),
+  priority 75, тактический прессинг Аризена-кастера: срабатывает строго на игроке (синие/гибридные
+  вокации Mage, Sorcerer, Mystic Knight, Magick Archer); пешки-маги не трогаются. Ближайший враг
+  в радиусе 10–14 м ускоряется в `std-rush` для срыва заклинания; при отмене каста приказ тут же снимается.
 
 Ground pin — это прижатие волка/завра весом тела к земле, не lift. Для ground
 rules exact party action доказывает holder role, exact kind и одна уникальная

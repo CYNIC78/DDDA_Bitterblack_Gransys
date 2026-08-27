@@ -47,35 +47,39 @@ no equipped weapon will stand still».
 и коду dinput8» и **расходится с рантайм-бестиарием** (`src/BestiaryData.h`,
 сгенерирован из игровых данных). Это важно: мы запросили не тот архив.
 
-| `ARC_MAP.txt` говорит | `BestiaryData.h` говорит |
+| `ARC_MAP.txt` (старый) | `BestiaryData.h` (84.38 верифицировано) |
 |---|---|
-| `em0100.arc` Hobgoblin | `uEm0100` Goblin, `uEm0103` Greater Goblin |
-| `em0300.arc` Harpy | `uEm0700/0701/0702` Harpies/Snow Harpies/Succubi |
-| `em0500.arc` Undead | `uEm0500` Skeleton, `uEm0600` Undead |
-| `em0600.arc` Cyclops | `uEm2000` Cyclops, `uEm6000` **Wight** |
-| `em1000.arc` Drake / Dragon | **`uEm1000` в атласе нет**. Live Devilfire Drake = **`uEm5900` / `em5900.arc`** (SoT §8.5). Подпись `uEm8100`=Drake в `.h` — guess |
-| `em5000.arc` Cursed Dragon | `uEm5000` Golem; Cursed Dragons = **`uEm8300`** |
-| `em6000.arc` Death | `uEm6000` Wight, `uEm6003` Death |
-| `em7000.arc` Daimon | `uEm7000` Living Armor, Daimon = **`uEm7002`** |
+| `em0100.arc` Hobgoblin | `uEm0100` Goblin, `uEm0101` Hobgoblin, `uEm0102` Grimgoblin |
+| `em0500.arc` Skeleton | `uEm0500` Undead (Zombies), `uEm0506` Eliminator |
+| `em0600.arc` Undead | `uEm0600` Harpy, `uEm0603` Gargoyle |
+| `em0700.arc` Harpy | `uEm0700` Phantom, `uEm0703` Wraith |
+| `em0900.arc` Gargoyle | `uEm0900` Ogre, `uEm0901` Elder Ogre |
+| `em2000.arc` Cyclops | `uEm2000` Skeleton, `uEm2001` Knight, `uEm2006` Living Armor |
+| `em5000.arc` Golem | `uEm5000` Cyclops, `uEm5001` Gorecyclops |
+| `em5100.arc` Chimera | `uEm5100` Golem, `uEm5101` Metal Golem |
+| `em5300.arc` / `em5400.arc` | `uEm5300` Hydra, `uEm5400` Griffin, `uEm5401` Cockatrice |
+| `em5500.arc` Eliminator | `uEm5500` Evil Eye, `uEm5501` Vile Eye, `uEm5502` Gazer, `uEm5500_00` Maneater |
+| `em5800.arc` Drake | `uEm5800` The Dragon (Grigori), `uEm5801` Ur-Dragon |
+| `em5900.arc` Evil Eye | `uEm5900` Drake, `uEm5901` Wyrm, `uEm5902` Wyvern, `uEm5906` Cursed Dragon |
+| `em6000.arc`–`em6003.arc` | `uEm6000` Wight, `uEm6001` Lich, `uEm6002` Dark Bishop, `uEm6003` Death |
+| `em7000.arc`–`em7002.arc` | `uEm7000` Daimon Form 1, `uEm7001` Daimon Form 2 |
+| `em8000.arc` The Dragon | `uEm8000` Camp Critter / Wildlife (лагерная живность) |
 
-Достоверный список (из `src/BestiaryData.h`, gid → класс):
+Верифицированный список (84.38, DTI + types.tsv + листинги ассетов):
 
 ```text
-em0100 Goblin · em0103 Greater Goblin · em0200 Wolf · em0203 Warg
-em0400 Saurian · em0500 Skeleton · em0600 Undead · em0700 Harpy
-em0900 Gargoyle · em1200 Phantom/Specter · em1201 Phantasm/Wraith
-em2000 Cyclops · em2001 Ogre · em5000 Golem · em5200 Chimera
-em5301 Gorechimera · em5400 Hydra · em5500 Eliminator · em5501 Elder Ogre
-em5900 Drake (live Devilfire + FluffyQuack; .h ошибочно пишет Evil Eye)
-em6000 Wight · em6001 Lich · em6002 Dark Bishop
-em6003 Death · em7000 Living Armor · em7002 Daimon
-em8000 The Dragon / Ur-Dragon · em8100 ? (FluffyQuack; .h пишет Drake)
-em8300 Cursed Dragon · em8900 The Seneschal
+em0100 Goblin/Hobgoblin/Grimgoblin · em0103 Greater Goblin · em0200 Wolf · em0203 Warg
+em0400 Saurian · em0500 Undead · em0506 Eliminator · em0600 Harpy · em0603 Gargoyle
+em0700 Phantom/Specter · em0900 Ogre · em0901 Elder Ogre · em2000 Skeleton
+em2001 Skeleton Knight · em2006 Living Armor · em5000 Cyclops · em5001 Gorecyclops
+em5100 Golem · em5101 Metal Golem · em5200 Chimera · em5300 Hydra · em5400 Griffin
+em5500 Evil Eye · em5501 Vile Eye · em5502 Gazer · em5500_00 Maneater
+em5800 The Dragon (Grigori) · em5801 The Ur-Dragon
+em5900 Drake · em5901 Wyrm · em5902 Wyvern · em5906 Cursed Dragon
+em6000 Wight · em6001 Lich · em6002 Dark Bishop · em6003 Death
+em7000 Daimon (Form 1) · em7001 Awakened Daimon (Form 2)
+em8000 Camp Critter / Wildlife · em8600 Hare / Rabbit · em8900 The Seneschal
 ```
-
-⚠️ **Имена архивов на диске остаются непроверенными**: рантайм-класс ≠ имя
-файла. Прежде чем распаковывать — снять листинг `nativePC\rom\enemy\` целиком
-(одна команда `dir`), иначе будем гадать.
 
 ## 2. Главное исправление: `cEmWightActPossesion` — это НЕ про пешку
 

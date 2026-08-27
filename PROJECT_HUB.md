@@ -2,10 +2,11 @@
 
 ## Текущий milestone
 
-**Build 84.32:** `buff-hook` — слух на сайт `HBuffMods`. Poke 84.31
-движок стёр. Канон: `MOD_BUILD_TAG` = `84.32-buff-hook`,
-[`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §12.1.2.
-Ветки `work/player-main-pawn-recon` в remote нет (`main`).
+**Build 84.40:** `caster-harass` — тактический прессинг игрока-кастера (Mage, Sorcerer, MK, MA)
+в стойках каста заклинаний (`cPlActWpnWandBase` и др.) строго для Аризена (`slot == 0`).
+Пешки-маги защищены от буллинга. Канон: `MOD_BUILD_TAG` = `84.40-caster-harass`.
+
+**Предыдущий:** Build 84.39 `caller-defense`. Build 84.38 `true-bestiary`. Build 84.37 `xmm-params`.
 
 **Предыдущий:** Build 84.30 `party-sheet`. Build 84.29 `saurian-pack`.
 Build 84.25 `fullbody-scan`.
