@@ -125,7 +125,7 @@ extern "C" void __stdcall PossessionLogBuffApply(UINT32 id, UINT32 body, UINT32 
             << " kind=" << (kind[0] ? kind : "?")
             << " t=" << t << " p0=" << p0 << " p1=" << p1;
     if (id == 6 && s_nId6 > 1) logFile << " n=" << s_nId6;
-    if (s_inject && id == 7)
+    if (s_inject)
         logFile << " inject t=" << s_injT
                 << " p0=" << s_injP0 << " p1=" << s_injP1;
     logFile << std::endl;
@@ -156,8 +156,6 @@ extern "C" void __declspec(naked) HBuffApply()
         add     esp, 48
         cmp     s_inject, 0
         je      noinj
-        cmp     esi, 7
-        jne     noinj
         movss   xmm0, s_injT
         movss   xmm1, s_injP0
         movss   xmm2, s_injP1
@@ -208,6 +206,8 @@ static bool   s_customOn = false;
 static float  s_customT = 180.0f;
 static float  s_customP0 = 0.2f;
 static float  s_customP1 = 0.35f;
+static int    s_selectedId = 7;
+static bool   s_targetArisen = false;
 
 static bool Near(float a, float b)
 {
@@ -222,10 +222,16 @@ static float ClampF(float v, float lo, float hi)
     return v;
 }
 
-static uintptr_t MainRecord()
+static uintptr_t TargetRecord()
 {
     if (!pBase || !*pBase) return 0;
-    return (uintptr_t)(*pBase) + 0xA7000 + 0x7F0;
+    uintptr_t base = (uintptr_t)(*pBase) + 0xA7000;
+    return s_targetArisen ? base : (base + 0x7F0);
+}
+
+static uintptr_t TargetBody()
+{
+    return s_targetArisen ? Runtime::ArisenBody() : Runtime::MainPawnBody();
 }
 
 static bool RecordLooksLive(uintptr_t rec)
@@ -243,9 +249,9 @@ static bool RecordLooksLive(uintptr_t rec)
     return true;
 }
 
-static bool PawnStanding()
+static bool TargetStanding()
 {
-    const uintptr_t body = Runtime::MainPawnBody();
+    const uintptr_t body = TargetBody();
     if (!body) return false;
     char act[48] = {};
     if (!Runtime::ReadLiveAct(body, act, sizeof(act))) return false;
@@ -303,11 +309,11 @@ static void LogState(const char* ev)
 {
     int32_t id = kIdEmpty, count = 0;
     float timer = 0, p0 = 0, p1 = 0;
-    const uintptr_t rec = MainRecord();
+    const uintptr_t rec = TargetRecord();
     if (RecordLooksLive(rec)) {
         RdI32(rec, kOffCount, &count);
         int slot = s_slot;
-        if (slot < 0) slot = FindId(rec, kIdPossession);
+        if (slot < 0) slot = FindId(rec, s_selectedId);
         if (slot >= 0) {
             RdI32(rec, kOffIds + (uint32_t)slot * 4, &id);
             RdF32(rec, kOffTimer + (uint32_t)slot * 4, &timer);
@@ -316,6 +322,7 @@ static void LogState(const char* ev)
         }
     }
     logFile << "Possession: " << ev
+            << " target=" << (s_targetArisen ? "Arisen" : "MainPawn")
             << " slot=" << s_slot
             << " id=" << id
             << " t=" << timer
@@ -376,7 +383,7 @@ static void RollbackSlot(uintptr_t rec, const char* why)
 
 static void DoClear(const char* why)
 {
-    const uintptr_t rec = MainRecord();
+    const uintptr_t rec = TargetRecord();
     if (!RecordLooksLive(rec)) {
         s_applied = false;
         s_watching = false;
@@ -387,7 +394,17 @@ static void DoClear(const char* why)
         return;
     }
     int slot = s_slot;
+    if (slot < 0) slot = FindId(rec, s_selectedId);
     if (slot < 0) slot = FindId(rec, kIdPossession);
+    if (slot < 0) {
+        for (int i = 0; i < kSlots; ++i) {
+            int32_t id = kIdEmpty;
+            if (RdI32(rec, kOffIds + (uint32_t)i * 4, &id) && id != kIdEmpty) {
+                slot = i;
+                break;
+            }
+        }
+    }
     if (slot < 0) {
         s_applied = false;
         s_watching = false;
@@ -424,9 +441,9 @@ static bool TryVanillaApply(int id)
         SetWhy("no-buff-fn");
         return false;
     }
-    const uintptr_t body = Runtime::MainPawnBody();
+    const uintptr_t body = TargetBody();
     if (!body) {
-        SetWhy("no-body");
+        SetWhy(s_targetArisen ? "no-arisen-body" : "no-body");
         return false;
     }
     const uintptr_t status = body + kOffStatusCtx;
@@ -502,26 +519,26 @@ static void DoApply()
         LogState("apply-refused");
         return;
     }
-    const uintptr_t rec = MainRecord();
+    const uintptr_t rec = TargetRecord();
     if (!RecordLooksLive(rec)) {
-        SetWhy("main-record-invalid");
+        SetWhy("target-record-invalid");
         LogState("apply-failed");
         return;
     }
-    if (!PawnStanding()) {
-        SetWhy("pawn-not-standing");
+    if (!TargetStanding()) {
+        SetWhy("target-not-standing");
         LogState("apply-refused");
         return;
     }
 
     int32_t countWas = 0;
     RdI32(rec, kOffCount, &countWas);
-    if (!TryVanillaApply(kIdPossession)) {
+    if (!TryVanillaApply(s_selectedId)) {
         LogState("apply-failed");
         return;
     }
     s_usedVanilla = true;
-    const int slot = FindId(rec, kIdPossession);
+    const int slot = FindId(rec, s_selectedId);
     if (slot >= 0) {
         BeginWatch(rec, slot, countWas, kIdEmpty, 0, 0, 0,
                    "vanilla-applied WATCH");
@@ -545,6 +562,8 @@ void SetCustom(bool on) { s_customOn = on; }
 void SetCustomTimer(float seconds) { s_customT = ClampF(seconds, 5.0f, 180.0f); }
 void SetCustomP0(float v) { s_customP0 = ClampF(v, 0.05f, 2.0f); }
 void SetCustomP1(float v) { s_customP1 = ClampF(v, 0.05f, 2.0f); }
+void SetSelectedId(int id) { s_selectedId = id; }
+void SetTargetArisen(bool on) { s_targetArisen = on; }
 
 void Tick()
 {
@@ -559,13 +578,13 @@ void Tick()
         DoApply();
 
     if (!s_watching) return;
-    const uintptr_t rec = MainRecord();
+    const uintptr_t rec = TargetRecord();
     if (!RecordLooksLive(rec)) {
         RollbackSlot(rec, "watch-record-lost");
         return;
     }
     if (s_slot < 0) {
-        const int slot = FindId(rec, kIdPossession);
+        const int slot = FindId(rec, s_selectedId);
         if (slot >= 0) {
             s_slot = slot;
             s_watchSince = GetTickCount();
@@ -586,7 +605,7 @@ void Tick()
     RdI32(rec, kOffIds + (uint32_t)s_slot * 4, &id);
     RdI32(rec, kOffCount, &count);
     RdF32(rec, kOffTimer + (uint32_t)s_slot * 4, &timer);
-    if (id != kIdPossession || count <= 0 || !(timer > 0.0f)) {
+    if (id != s_selectedId || count <= 0 || !(timer > 0.0f)) {
         s_applied = false;
         s_watching = false;
         s_held = false;
@@ -704,8 +723,10 @@ Status Get()
     s.customP0 = s_customP0;
     s.customP1 = s_customP1;
     s.slot = s_slot;
+    s.selectedId = s_selectedId;
+    s.targetArisen = s_targetArisen;
     lstrcpynA(s.why, s_why, sizeof(s.why));
-    const uintptr_t rec = MainRecord();
+    const uintptr_t rec = TargetRecord();
     if (RecordLooksLive(rec)) {
         RdI32(rec, kOffCount, &s.liveCount);
         int32_t id0 = kIdEmpty;
@@ -714,7 +735,7 @@ Status Get()
         RdF32(rec, kOffTimer, &s.liveTimer);
         RdF32(rec, kOffP0, &s.liveP0);
         RdF32(rec, kOffP1, &s.liveP1);
-        const int have = FindId(rec, kIdPossession);
+        const int have = FindId(rec, s_selectedId);
         if (have >= 0) {
             RdI32(rec, kOffIds + (uint32_t)have * 4, &s.liveId);
             RdF32(rec, kOffTimer + (uint32_t)have * 4, &s.liveTimer);

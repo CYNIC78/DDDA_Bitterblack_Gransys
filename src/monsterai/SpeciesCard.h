@@ -26,26 +26,29 @@ struct SpeciesCard {
     // профиля (1.20 / 1.15), иначе admission reject.
     float       rageLocoLo, rageLocoHi;
     float       rageAnimLo, rageAnimHi;
+    // Генетический коридор масштаба (84.44):
+    float       scaleMin, scaleMax;     // безопасный коридор размера рядовых (0.93..1.15)
+    float       leaderScaleThreshold;   // порог детекции ванильного альфы/лидера
+    float       scaleJitter;            // неуниформность комплекции (W/D vs H)
 };
 
 static const SpeciesCard kSpeciesCards[] = {
+    // Wolf: сбалансированный, альфа-вожак Capcom >= 1.10 сохраняется
     { "uEm0200", 29888u, true, true,  true,
-      1.20f, 1.25f, 1.20f, 1.26f },
-    // 84.20: приказ = экстренная ситуация — goblin-lease получает std-rush
-    // (те же правила мобилизации, что и волк). Aggro-часть lease не менялась:
-    // pin + fakehit, без suppress.
+      1.20f, 1.25f, 1.20f, 1.26f,
+      0.94f, 1.10f, 1.10f, 0.05f },
+    // Goblin: атака быстрее локомоции (малый быстрый боец), коридор 0.93..1.15
     { "uEm0100", 29632u, true, true,  true,
-      1.21f, 1.24f, 1.32f, 1.40f },
-    // 84.26: hobgoblin. Same body size as goblin; +0xEE4 CONFIRMED (log 6).
-    // Grab = goblin recipe. PackMark = wolf weakest-HP. Rage ceiling below goblin.
+      1.21f, 1.24f, 1.32f, 1.40f,
+      0.93f, 1.15f, 1.12f, 0.08f },
+    // Hobgoblin: Same body size as goblin; rage ceiling below goblin
     { "uEm0101", 29632u, true, true,  true,
-      1.21f, 1.23f, 1.24f, 1.32f },
-    // 84.29: ordinary Saurian. Live Devilfire-adjacent pack: DTI uEm0400,
-    // Tempo ACCEPTED, cEm0400* (PoisonGun/Fours/JumpDown), Fluffy em0400.
-    // PackMark weakest-HP only. NO grab cue. Rage just above live stable
-    // (loco≤1.189 anim≤1.115); 1.05..1.15 is already baseline scatter.
+      1.21f, 1.23f, 1.24f, 1.32f,
+      0.95f, 1.14f, 1.12f, 0.06f },
+    // Saurian: обычный ящер
     { "uEm0400", 29568u, true, true,  true,
-      1.20f, 1.22f, 1.20f, 1.23f },
+      1.20f, 1.22f, 1.20f, 1.23f,
+      0.95f, 1.12f, 1.12f, 0.05f },
 };
 
 inline int SpeciesCardCount()

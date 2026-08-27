@@ -3,6 +3,7 @@
 #include "runtime/MemProbe.h"
 #include "EnemyTuner.h"
 #include "EntityConfig.h"
+#include "monsterai/SpeciesCard.h"
 
 /**
  * Первый шаг применения конфига: РАЗВЕДКА, а не запись.
@@ -958,21 +959,24 @@ static void TickOneBody(uintptr_t body, const char* kind)
         }
     }
 
-    // --- масштаб ---------------------------------------------------------
-    if (NearlyEq(t.scaleMin, 1.0f) && NearlyEq(t.scaleMax, 1.0f)) return;
+    // --- масштаб (SpeciesCard + EntityCfg) --------------------------------
+    const MonsterAI::SpeciesCard* card = MonsterAI::FindSpeciesCard(kind);
 
-    float want = PickScale(body, t.scaleMin, t.scaleMax);
+    float scaleLo = t.scaleMin;
+    float scaleHi = t.scaleMax;
+    float jitter = t.scaleJitter;
+    float leaderThresh = 1.12f;
 
-    // Неуниформность: W и D отклоняются от H на +-jitter, детерминированно.
-    float wantW = want, wantH = want, wantD = want;
-    if (t.scaleJitter > 0.001f) {
-        uint32_t h1 = (uint32_t)(body >> 3) * 2654435761u;
-        uint32_t h2 = (uint32_t)(body >> 5) * 2246822519u;
-        float j1 = ((float)((h1 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
-        float j2 = ((float)((h2 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
-        wantW = want * (1.0f + t.scaleJitter * j1);
-        wantD = want * (1.0f + t.scaleJitter * j2);
+    if (card) {
+        if (NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) {
+            scaleLo = card->scaleMin;
+            scaleHi = card->scaleMax;
+            jitter = card->scaleJitter;
+            leaderThresh = card->leaderScaleThreshold;
+        }
     }
+
+    if (NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
 
     Touched* rec = rec0;      // запись уже получена выше (блок поводка)
 
@@ -1009,15 +1013,35 @@ static void TickOneBody(uintptr_t body, const char* kind)
         rec->haveBase = true;
     }
 
-    // Наш коэффициент УМНОЖАЕТСЯ на ванильный масштаб особи.
-    wantW *= rec->baseW;
-    wantH *= rec->baseH;
-    wantD *= rec->baseD;
-    want   = wantH;                       // для сверки и лога — по высоте
+    // Детектор вожака (Capcom Native Alpha / Leader):
+    const bool isLeader = (rec->baseH >= leaderThresh);
+    float wantW = 1.0f, wantH = 1.0f, wantD = 1.0f;
+
+    if (isLeader) {
+        // Вожак от Capcom: сохраняем его авторский статус и крупный размер,
+        // лишь гарантируем верхний предел безопасности (scaleHi + 0.04).
+        wantH = (rec->baseH > scaleHi + 0.04f) ? (scaleHi + 0.04f) : rec->baseH;
+        wantW = wantH;
+        wantD = wantH;
+    } else {
+        // Рядовой член стаи: рассчитываем размер внутри коридора вида
+        wantH = PickScale(body, scaleLo, scaleHi);
+        if (jitter > 0.001f) {
+            uint32_t h1 = (uint32_t)(body >> 3) * 2654435761u;
+            uint32_t h2 = (uint32_t)(body >> 5) * 2246822519u;
+            float j1 = ((float)((h1 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+            float j2 = ((float)((h2 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+            wantW = wantH * (1.0f + jitter * j1);
+            wantD = wantH * (1.0f + jitter * j2);
+        } else {
+            wantW = wantH;
+            wantD = wantH;
+        }
+    }
 
     float cur = ch;
 
-    if (NearlyEq(cur, want)) return;   // держится — ничего не делаем
+    if (NearlyEq(cur, wantH)) return;   // держится — ничего не делаем
 
     // Значение не наше: либо ещё не писали, либо движок откатил.
     bool wasReverted = (rec->applies > 0);
@@ -1033,9 +1057,9 @@ static void TickOneBody(uintptr_t body, const char* kind)
     if (rec->applies <= 5 || (rec->applies % 32) == 0) {
         char line[192];
         sprintf_s(line,
-            "scale %.3f (vanilla %.3f x k) -> %s 0x%08X (%d fields) was=%.3f applies=%d engineReverts=%d",
-            want, rec->baseH, kind ? kind : "?", (unsigned)body, n, cur,
-            rec->applies, rec->reverts);
+            "scale %.3f (base %.3f %s) -> %s 0x%08X was=%.3f applies=%d engineReverts=%d",
+            wantH, rec->baseH, isLeader ? "LEADER" : "GENE", kind ? kind : "?",
+            (unsigned)body, cur, rec->applies, rec->reverts);
         lstrcpynA(s_status, line, sizeof(s_status));
         logFile << "EnemyTuner: " << line << std::endl;
     }

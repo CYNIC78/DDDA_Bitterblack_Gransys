@@ -25,6 +25,8 @@ struct Status {
     bool  layout;
     bool  recipe;
     bool  customOn;
+    bool  targetArisen;
+    int   selectedId;
     int   slot;
     int   liveId;
     float liveTimer;
@@ -42,6 +44,8 @@ void   SetCustom(bool on);
 void   SetCustomTimer(float seconds);
 void   SetCustomP0(float v);
 void   SetCustomP1(float v);
+void   SetSelectedId(int id);
+void   SetTargetArisen(bool on);
 
 } // namespace Possession
 } // namespace PawnAI

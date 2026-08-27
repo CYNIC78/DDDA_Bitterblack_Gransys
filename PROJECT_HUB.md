@@ -2,11 +2,11 @@
 
 ## Текущий milestone
 
-**Build 84.40:** `caster-harass` — тактический прессинг игрока-кастера (Mage, Sorcerer, MK, MA)
-в стойках каста заклинаний (`cPlActWpnWandBase` и др.) строго для Аризена (`slot == 0`).
-Пешки-маги защищены от буллинга. Канон: `MOD_BUILD_TAG` = `84.40-caster-harass`.
+**Build 84.44:** `genetic-scale` — генетический видовой масштаб стаи в `SpeciesCard` с защитой
+нативных альфа-вожаков Capcom и компенсацией частоты шага в `MonsterTempo`.
+Канон: `MOD_BUILD_TAG` = `84.44-genetic-scale`.
 
-**Предыдущий:** Build 84.39 `caller-defense`. Build 84.38 `true-bestiary`. Build 84.37 `xmm-params`.
+**Предыдущий:** Build 84.43 `true-torpor`. Build 84.42 `universal-status-timer`. Build 84.41 `status-lab`.
 
 **Предыдущий:** Build 84.30 `party-sheet`. Build 84.29 `saurian-pack`.
 Build 84.25 `fullbody-scan`.

@@ -853,6 +853,15 @@ static float FactorFor(uintptr_t body)
     float f = g_factorLo + (g_factorHi - g_factorLo) * unit;  // равномерно в диапазоне
     if (f < kFactorMin) f = kFactorMin;
     if (f > kFactorMax) f = kFactorMax;
+
+    // Компенсация частоты шага (Cadence): особи меньше 1.0 имеют более короткий
+    // шаг в Root Motion, поэтому получают бонус к частоте перебора ног, чтобы не отставать!
+    float scaleH = 1.0f;
+    if (Mem::Rd((void*)(body + 0x64), &scaleH, 4) && scaleH > 0.5f && scaleH < 1.0f) {
+        const float cadence = (1.0f / scaleH) - 1.0f;
+        f *= (1.0f + cadence * 0.75f);
+        if (f > kFactorMax) f = kFactorMax;
+    }
     return f;
 }
 

@@ -368,30 +368,72 @@ void RenderPawnAIUI(){
 
     {
         PawnAI::Possession::Status ps = PawnAI::Possession::Get();
-        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1), "Possession (Main Pawn)");
+        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1), "Debilitation & Status Lab");
         bool arm = ps.armed;
         if (ImGui::Checkbox("arm writes##poss", &arm)) {
             PawnAI::Possession::SetArmed(arm);
             config.setBool("possession", "enabled", arm);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("Vanilla apply id=7. Off = no call. Unload clears.");
+            ImGui::SetTooltip("Enable status apply/clear writes. Unload clears.");
+
+        ImGui::SameLine();
+        bool ar = ps.targetArisen;
+        if (ImGui::RadioButton("Main Pawn##tgt", !ar)) {
+            PawnAI::Possession::SetTargetArisen(false);
+            config.setBool("possession", "targetArisen", false);
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Arisen##tgt", ar)) {
+            PawnAI::Possession::SetTargetArisen(true);
+            config.setBool("possession", "targetArisen", true);
+        }
+
+        static const char* kStatusItems =
+            "7: Possession\0"
+            "0: Poison\0"
+            "1: Torpor (Slow)\0"
+            "2: Blindness\0"
+            "3: Silence\0"
+            "4: Sleep\0"
+            "6: Drenched\0"
+            "8: Tarred\0"
+            "9: Curse\0"
+            "10: Caught Fire\0"
+            "11: Frozen\0"
+            "12: Petrifaction\0"
+            "33: Stamina Boost\0\0";
+        static const int kStatusIds[] = { 7, 0, 1, 2, 3, 4, 6, 8, 9, 10, 11, 12, 33 };
+        static const int kStatusCount = 13;
+
+        int cur = 0;
+        for (int i = 0; i < kStatusCount; ++i) {
+            if (kStatusIds[i] == ps.selectedId) { cur = i; break; }
+        }
+        ImGui::PushItemWidth(170);
+        if (ImGui::Combo("status##sel", &cur, kStatusItems)) {
+            PawnAI::Possession::SetSelectedId(kStatusIds[cur]);
+            config.setInt("possession", "statusId", kStatusIds[cur]);
+        }
+        ImGui::PopItemWidth();
+
         ImGui::SameLine();
         if (ImGui::SmallButton("apply##poss")) PawnAI::Possession::RequestApply();
         ImGui::SameLine();
         if (ImGui::SmallButton("clear##poss")) PawnAI::Possession::RequestClear();
-        ImGui::TextDisabled("  %s | work %d | status id=%d t=%.0f cnt=%d | hook %s | layout %s | recipe %s",
+
+        ImGui::TextDisabled("  target=%s | %s | work %d | id=%d t=%.0f cnt=%d | hook %s | layout %s",
+                            ps.targetArisen ? "Arisen" : "MainPawn",
                             ps.why, ps.slot, ps.liveId, ps.liveTimer, ps.liveCount,
                             ps.hookArmed ? "armed" : "missing",
-                            ps.layout ? "ready" : "no",
-                            ps.recipe ? "yes" : "no");
+                            ps.layout ? "ready" : "no");
         bool cust = ps.customOn;
         if (ImGui::Checkbox("custom params##poss", &cust)) {
             PawnAI::Possession::SetCustom(cust);
             config.setBool("possession", "customParams", cust);
         }
         if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("xmm on OUR apply only. Off = catalog 180/0.2/0.35. Not Drake.");
+            ImGui::SetTooltip("xmm on OUR apply only. Off = catalog default values.");
         if (cust) {
             float ct = ps.customT, cp0 = ps.customP0, cp1 = ps.customP1;
             ImGui::PushItemWidth(160);
@@ -399,11 +441,11 @@ void RenderPawnAIUI(){
                 PawnAI::Possession::SetCustomTimer(ct);
                 config.setFloat("possession", "timer", ct);
             }
-            if (ImGui::SliderFloat("param0##poss", &cp0, 0.05f, 2.00f, "%.2f")) {
+            if (ImGui::SliderFloat("param0##poss", &cp0, 0.05f, 20.00f, "%.2f")) {
                 PawnAI::Possession::SetCustomP0(cp0);
                 config.setFloat("possession", "param0", cp0);
             }
-            if (ImGui::SliderFloat("param1##poss", &cp1, 0.05f, 2.00f, "%.2f")) {
+            if (ImGui::SliderFloat("param1##poss", &cp1, 0.00f, 2.00f, "%.2f")) {
                 PawnAI::Possession::SetCustomP1(cp1);
                 config.setFloat("possession", "param1", cp1);
             }

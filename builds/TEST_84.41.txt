@@ -1,0 +1,34 @@
+84.41-status-lab
+Универсальная лаборатория дебаффов и статусов (Debilitation & Status Lab).
+
+Собрать: Release | Win32. Тег: 84.41-status-lab.
+dinput8.dll в папку с DDDA.exe.
+
+Что нового в 84.41:
+1. Универсальный селектор статусов (Combo) в F12 -> Pawn AI Overhaul:
+   - 7: Possession (Одержимость)
+   - 0: Poison (Яд)
+   - 2: Blindness (Слепота)
+   - 3: Silence (Немота / блокировка каста)
+   - 4: Torpor (Торпор / Замедление)
+   - 6: Drenched (Намокание)
+   - 10: Caught Fire (Горение)
+   - 11: Frozen (Заморозка)
+   - 12: Petrifaction (Окаменение)
+   - 33: Stamina Boost (Бафф стамины)
+2. Переключатель цели (Target Selector):
+   - Radio buttons: [Main Pawn] / [Arisen]. Статус можно накладывать и на пешку, и на себя!
+3. Две кнопки управления:
+   - [apply##poss] — накладывает выбранный статус через нативный thiscall движка (BuffApply).
+   - [clear##poss] — мгновенно снимает статусы и очищает слоты записи.
+4. Полная интеграция со всеми предыдущими фичами:
+   - Вылазка на игрока-кастера (PLAYER-CHANT-HARASS, 84.40).
+   - Защита горниста и воющего волка (GOB-HORN-ALERT, WOLF-HOWL-ALERT, 84.39).
+   - Синхронизированный бестиарий (84.38).
+
+Тест:
+1. Открыть F12 -> Pawn AI Overhaul.
+2. В блоке "Debilitation & Status Lab" выбрать цель (Main Pawn или Arisen).
+3. Выбрать статус из списка (например, Torpor, Blindness, Poison, Caught Fire или Possession).
+4. Нажать apply: проверить появление визуального значка статуса и реакцию тела/ИИ!
+5. Нажать clear: убедиться в мгновенном снятии статуса.

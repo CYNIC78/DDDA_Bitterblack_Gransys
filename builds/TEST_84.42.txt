@@ -1,0 +1,15 @@
+84.42-universal-status-timer
+Универсальный таймер и параметры на ВСЕ статусы (Debilitation Lab fix).
+
+Собрать: Release | Win32. Тег: 84.42-universal-status-timer.
+dinput8.dll в папку с DDDA.exe.
+
+Что исправлено в 84.42:
+1. Снят гейт `cmp esi, 7`: теперь при включении "custom params" в блоке
+   Debilitation & Status Lab таймер (timer s) и параметры (param0, param1)
+   инжектируются через xmm0/xmm1/xmm2 для ЛЮБОГО выбранного статуса
+   (Poison, Torpor, Blindness, Silence, Burning, Frozen, Petrifaction, Possession)!
+   - Можно повесить Torpor ровно на 10 с.
+   - Можно повесить Burning ровно на 5 с.
+   - Можно повесить Poison с кастомным тикрейтом.
+2. Селектор цели [Main Pawn] / [Arisen] работает в связке с кастомным таймером.

@@ -23,6 +23,23 @@
 
 ## Текущий milestone
 
+**Build 84.44** — `genetic-scale`. Генетический видовой масштаб особей стаи (Scale Genetics) + защита вожаков.
+Видовые коридоры в `SpeciesCard`: гоблины (0.93..1.15), хобгоблины (0.95..1.14), волки (0.94..1.10), ящеры (0.95..1.12).
+Защита нативного Альфы от Capcom (`leaderThreshold`): вожаки сохраняют авторский размер (`LEADER_PRESERVED`).
+Компенсация частоты шага в `MonsterTempo` (`cadence = 1.0 / scale`): легковесы семенят ногами чаще и не отстают.
+
+**Build 84.43** — `true-torpor`. Истинный Торпор (`id = 1`, замедление 0.5x) и разделение со Сном (`id = 4`, Sleep).
+Добавлены `id = 8` Tarred (в масле) и `id = 9` Curse (проклятие). Кастомный таймер и xmm-параметры разблокированы.
+
+**Build 84.42** — `universal-status-timer`. Универсальный кастомный таймер и параметры xmm для ВСЕХ статусов:
+снят старый гейт `id == 7`, теперь при активном `custom params` таймер (5..180 с) и сила эффекта (p0, p1)
+инжектируются на любой выбранный статус (Poison, Torpor, Blindness, Silence, Burning, Frozen, Petrifaction).
+
+**Build 84.41** — `status-lab`. Универсальная лаборатория дебаффов и статусов (Debilitation & Status Lab).
+Селектор статусов (Combo в F12 -> Pawn AI Overhaul): Possession (7), Poison (0), Blindness (2), Silence (3),
+Torpor (4), Drenched (6), Caught Fire (10), Frozen (11), Petrifaction (12), Stamina Boost (33).
+Переключатель цели: `[Main Pawn] / [Arisen]`. Две кнопки `apply` / `clear` через нативный `BuffApply`.
+
 **Build 84.40** — `caster-harass`. Вылазка стаи на игрока-кастера (Player-Only Chant Harass).
 `TacticalCues`: ситуация `PLAYER-CHANT-HARASS`. Срабатывает строго на Аризене (`slot == 0`),
 пешки-маги не трогаются. Фильтрует синие и гибридные вокации (3 Mage, 9 Sorcerer, 4 Mystic Knight,
