@@ -24,10 +24,12 @@
 #include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
 #include "runtime/PartyStatus.h"
+#include "runtime/LogMem.h"
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
 #include "pawnai/Possession.h"
+#include "pawnai/PartyRescueProtocol.h"
 
 using namespace PawnAI;
 
@@ -125,6 +127,10 @@ void UpdatePawnAI(){
     __try { PawnAI::GuardianDoctrineTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
+    // Party Emergency Rescue: общепартийное спасение Аризена при захватах/падениях
+    __try { PawnAI::Rescue::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
     g_orch.Tick(incl);
     WriteAllIncl(incl, 0);
@@ -140,6 +146,7 @@ static DWORD WINAPI PawnTickThread(LPVOID){
         // из Shutdown без ожидания 150 мс.
         WaitForSingleObject(g_pawnTickEvent, 150);
         UpdatePawnAI();
+        LogMem::PeriodicFlush(1500);
     }
     return 0;
 }
@@ -1116,6 +1123,7 @@ void Hooks::PawnAI(){
     PawnAI::DashWatch::Init();
     PawnAI::WandRange::Init();
     PawnAI::Possession::Init();
+    PawnAI::Rescue::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
@@ -1145,5 +1153,6 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::DashWatch::Shutdown();
     PawnAI::WandRange::Shutdown();
     PawnAI::Possession::Shutdown();
+    PawnAI::Rescue::Shutdown();
     g_orch.Shutdown();
 }

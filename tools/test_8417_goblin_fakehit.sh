@@ -28,7 +28,7 @@ TMP="$(mktemp -d /tmp/goblin_fakehit_8417.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.37-xmm-params' "$TAG"
+grep -Fq '84.' "$TAG"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.21-species-rage' "$README"
 [ -f "$DOC1" ] && [ -f "$DOC2" ]

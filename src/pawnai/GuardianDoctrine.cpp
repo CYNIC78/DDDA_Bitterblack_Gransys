@@ -1,5 +1,7 @@
 #include "stdafx.h"
 #include "runtime/Runtime.h"
+#include "runtime/MemProbe.h"
+#include "runtime/AggroWatch.h"
 #include <math.h>
 #include "GuardianDoctrine.h"
 #include "../CombatBus.h"
@@ -91,6 +93,19 @@ static bool SitRepIsEnemy(const char* kind)
     return true;
 }
 
+static bool EnemyTargetingArisen(uintptr_t body, bool inCombatAction)
+{
+    if (inCombatAction) return true;
+    const int nRow = Runtime::Aggro::RowCount();
+    for (int i = 0; i < nRow; ++i) {
+        const Runtime::Aggro::Row* r = Runtime::Aggro::RowAt(i);
+        if (r && r->body == body) {
+            return (r->targetMember == Runtime::Aggro::MEMBER_ARISEN);
+        }
+    }
+    return false;
+}
+
 // ================= Доктрина =================
 
 void GuardianDoctrine::Init()
@@ -162,20 +177,35 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
         return;
     }
 
-    // --- 1) угрозы в зоне ответственности вокруг anchor ---
-    // Радиус входа чуть шире (hysteresisEnter), если зона ещё не захвачена, —
-    // чтобы пешка «защёлкнулась» на угрозе и не дребезжала на границе.
-    // Build 56.3: радиусы в МЕТРАХ → мировые единицы (* worldUnitsPerMeter).
+    // --- 1) угрозы в зоне ответственности вокруг anchor (двухуровневый периметр) ---
+    // Внутренний (melee): критическая опасность вплотную к Аризену (4-6 м).
+    // Внешний (preempt): упреждающий перехват целей, нацеленных на Аризена (6-12 м).
     float scale  = worldUnitsPerMeter > 0.0f ? worldUnitsPerMeter : 100.0f;
+    float meleeR = g_guardianMeleeRadius * scale;
     float enterR = (protectionRadius + (zoneEngaged ? 0.0f : hysteresisEnter)) * scale;
     float exitR  = (protectionRadius + hysteresisExit) * scale;
     int   inZone = 0;
     float nearest = 1e9f;
+    uintptr_t nearestBody = 0;
+    const char* nearestKind = nullptr;
+    bool  isCritical = false;
+
     for (int i = 0; i < s.threatCount; ++i) {
         const GuardianThreat& t = s.threats[i];
         float d = Dist3(s.anchorX, s.anchorY, s.anchorZ, t.x, t.y, t.z);
         if (d < nearest) nearest = d;
-        if (d <= enterR) ++inZone;
+
+        const bool inCriticalPerimeter = (d <= meleeR);
+        const bool inPreemptPerimeter  = (d <= enterR && t.targetingArisen);
+
+        if (inCriticalPerimeter || inPreemptPerimeter) {
+            ++inZone;
+            if (!nearestBody || inCriticalPerimeter || d < nearest) {
+                nearestBody = t.body;
+                nearestKind = t.kind;
+                isCritical = inCriticalPerimeter;
+            }
+        }
     }
 
     // --- 2) захват зоны + dwell/hysteresis выхода ---
@@ -208,6 +238,12 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
         ? Dist3(s.pawnX, s.pawnY, s.pawnZ, s.anchorX, s.anchorY, s.anchorZ) / scale
         : 1e9f;
     out.zoneEngaged = zoneEngaged;
+
+    if (inZone > 0 && out.pawnAnchorDist <= (leashDistance + hysteresisExit)) {
+        out.targetThreatBody = nearestBody;
+        out.targetThreatKind = nearestKind;
+        out.criticalThreat = isCritical;
+    }
 
     // --- 4) совет по приоритету ---
     if (!zoneEngaged) return; // vanilla: угроз в зоне нет — не советуем ничего
@@ -291,11 +327,13 @@ void BuildGuardianSitRep(GuardianSitRep& s)
     for (int i = 0; i < w.count && s.threatCount < 32; ++i) {
         if (!SitRepIsEnemy(w.units[i].kind)) continue;
         GuardianThreat& t = s.threats[s.threatCount++];
+        t.body = w.units[i].ptr;
         t.x = w.units[i].x;
         t.y = w.units[i].y;
         t.z = w.units[i].z;
         t.kind = w.units[i].kind;
-        t.engaged = false;
+        t.engaged = w.units[i].inCombatAction;
+        t.targetingArisen = EnemyTargetingArisen(t.body, t.engaged);
     }
 
     // --- Позиции anchor/pawn: из census (DevTools) ---
@@ -494,19 +532,6 @@ void GuardianDoctrineTick()
 {
     static GuardianDoctrine d;
 
-    // ВОЙНА ЗА ОДНО ПРАВИЛО (найдено 20.08, после того как рычаги убрали
-    // из панели).
-    //
-    // Раньше эта ветка каждый тик ставила правилу code 54 ванильное -3 и
-    // звала GuardianFixTick() — «на всякий случай, вдруг что-то осталось
-    // применённым». Пока ручка была видна в панели, это ещё имело смысл.
-    // Теперь правилом владеет эррата, и такой «откат на всякий случай»
-    // означает, что два модуля пишут в одно поле в каждом тике: эррата
-    // ставит 0, доктрина возвращает -3, и так по кругу.
-    //
-    // Ручка выключена навсегда — значит и трогать правило отсюда нечего.
-    if (!g_guardianFixEnabled) return;
-
     GuardianSitRep s;
     BuildGuardianSitRep(s);
     GuardianReport r;
@@ -515,24 +540,48 @@ void GuardianDoctrineTick()
     VocationClass vc = VocationClassOf(s.pawnVocation);
     bool meleeOrHybrid = (vc == VCL_MELEE || vc == VCL_HYBRID);
 
-    // Build 58: градиент по дистанции ближайшей угрозы (Threat Anchor ≠ Movement Anchor).
-    //   вне зоны            → vanilla (-3), пешка свободна (лук и т.д.);
-    //   в preempt-радиусе   → снять штраф (0), пешка «готовится» (кинжалы в руке);
-    //   в melee-радиусе     → лёгкий бонус (+2), пешка фиксируется на перехвате.
-    int32_t desired = -3;
-    if (r.zoneEngaged && meleeOrHybrid && r.threatsInZone > 0) {
-        float dist = r.nearestThreatDist; // метры
-        if (dist < g_guardianMeleeRadius)      desired = g_guardianDaggerBiasMelee;
-        else if (dist < g_guardianPreemptRadius) desired = g_guardianDaggerBiasPreempt;
+    // 1. Поводок безопасности: пешка не атакует цели, если находится дальше leashDistance от Аризена
+    const bool withinLeash = (r.pawnAnchorDist <= (d.leashDistance + d.hysteresisExit));
+
+    // 2. Проактивный захват цели (Proactive Target Pinning)
+    static uintptr_t s_lastTarget = 0;
+    const uintptr_t pawn = Runtime::MainPawnBody();
+
+    if (r.zoneEngaged && withinLeash && r.targetThreatBody && pawn) {
+        // Направляем боевую цель планировщика (uCmc+0x2EB8) и фокус взгляда (+0x14E0) на угрозу в зоне
+        Runtime::Mem::WrSafe((void*)(pawn + 0x2EB8), &r.targetThreatBody, sizeof(uintptr_t));
+        Runtime::Mem::WrSafe((void*)(pawn + 0x14E0), &r.targetThreatBody, sizeof(uintptr_t));
+
+        if (s_lastTarget != r.targetThreatBody) {
+            s_lastTarget = r.targetThreatBody;
+            char l[240];
+            sprintf_s(l, "GuardianDoctrine: PROACTIVE TARGET -> %s 0x%08X (%s) dist %.1fm (pawn-Arisen %.1fm)",
+                      r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
+                      (unsigned)r.targetThreatBody, r.targetThreatKind ? r.targetThreatKind : "?",
+                      r.nearestThreatDist, r.pawnAnchorDist);
+            logFile << l << std::endl;
+        }
+    } else if (!r.zoneEngaged || r.threatsInZone == 0 || !withinLeash) {
+        s_lastTarget = 0;
     }
 
-    Runtime::GuardianFixSetTarget(desired);
-    Runtime::GuardianFixTick();
+    // 3. Динамический приоритет
+    if (g_guardianFixEnabled) {
+        int32_t desired = -3;
+        if (r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0) {
+            float dist = r.nearestThreatDist; // метры
+            if (dist < g_guardianMeleeRadius)        desired = g_guardianDaggerBiasMelee;
+            else if (dist < g_guardianPreemptRadius) desired = g_guardianDaggerBiasPreempt;
+        }
 
-    // Рычаг склонности — тот, у которого есть доказательство. Условие то
+        Runtime::GuardianFixSetTarget(desired);
+        Runtime::GuardianFixTick();
+    }
+
+    // 4. Рычаг склонности — тот, у которого есть доказательство. Условие то
     // же самое, что у прежнего фикса: угроза в зоне и подходящая вокация.
     if (g_guardianUseInclLever) {
-        const bool want = r.zoneEngaged && meleeOrHybrid && r.threatsInZone > 0;
+        const bool want = r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0;
         InclLeverApply(want);
     } else {
         GuardianLeverRestore();

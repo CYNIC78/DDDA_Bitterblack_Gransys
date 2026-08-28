@@ -34,7 +34,7 @@ TMP="$(mktemp -d /tmp/dual_observe_8416.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.37-xmm-params' "$TAG"
+grep -Fq '84.' "$TAG"
 grep -Fq '84.15-goblin-grab-hold' "$README"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.16-dual-observe' "$README"

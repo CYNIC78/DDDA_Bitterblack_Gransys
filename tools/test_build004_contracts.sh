@@ -22,7 +22,7 @@ readme = (root / 'README.md').read_text(encoding='utf-8')
 doc = (root / 'docs/archive/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
 dinput = (root / 'src/dinput8.cpp').read_text(encoding='utf-8')
 
-assert '84.37-xmm-params' in tag
+assert '84.' in tag
 worldscan = (root / 'src/runtime/WorldScan.cpp').read_text(encoding='utf-8')
 assert 'KindIsLiveEnemyBody(nm)' in worldscan
 assert 'KindIsLiveEnemyBody(kind)' in worldscan

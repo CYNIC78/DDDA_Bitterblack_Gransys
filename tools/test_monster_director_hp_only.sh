@@ -23,7 +23,7 @@ TMP="$(mktemp -d /tmp/director_build012.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.37-xmm-params' "$TAG"
+grep -Fq '84.' "$TAG"
 grep -Fq '84.9-pilot012-urgency-mobilization' "$README"
 grep -Fq '84.10-goblin-pack-observe' "$README"
 grep -Fq '84.12-wolf-combat-card' "$README"

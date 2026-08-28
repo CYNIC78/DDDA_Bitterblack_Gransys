@@ -85,6 +85,9 @@ static void SetVanilla(Tuning& t)
     t.leashScale  = 1.0f;
     t.returnSpeed = 1.0f;
     t.returnFight = false;
+    t.returnArmor = true;
+    t.returnArmorMult = 4.0f;
+    t.returnDamageCut = 0.80f;
     t.scaleMin    = 1.0f;
     t.scaleMax    = 1.0f;
     t.scaleJitter = 0.0f;
@@ -123,6 +126,19 @@ static void ReadSection(iniConfig& cfg, const char* section, Tuning& t)
     }
     t.returnSpeed = ClampSpeed(cfg.getFloat(section, "returnSpeed", t.returnSpeed));
     t.returnFight = cfg.getBool(section, "returnFight", t.returnFight);
+    t.returnArmor = cfg.getBool(section, "returnArmor", t.returnArmor);
+    {
+        float ram = cfg.getFloat(section, "returnArmorMult", t.returnArmorMult);
+        if (ram < 1.0f) ram = 1.0f;
+        if (ram > 20.0f) ram = 20.0f;
+        t.returnArmorMult = ram;
+    }
+    {
+        float rdc = cfg.getFloat(section, "returnDamageCut", t.returnDamageCut);
+        if (rdc < 0.0f) rdc = 0.0f;
+        if (rdc > 0.95f) rdc = 0.95f;
+        t.returnDamageCut = rdc;
+    }
     t.enabled     = cfg.getBool(section, "enabled",     t.enabled);
 }
 

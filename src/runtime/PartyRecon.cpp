@@ -721,11 +721,12 @@ void PartyFindBodies(bool partyOnly)
 
     bool havePlayer = false;
     DWORD t0 = MsNow();
-    uintptr_t addr = 0x00010000u;
+    uintptr_t addr = partyOnly ? kHotLo : 0x00010000u;
+    const uintptr_t scanEnd = partyOnly ? kHotHi : 0x7FFF0000u;
     MEMORY_BASIC_INFORMATION mbi;
     memset(&mbi, 0, sizeof(mbi));
     bool done = false;
-    while (addr < 0x7FFF0000u && !done) {
+    while (addr < scanEnd && !done) {
         SIZE_T got = VirtualQuery((LPCVOID)addr, &mbi, sizeof(mbi));
         if (!got) break;
         uintptr_t start = (uintptr_t)mbi.BaseAddress;
@@ -1446,11 +1447,15 @@ void PartyPositionsTick()
         }
     }
 
-    // Нужен (до)резолв: бэкофф по числу попыток.
+    // Нужен (до)резолв: быстрый стартовый шаг для мгновенного подхвата при спавне,
+    // затем бэкофф в спокойном состоянии.
     DWORD now = MsNow();
     DWORD wait = (g_partyPosAttempts == 0) ? 0u
-               : (g_partyPosAttempts == 1) ? 2000u
-               : (g_partyPosAttempts == 2) ? 8000u : 20000u;
+               : (g_partyPosAttempts == 1) ? 150u
+               : (g_partyPosAttempts == 2) ? 300u
+               : (g_partyPosAttempts == 3) ? 600u
+               : (g_partyPosAttempts == 4) ? 1500u
+               : (g_partyPosAttempts == 5) ? 4000u : 12000u;
     if (g_partyPosLastDiscover && now - g_partyPosLastDiscover < wait) return;
     g_partyPosLastDiscover = now;
     ++g_partyPosAttempts;
@@ -1463,7 +1468,15 @@ void PartyPositionsTick()
     PartyAssignRoles();
     PartyReportCompositionChange();
     InterlockedExchange(&g_partyBusy, 0);
-    if (g_nParty > 0) PartyReadPositions();
+    if (g_nParty > 0) {
+        PartyReadPositions();
+        int a = -1, p = -1;
+        for (int i = 0; i < g_nParty; ++i) {
+            if (!strcmp(g_party[i].role, "Arisen")) a = i;
+            else if (!strcmp(g_party[i].role, "Main Pawn")) p = i;
+        }
+        if (a >= 0 && p >= 0) g_partyPosAttempts = 0;
+    }
 }
 
 void PartyCapture(bool forceFind)

@@ -1063,20 +1063,20 @@ void WorldScan_Tick()
     last = now;
     if (g_nAct)
         RewalkActors();
-    // Always poll the hot ring. Empty: 8MB/tick. Have list: 4MB, merge new camps.
-    // Build 69.4: адаптивный бюджет поллинга.
-    //
-    // Полный обход горячего кольца нужен, когда список пуст — ищем первый
-    // лагерь и торопимся. Когда актёры уже есть, новых соседей подхватывает
-    // RewalkActors по связному списку, а поллинг ищет лишь СОВСЕМ ДРУГОЙ
-    // список. Это можно делать меньшими порциями: g_pollAddr сохраняется
-    // между тиками, поэтому кольцо всё равно обходится целиком — просто
-    // за большее число тиков. Ничего не пропускается, снижается только
-    // скорость обхода.
+    // Поллинг горячего кольца:
+    // Когда список пуст и семян нет — активный поиск (8 МБ/тик).
+    // Когда актёры уже есть или известна партия — RewalkActors обходит всех
+    // по связному списку в микросекунды, а поллинг спит и делает редкий
+    // лёгкий срез раз в 2 секунды (256 КБ), исключая микрофризы в бою.
+    static DWORD lastPollMs = 0;
+    const bool needUrgentPoll = (!g_nAct && !g_nParty);
+    if (!needUrgentPoll && lastPollMs && now - lastPollMs < 2000) return;
+    lastPollMs = now;
+
     static int fruitless = 0;              // подряд тиков без новой находки
     uint32_t budget;
-    if (!g_nAct) { budget = 0x800000u; fruitless = 0; }
-    else          budget = 0x400000u >> (fruitless < 3 ? fruitless : 3);
+    if (needUrgentPoll) { budget = 0x800000u; fruitless = 0; }
+    else                { budget = 0x40000u; }
     g_pollBudget = budget;
 
     uintptr_t s = PollSeedSlice(budget);

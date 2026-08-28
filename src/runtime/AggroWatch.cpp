@@ -945,8 +945,10 @@ static void CardReconSelect()
         memset(&T, 0, sizeof(T));
         T.body = body;
         lstrcpynA(T.kind, kind, sizeof(T.kind));
-        logFile << "Aggro: GOBCARD track @" << std::hex << body << std::dec
-                << " " << kind << " (read-only card recon)" << std::endl;
+        if (s_logEvents || s_cardWatch) {
+            logFile << "Aggro: GOBCARD track @" << std::hex << body << std::dec
+                    << " " << kind << " (read-only card recon)" << std::endl;
+        }
     }
 }
 
@@ -973,12 +975,14 @@ static bool CardReconDiscoverRoster(CardReconTrack& T)
     T.cards = tmp.rosterCount > kMaxParty ? kMaxParty : tmp.rosterCount;
     T.haveRoster = true;
     for (int c = 0; c < kMaxParty; ++c) T.havePrev[c] = false;
-    logFile << "Aggro: GOBCARD roster @" << std::hex << T.body << std::dec
-            << " " << T.kind << " base=+0x" << std::hex << T.base
-            << " stride=+0x" << T.stride << " x" << std::dec << T.cards;
-    if (T.base == kReconRefBase && T.stride == kReconRefStride)
-        logFile << "  refmatch (layout == uEm0200 reference)";
-    logFile << std::endl;
+    if (s_logEvents || s_cardWatch) {
+        logFile << "Aggro: GOBCARD roster @" << std::hex << T.body << std::dec
+                << " " << T.kind << " base=+0x" << std::hex << T.base
+                << " stride=+0x" << T.stride << " x" << std::dec << T.cards;
+        if (T.base == kReconRefBase && T.stride == kReconRefStride)
+            logFile << "  refmatch (layout == uEm0200 reference)";
+        logFile << std::endl;
+    }
     return true;
 }
 
@@ -1006,15 +1010,17 @@ static bool CardReconDiffCard(CardReconTrack& T, int c, DWORD now)
     if ((!T.haveHead[c] || head != T.lastHead[c])
         && now - T.lastHeadMs >= kReconHeadThrottleMs) {
         T.lastHeadMs = now;
-        float att = 0.0f, w = 0.0f;
-        memcpy(&att, &data[4], 4);
-        memcpy(&w, &data[5], 4);
-        char who[16] = {};
-        CardReconName(data[0], who, sizeof(who));
-        logFile << "Aggro: GOBCARD-HEAD @" << std::hex << T.body << std::dec
-                << " " << T.kind << " c" << c << " " << (who[0] ? who : "-")
-                << " f8=" << data[2] << " fC=" << data[3]
-                << " att=" << att << " w=" << w << std::endl;
+        if (s_logEvents || s_cardWatch) {
+            float att = 0.0f, w = 0.0f;
+            memcpy(&att, &data[4], 4);
+            memcpy(&w, &data[5], 4);
+            char who[16] = {};
+            CardReconName(data[0], who, sizeof(who));
+            logFile << "Aggro: GOBCARD-HEAD @" << std::hex << T.body << std::dec
+                    << " " << T.kind << " c" << c << " " << (who[0] ? who : "-")
+                    << " f8=" << data[2] << " fC=" << data[3]
+                    << " att=" << att << " w=" << w << std::endl;
+        }
     }
     T.lastHead[c] = head;
     T.haveHead[c] = true;
@@ -1067,11 +1073,13 @@ static bool CardReconDiffCard(CardReconTrack& T, int c, DWORD now)
         ++printed;
     }
     if (!changed) return false;
-    logFile << "Aggro: GOBCARD-DIFF @" << std::hex << T.body << std::dec
-            << " " << T.kind << " c" << c << cells;
-    if (printed < changed)
-        logFile << "(+" << (changed - printed) << " more)";
-    logFile << std::endl;
+    if (s_logEvents || s_cardWatch) {
+        logFile << "Aggro: GOBCARD-DIFF @" << std::hex << T.body << std::dec
+                << " " << T.kind << " c" << c << cells;
+        if (printed < changed)
+            logFile << "(+" << (changed - printed) << " more)";
+        logFile << std::endl;
+    }
     memcpy(T.prev[c], data, bytes);
     return true;
 }

@@ -46,9 +46,11 @@ namespace PawnAI {
 // и держать честной относительно «не угадываем offsets».
 
 struct GuardianThreat {
-    float x, y, z;
-    const char* kind;        // "uEm0100", "uHumanEnemy", ... (владелец — источник)
-    bool  engaged;           // (резерв) враг уже в бою с партией
+    uintptr_t   body;
+    float       x, y, z;
+    const char* kind;            // "uEm0100", "uHumanEnemy", ... (владелец — источник)
+    bool        engaged;         // в боевой анимации (удар/замах/выпад)
+    bool        targetingArisen; // нацелен именно на Аризена (по сенсорам/Aggro)
 };
 
 struct GuardianSitRep {
@@ -145,6 +147,9 @@ struct GuardianReport {
     float       nearestThreatDist; // 1e9f, если угроз нет
     float       pawnAnchorDist;    // 1e9f, если не известно
     bool        zoneEngaged;       // внутренний флаг захвата зоны (hysteresis)
+    uintptr_t   targetThreatBody;  // тело ближайшей угрозы в зоне
+    const char* targetThreatKind;  // вид угрозы
+    bool        criticalThreat;    // угроза во внутреннем melee-периметре (сильный сигнал)
     int         adviceCount;
     GuardianAdvice advice[8];
     bool        observeOnly;

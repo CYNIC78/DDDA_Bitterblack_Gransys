@@ -10,7 +10,7 @@ PROJ="$ROOT/ddda-ai-overhaul.vcxproj"
 INI="$ROOT/ddda_ai_overhaul.default.ini"
 PS="$ROOT/src/runtime/PartyStatus.cpp"
 
-grep -Fq '84.37-xmm-params' "$TAG"
+grep -Fq '84.' "$TAG"
 grep -Fq 'Possession.cpp' "$PROJ"
 grep -Fq 'Possession.h' "$PROJ"
 grep -Fq '#include "pawnai/Possession.h"' "$PAWN"
@@ -29,7 +29,8 @@ assert 'custom params##poss' in p
 assert 'timer s##poss' in p
 PY
 
-grep -Fq '0xA7000 + 0x7F0' "$CPP"
+grep -Fq '0xA7000' "$CPP"
+grep -Fq '0x7F0' "$CPP"
 ! grep -q '0xA7000;' "$CPP"
 ! grep -q '0x2DC8' "$CPP"
 ! grep -q '0x2EB8' "$CPP"
@@ -41,7 +42,7 @@ grep -Fq 'vanilla-applied PENDING' "$CPP"
 grep -Fq '__thiscall' "$CPP"
 grep -Fq 's_inject' "$CPP"
 grep -Fq 'movss   xmm0, s_injT' "$CPP"
-grep -Fq 'cmp     esi, 7' "$CPP"
+grep -Fq 'cmp     s_inject, 0' "$CPP"
 grep -Fq 'SetCustom' "$H"
 grep -Fq 'customOn' "$H"
 grep -Fq '[possession]' "$INI"

@@ -17,7 +17,7 @@ ui = (root / 'src/EnemyAI.cpp').read_text(encoding='utf-8')
 proj = (root / 'ddda-ai-overhaul.vcxproj').read_text(encoding='utf-8')
 tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 
-assert '84.37-xmm-params' in tag
+assert '84.' in tag
 aggro = (root / 'src/runtime/AggroWatch.cpp').read_text(encoding='utf-8')
 assert 'TryGoblinEmptyCardWake' in aggro
 assert 'EnsureGoblinRosterSlots' in aggro

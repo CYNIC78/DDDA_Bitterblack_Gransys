@@ -38,10 +38,13 @@ struct Tuning {
     float speedMin;      // нижняя граница разброса на особь
     float speedMax;      // верхняя
 
-    // поводок / возврат домой
+    // поводок / возврат домой (DDON Sanctuary)
     float leashScale;    // множитель радиуса возврата, 1.0 = ваниль
     float returnSpeed;   // множитель темпа на возврате (DDON-style рывок)
     bool  returnFight;   // огрызаться на отходе (ActThrowStone и т.п.)
+    bool  returnArmor;   // DDON Sanctuary: многократная защита при возврате
+    float returnArmorMult; // множитель физ/маг брони при возврате (напр. 4.0 = 400%)
+    float returnDamageCut; // срез входящего урона (0.0..0.95)
 
     // размер особи (cCharParamEnemy +0x12C スケール値). 1.0 = ваниль.
     // Разброс на особь: заметно глазом мгновенно.

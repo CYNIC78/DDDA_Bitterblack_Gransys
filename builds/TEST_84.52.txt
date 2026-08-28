@@ -1,0 +1,27 @@
+84.52-caster-smart-nukes
+Умное контекстное управление заклинаниями (Smart Spell Selection) + Focused Bolt (15м дальность).
+
+Собрать: Release | Win32. Тег: 84.52-caster-smart-nukes.
+dinput8.dll в папку с DDDA.exe.
+
+Что сделано в 84.52:
+1. Контекстное управление тяжелыми спеллами (Smart Nuke Gating в WandRange):
+   - Против мелочи (гоблины, хобгоблины, волки, ящеры, мелкие враги):
+     15-секундные разрушительные касты (Bolide / cCmcMeteo, Maelstrom / cCmcTatsumaki, Seism / cCmcEarthShake, Fulmination / cCmcThunderSpark, Exequy) временно блокируются (RangeMax=0), заставляя пешку выбирать быстрые эффективные спеллы (Comestion / cCmcFireWall, Ingle / cCmcFireBall, Levin / cCmcLightningCloud, Frigor / cCmcIceBlock, Frazil)!
+   - Против боссов и крупных врагов (Огры uEm0500, Циклопы uEm5000, Химеры uEm5200, Дрейки uEm5900, Големы uEm5100, или при большой толпе от 6 мобов):
+     Тяжелые заклинания мгновенно разблокируются (RangeMax=15м, EnableMax=20м) — пешка обрушивает всю мощь метеоритов на босса!
+2. Разблокировка дальности Focused Bolt (cCmcWandDXL / cCmcWandDXAirL):
+   - В ванильной игре радиус тяжелой/заряженной атаки посоха был жестко ограничен 1-2 метрами (как удар палкой в упор), из-за чего пешки никогда не заряжали Focused Bolt на дистанции.
+   - Теперь cCmcWandDXL расширен до 15 метров дальности (RangeMax=1500, EnableMax=2000), позволяя пешке заряжать и выпускать мощные сфокусированные святые сферы (Holy Focused Bolt) из арьергарда!
+3. Настройки в ddda_ai_overhaul.ini [errata]:
+   - wandRange = on (15м дальность каста для пешек)
+   - nukeGating = on (умный контекстный гейт болида/торнадо)
+
+Тест:
+1. Выдать синей пешке (Маг / Сорсер) тяжелые спеллы (Bolide, Maelstrom) и быстрые (Comestion, Ingle, Levin), наложить на нее Holy Affinity.
+2. Вступить в бой с обычной стаей гоблинов / хобов:
+   - Проверить, что пешка НЕ начинает кастовать 15-секундный болид на мелких гоблинов, а быстро бьет Comestion / Levin / Ingle и активно заряжает святой Focused Bolt!
+3. Пойти в бой на Огра, Циклопа, Химеру или Дрейка:
+   - Проверить, что против крупного босса пешка начинает читать разрушительные заклинания высшего ранга (Bolide / Maelstrom)!
+4. В логе проверить строчки:
+   "WandRange: first APPLIED live cCmc ... (seen ..., nukes=GATED/UNLOCKED)"

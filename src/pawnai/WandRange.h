@@ -29,10 +29,13 @@ struct Status {
     bool  applied;
     int   nResource;
     int   nLive;
+    bool  nukeGated;
     char  why[80];
 };
 Status Get();
 void   SetEnabled(bool on);
+bool   NukeGatingOn();
+void   SetNukeGating(bool on);
 
 } // namespace WandRange
 } // namespace PawnAI

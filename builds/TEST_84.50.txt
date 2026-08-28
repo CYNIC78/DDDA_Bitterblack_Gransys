@@ -1,0 +1,22 @@
+84.50-rescue-and-guardian
+Синхронная работа проактивного телохранителя (GuardianDoctrine) + общепартийного спасения (PartyRescueProtocol).
+
+Собрать: Release | Win32. Тег: 84.50-rescue-and-guardian.
+dinput8.dll в папку с DDDA.exe.
+
+Что сделано в 84.50:
+1. Разблокирован тик GuardianDoctrine:
+   - Снят старый гейт g_guardianFixEnabled/g_guardianUseInclLever, блокировавший проактивный таргет-перехват телохранителя.
+   - Теперь Гвардиан непрерывно сканирует двухуровневый периметр (Critical Melee 4-6м / Preempt Intercept 6-12м) и встречает врагов ДО нанесения урона по Аризену!
+2. PartyRescueProtocol (84.49):
+   - Общепартийная мобилизация всей группы пешек (Главная + Наёмники) при захвате/нокдауне Аризена (захваты огров, топот гримгоблинов, унос гарпиями).
+3. DDON Return Sanctuary (84.46):
+   - 4-кратная броня и x1.30 скорость возврата на спавн у отступающих монстров.
+4. Zero-allocation log + live периодический сброс на диск.
+
+Тест:
+1. Зайти в бой со стаей гоблинов/волков:
+   - В логе должны синхронно появляться строчки:
+     "GuardianDoctrine: PROACTIVE TARGET -> CRITICAL-MELEE/PREEMPT-INTERCEPT enemy 0x..."
+   - При захвате/нокдауне Аризена:
+     "PartyRescueProtocol: EMERGENCY RESCUE ENGAGED -> ... - all pawns intercepting!"

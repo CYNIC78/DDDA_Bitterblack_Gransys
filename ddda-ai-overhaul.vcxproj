@@ -159,6 +159,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\pawnai\DashWatch.cpp" />
     <ClCompile Include="src\pawnai\WandRange.cpp" />
     <ClCompile Include="src\pawnai\Possession.cpp" />
+    <ClCompile Include="src\pawnai\PartyRescueProtocol.cpp" />
     <!-- ImGui -->
     <ClCompile Include="ImGui\imgui.cpp">
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
@@ -210,6 +211,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\DashWatch.h" />
     <ClInclude Include="src\pawnai\WandRange.h" />
     <ClInclude Include="src\pawnai\Possession.h" />
+    <ClInclude Include="src\pawnai\PartyRescueProtocol.h" />
     <ClInclude Include="src\devtools\TypeCallers.Generated.h" />
     <ClInclude Include="src\devtools\generated\GoapInterfaceMap.inl" />
     <ClInclude Include="src\devtools\generated\PawnPrioritySemantics.inl" />

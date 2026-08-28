@@ -13,7 +13,7 @@ public:
     MemLogBuf()
     {
         InitializeCriticalSectionAndSpinCount(&m_cs, 4000);
-        m_mem.reserve(256 * 1024);
+        m_mem.reserve(kCap);
     }
 
     ~MemLogBuf()
@@ -24,11 +24,6 @@ public:
     void Dump()
     {
         EnterCriticalSection(&m_cs);
-        if (m_dumped) {
-            LeaveCriticalSection(&m_cs);
-            return;
-        }
-        m_dumped = true;
         const char* p = m_mem.empty() ? "" : m_mem.data();
         const DWORD n = (DWORD)m_mem.size();
         LeaveCriticalSection(&m_cs);
@@ -39,6 +34,14 @@ public:
         DWORD w = 0;
         if (n) WriteFile(f, p, n, &w, 0);
         CloseHandle(f);
+    }
+
+    void PeriodicFlush(DWORD intervalMs)
+    {
+        const DWORD now = GetTickCount();
+        if (m_lastFlush && (now - m_lastFlush) < intervalMs) return;
+        m_lastFlush = now;
+        Dump();
     }
 
 protected:
@@ -75,17 +78,34 @@ protected:
 private:
     CRITICAL_SECTION m_cs;
     std::string      m_mem;
-    bool             m_dumped = false;
-    bool             m_full   = false;
+    DWORD            m_lastFlush = 0;
+    bool             m_full      = false;
 };
 
 static MemLogBuf g_buf;
 static LPTOP_LEVEL_EXCEPTION_FILTER g_prevFilter = 0;
+static PVOID g_vehHandler = nullptr;
 
 static LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
 {
     g_buf.Dump();
     if (g_prevFilter) return g_prevFilter(info);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static LONG WINAPI OnVeh(EXCEPTION_POINTERS* info)
+{
+    if (info && info->ExceptionRecord) {
+        DWORD c = info->ExceptionRecord->ExceptionCode;
+        if (c == EXCEPTION_ACCESS_VIOLATION
+            || c == EXCEPTION_ILLEGAL_INSTRUCTION
+            || c == EXCEPTION_STACK_OVERFLOW
+            || c == EXCEPTION_DATATYPE_MISALIGNMENT
+            || c == EXCEPTION_INT_DIVIDE_BY_ZERO
+            || c == 0xC0000005) {
+            g_buf.Dump();
+        }
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -97,12 +117,18 @@ namespace LogMem {
 
 void Init()
 {
+    g_vehHandler = AddVectoredExceptionHandler(1, OnVeh);
     g_prevFilter = SetUnhandledExceptionFilter(OnCrash);
 }
 
 void FlushToDisk()
 {
     g_buf.Dump();
+}
+
+void PeriodicFlush(DWORD intervalMs)
+{
+    g_buf.PeriodicFlush(intervalMs);
 }
 
 } // namespace LogMem

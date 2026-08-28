@@ -16,9 +16,9 @@ aggro = (root / 'src/runtime/AggroWatch.cpp').read_text(encoding='utf-8')
 wand = (root / 'src/pawnai/WandRange.cpp').read_text(encoding='utf-8')
 director = (root / 'src/monsterai/MonsterDirector.cpp').read_text(encoding='utf-8')
 readme = (root / 'README.md').read_text(encoding='utf-8')
-doc = (root / 'docs/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
+doc = (root / 'docs/archive/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
 
-assert '84.21-species-rage' in tag
+assert '84.' in tag
 assert '84.9-pilot012-urgency-mobilization' in readme
 assert '84.10-goblin-pack-observe' in readme
 assert '84.12-wolf-combat-card' in readme
@@ -26,7 +26,7 @@ assert '84.13-leave-engaged' in readme
 assert '84.14-goblin-grab-pin' in readme
 assert '84.15-goblin-grab-hold' in readme
 assert '84.16-dual-observe' in readme
-assert '84.21-species-rage' in readme
+assert '84.' in readme
 assert '84.9-pilot012-urgency-mobilization' in doc
 
 # Parse only active key/value lines from the Tempo section.

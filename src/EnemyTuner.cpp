@@ -1,6 +1,7 @@
 #include "stdafx.h"
 #include "runtime/Runtime.h"
 #include "runtime/MemProbe.h"
+#include "runtime/MonsterTempo.h"
 #include "EnemyTuner.h"
 #include "EntityConfig.h"
 #include "monsterai/SpeciesCard.h"
@@ -190,6 +191,8 @@ static const uint32_t kScaleH = 0x64;   // высота
 static const uint32_t kScaleD = 0x68;   // глубина
 
 static const uint32_t kCharParamOff  = 0x5870;   // база блока в теле uEm0100
+static const uint32_t kFldDefense        = 0x010; // 物理防御力 (Physical Defense)
+static const uint32_t kFldMagickDefense  = 0x018; // 魔法防御力 (Magick Defense)
 static const uint32_t kFldReturnActivate = 0x100; // リターンテリトリー発動タイム
 static const uint32_t kFldReturnDuration = 0x104; // リターンテリトリー継続タイム
 static const uint32_t kFldScale          = 0x12C; // スケール値
@@ -355,9 +358,37 @@ struct Touched {
     float baseLeashAct, baseLeashDur;
     bool  haveLeash;
     int   leashLogged;   // чтобы не залить лог одинаковыми строками
+    // DDON Sanctuary (броня и скорость на возврате):
+    float baseDef, baseMDef;
+    bool  haveDef;
+    bool  inReturnArmor;
+    // Кэш смещения cCharParamEnemy в теле: ищем ровно один раз на особь,
+    // чтобы не гонять 29-КБ перебор памяти каждый тик для не-гоблинов.
+    uint32_t charParamOff;
+    bool     charParamSearched;
 };
-static Touched s_touched[32];
+static const int kMaxTouched = 64;
+static Touched s_touched[kMaxTouched];
 static int     s_nTouched = 0;
+
+static void ForgetMissing()
+{
+    const int n = Runtime::EnemyCount();
+    int w = 0;
+    for (int i = 0; i < s_nTouched; ++i) {
+        bool alive = false;
+        for (int k = 0; k < n; ++k) {
+            if (Runtime::EnemyBodyAt(k, nullptr) == s_touched[i].body) {
+                alive = true;
+                break;
+            }
+        }
+        if (!alive) continue;
+        if (w != i) s_touched[w] = s_touched[i];
+        ++w;
+    }
+    s_nTouched = w;
+}
 
 static Touched* FindTouched(uintptr_t body)
 {
@@ -368,8 +399,15 @@ static Touched* FindTouched(uintptr_t body)
 
 static Touched* RememberTouched(uintptr_t body, float scale)
 {
-    if (s_nTouched >= 32) s_nTouched = 0;   // кольцо: старые особи давно мертвы
-    Touched* t = &s_touched[s_nTouched];
+    if (s_nTouched >= kMaxTouched) {
+        ForgetMissing();
+    }
+    Touched* t = nullptr;
+    if (s_nTouched < kMaxTouched) {
+        t = &s_touched[s_nTouched++];
+    } else {
+        t = &s_touched[0];
+    }
     t->body     = body;
     t->scale    = scale;
     t->reverts  = 0;
@@ -382,7 +420,12 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->baseLeashDur = 0.0f;
     t->haveLeash    = false;
     t->leashLogged  = 0;
-    ++s_nTouched;
+    t->baseDef      = 0.0f;
+    t->baseMDef     = 0.0f;
+    t->haveDef      = false;
+    t->inReturnArmor = false;
+    t->charParamOff = 0;
+    t->charParamSearched = false;
     return t;
 }
 
@@ -883,9 +926,20 @@ static uint16_t EmIdFromKind(const char* k)
 //    значения пишем в лог — проверять будем по нему, а не "на глаз".
 static int ApplyLeash(uintptr_t body, Touched* rec, float scale)
 {
-    uintptr_t base = body + kCharParamOff;
-    if (!LooksLikeCharParam(base)) {
-        base = FindCharParam(body, 29632);
+    uintptr_t base = 0;
+    if (rec->charParamSearched) {
+        if (!rec->charParamOff) return 0;
+        base = body + rec->charParamOff;
+    } else {
+        rec->charParamSearched = true;
+        uintptr_t cand = body + kCharParamOff;
+        if (LooksLikeCharParam(cand)) {
+            base = cand;
+            rec->charParamOff = kCharParamOff;
+        } else {
+            base = FindCharParam(body, 29632);
+            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
+        }
         if (!base) return 0;
     }
 
@@ -905,6 +959,10 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale)
 
     float wantAct = rec->baseLeashAct * scale;
     float wantDur = rec->baseLeashDur * scale;
+    if (wantAct < 1.0f) wantAct = 1.0f;
+    if (wantAct > 3600.0f) wantAct = 3600.0f;
+    if (wantDur < 1.0f) wantDur = 1.0f;
+    if (wantDur > 3600.0f) wantDur = 3600.0f;
 
     int wrote = 0;
     // Обе копии структуры: движок может читать любую.
@@ -918,6 +976,126 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale)
         if (SafeRead((const void*)(b + kFldReturnDuration), &cur, 4) &&
             !NearlyEq(cur, wantDur) &&
             SafeWrite((void*)(b + kFldReturnDuration), &wantDur, 4)) ++wrote;
+    }
+    return wrote;
+}
+
+// -------------------------------------------------------- DDON Sanctuary ---
+//
+// В Dragon's Dogma Online монстры при возврате на спавн получали статус
+// Sanctuary: многократный буст защиты + ускоренный бег домой, чтобы игроки
+// не расстреливали их безнаказанно в спину.
+//
+// Когда монстр входит в состояние возврата (Escape/Return/Retreat):
+//   1. Умножаем физическую (+0x10) и магическую (+0x18) защиту в returnArmorMult раз.
+//   2. Ускоряем скорость бега домой через Tempo::SetOverride(returnSpeed).
+// Как только монстр выходит из возврата (снова вступает в бой или дошёл до лагеря):
+//   - Восстанавливаем ванильные значения защиты и снимаем оверрайд темпа.
+static bool IsReturningState(const char* act)
+{
+    if (!act || !act[0]) return false;
+    return strstr(act, "Return") != nullptr
+        || strstr(act, "Escape") != nullptr
+        || strstr(act, "Retreat") != nullptr
+        || strstr(act, "DashTrace") != nullptr
+        || !strcmp(act, "cEm0100ActEscapeStart");
+}
+
+static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t, const char* kind)
+{
+    uintptr_t base = 0;
+    if (rec->charParamSearched) {
+        if (!rec->charParamOff) return 0;
+        base = body + rec->charParamOff;
+    } else {
+        rec->charParamSearched = true;
+        uintptr_t cand = body + kCharParamOff;
+        if (LooksLikeCharParam(cand)) {
+            base = cand;
+            rec->charParamOff = kCharParamOff;
+        } else {
+            base = FindCharParam(body, 29632);
+            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
+        }
+        if (!base) return 0;
+    }
+
+    float curDef = 0, curMDef = 0;
+    if (!SafeRead((const void*)(base + kFldDefense), &curDef, 4)) return 0;
+    if (!SafeRead((const void*)(base + kFldMagickDefense), &curMDef, 4)) return 0;
+
+    // Запоминаем ванильную базу брони до первого применения
+    if (!rec->haveDef && !rec->inReturnArmor) {
+        if (curDef >= 0.0f && curDef < 50000.0f && curMDef >= 0.0f && curMDef < 50000.0f) {
+            rec->baseDef = curDef;
+            rec->baseMDef = curMDef;
+            rec->haveDef = true;
+        }
+    }
+    if (!rec->haveDef) return 0;
+
+    if (!t.returnArmor) {
+        if (rec->inReturnArmor) {
+            for (int c = 0; c < 2; ++c) {
+                uintptr_t b = base + (uintptr_t)c * 0x140;
+                if (c && !LooksLikeCharParam(b)) break;
+                SafeWrite((void*)(b + kFldDefense), &rec->baseDef, 4);
+                SafeWrite((void*)(b + kFldMagickDefense), &rec->baseMDef, 4);
+            }
+            Runtime::Tempo::ClearOverride(body);
+            rec->inReturnArmor = false;
+        }
+        return 0;
+    }
+
+    char liveAct[48] = {};
+    Runtime::ReadLiveAct(body, liveAct, sizeof(liveAct));
+    const bool returning = IsReturningState(liveAct);
+
+    float armorMult = t.returnArmorMult;
+    if (armorMult < 1.0f) armorMult = 1.0f;
+    if (armorMult > 20.0f) armorMult = 20.0f;
+
+    float wantDef = returning ? (rec->baseDef * armorMult) : rec->baseDef;
+    float wantMDef = returning ? (rec->baseMDef * armorMult) : rec->baseMDef;
+
+    int wrote = 0;
+    if (returning && !rec->inReturnArmor) {
+        // Вход в Sanctuary: бустим броню + ускоряем отход
+        for (int c = 0; c < 2; ++c) {
+            uintptr_t b = base + (uintptr_t)c * 0x140;
+            if (c && !LooksLikeCharParam(b)) break;
+            if (SafeWrite((void*)(b + kFldDefense), &wantDef, 4)) ++wrote;
+            if (SafeWrite((void*)(b + kFldMagickDefense), &wantMDef, 4)) ++wrote;
+        }
+        float speed = t.returnSpeed;
+        if (speed < 1.0f) speed = 1.0f;
+        if (speed > 1.40f) speed = 1.40f;
+        if (speed > 1.01f) {
+            Runtime::Tempo::SetOverride(body, speed, 1.0f, 4000);
+        }
+        rec->inReturnArmor = true;
+        char l[200];
+        sprintf_s(l, "Sanctuary: ENGAGED on %s 0x%08X (act=%s, def %.1f->%.1f, mdef %.1f->%.1f, speed x%.2f)",
+                  kind ? kind : "?", (unsigned)body, liveAct[0] ? liveAct : "?",
+                  rec->baseDef, wantDef, rec->baseMDef, wantMDef, speed);
+        logFile << "EnemyTuner: " << l << std::endl;
+        lstrcpynA(s_status, l, sizeof(s_status));
+    } else if (!returning && rec->inReturnArmor) {
+        // Выход из Sanctuary: восстанавливаем ваниль
+        for (int c = 0; c < 2; ++c) {
+            uintptr_t b = base + (uintptr_t)c * 0x140;
+            if (c && !LooksLikeCharParam(b)) break;
+            if (SafeWrite((void*)(b + kFldDefense), &rec->baseDef, 4)) ++wrote;
+            if (SafeWrite((void*)(b + kFldMagickDefense), &rec->baseMDef, 4)) ++wrote;
+        }
+        Runtime::Tempo::ClearOverride(body);
+        rec->inReturnArmor = false;
+        char l[200];
+        sprintf_s(l, "Sanctuary: RELEASED on %s 0x%08X (restored def %.1f, mdef %.1f)",
+                  kind ? kind : "?", (unsigned)body, rec->baseDef, rec->baseMDef);
+        logFile << "EnemyTuner: " << l << std::endl;
+        lstrcpynA(s_status, l, sizeof(s_status));
     }
     return wrote;
 }
@@ -936,6 +1114,9 @@ static void TickOneBody(uintptr_t body, const char* kind)
 
     Touched* rec0 = FindTouched(body);
     if (!rec0) rec0 = RememberTouched(body, 1.0f);
+
+    // --- DDON Sanctuary: броня и скорость при возврате на спавн --------
+    ApplyReturnSanctuary(body, rec0, t, kind);
 
     // --- поводок: независимый блок --------------------------------------
     // МОДУЛЬНОСТЬ: поводок и масштаб не должны зависеть друг от друга.
@@ -1112,6 +1293,8 @@ void ListEnemies()
 void Tick()
 {
     if (!EntityCfg::Enabled()) { s_tracked = 0; return; }
+
+    ForgetMissing();
 
     s_tracked = Runtime::EnemyCount();
 

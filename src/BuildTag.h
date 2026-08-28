@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.44-genetic-scale"
+#define MOD_BUILD_TAG "84.55-pawn-combat-mastery"

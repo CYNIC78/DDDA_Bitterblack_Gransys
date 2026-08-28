@@ -12,6 +12,7 @@
 #include "WandRange.h"
 #include "../runtime/Runtime.h"
 #include "../runtime/RuntimeInternal.h"
+#include "../CombatBus.h"
 
 namespace PawnAI {
 namespace WandRange {
@@ -23,6 +24,8 @@ using Runtime::Mem::LooksHeap;
 using Runtime::Mem::NameOfLiveObject;
 
 static bool s_enabled = false;
+static bool s_nukeGating = true;
+static bool s_lastAllowNukes = true;
 static bool s_applied = false;
 static int  s_nLive = 0;
 static int  s_nSeen = 0;     // сколько cCmc* с range-блоком увидели
@@ -30,6 +33,36 @@ static float s_band[12][2];  // уникальные (min,max), что реал�
 static char  s_bandNm[12][40];
 static int   s_nBand = 0;
 static char s_why[96] = "off";
+
+// Тяжелые «ядерные» заклинания с огромным временем каста (10-15 сек)
+static bool IsHeavyNukeSpell(const char* nm)
+{
+    if (!nm) return false;
+    return strstr(nm, "Meteo") != nullptr        // Bolide / High Bolide
+        || strstr(nm, "Tatsumaki") != nullptr     // Maelstrom / High Maelstrom
+        || strstr(nm, "EarthShake") != nullptr    // Seism / High Seism
+        || strstr(nm, "ThunderSpark") != nullptr  // Fulmination
+        || strstr(nm, "DeathCircle") != nullptr;  // Exequy
+}
+
+// Присутствуют ли на поле крупные враги или боссы
+static bool IsLargeEnemyOrBossPresent()
+{
+    const WorldReport w = CombatBus::Instance().LastWorld();
+
+    for (int i = 0; i < w.count; ++i) {
+        const char* k = w.units[i].kind;
+        if (!k) continue;
+        // uEm0500 / uEm0501 (Огры, Elder Ogre)
+        // uEm5* (Циклопы, Големы, Химеры, Грифоны, Дрейки, Драконы, Боссы)
+        // uEm83* (Cursed Dragon), uEm84* (Daimon), uEm81* (BBI boss)
+        if (!strncmp(k, "uEm050", 6) || !strncmp(k, "uEm5", 4)
+            || !strncmp(k, "uEm83", 5) || !strncmp(k, "uEm84", 5)
+            || !strncmp(k, "uEm81", 5))
+            return true;
+    }
+    return false;
+}
 
 // Build 008 bounded logging: ephemeral cCmc action objects may force many
 // legitimate re-applies. Keep counters, but print only the first proof and
@@ -81,13 +114,9 @@ static bool WriteFloat(uintptr_t addr, float want)
     return true;
 }
 
-// 75.53 live: iface of MainPawnBody is the CURRENT action of the MAIN
-// pawn — we patched cCmc100Slash / Dagger / Wait / BowAttack. Magick
-// Bolt at 5–7 m is a different cCmc (Wand/Magic*), often on a hired
-// pawn. Filter by class name; walk every uCmc, not only main.
 static bool IsStaffBand(float mn, float mx)
 {
-    if (mx < 100.0f || mx > 1000.0f) return false;
+    if (mx < 50.0f || mx > 4000.0f) return false;
     if (mn < 0.0f || mn > mx + 1.0f) return false;
     return true;
 }
@@ -109,7 +138,8 @@ static bool IsWandCmcName(const char* nm)
         || strstr(nm, "Phantom") || strstr(nm, "Dispel") || strstr(nm, "Holy")
         || strstr(nm, "Dark") || strstr(nm, "Stone") || strstr(nm, "Missle")
         || strstr(nm, "Missile") || strstr(nm, "Emperor") || strstr(nm, "Ball")
-        || strstr(nm, "Healing") || strstr(nm, "Cure") || strstr(nm, "Circle"))
+        || strstr(nm, "Healing") || strstr(nm, "Cure") || strstr(nm, "Circle")
+        || strstr(nm, "Meteo") || strstr(nm, "Tatsumaki") || strstr(nm, "EarthShake"))
         return true;
     return false;
 }
@@ -137,15 +167,25 @@ static void LogBands(const char* tag)
     logFile << buf << " m" << std::endl;
 }
 
-static int PatchSix(uintptr_t base)
+static int PatchSix(uintptr_t base, const char* nm, bool allowNukes)
 {
     float f[6] = {};
     if (!Rd((void*)base, f, sizeof(f))) return 0;
     if (!IsStaffBand(f[0], f[1])) return 0;
+
+    const bool isNuke = IsHeavyNukeSpell(nm);
     int n = 0;
-    if (WriteFloat(base + 4, 1500.0f)) ++n;
-    if (f[5] >= 100.0f && f[5] < 1999.0f) {
-        if (WriteFloat(base + 20, 2000.0f)) ++n;
+
+    if (isNuke && !allowNukes && s_nukeGating) {
+        // Против мелочи: глушим RangeMax и EnableMax, чтобы спелл стал неактивен для выбора
+        if (WriteFloat(base + 4, 0.0f)) ++n;
+        if (WriteFloat(base + 20, 0.0f)) ++n;
+    } else {
+        // Против боссов / для обычных спеллов / Focused Bolt: дальность 15 м (1500) и активация 20 м (2000)
+        if (WriteFloat(base + 4, 1500.0f)) ++n;
+        if (f[5] >= 10.0f && f[5] < 1999.0f) {
+            if (WriteFloat(base + 20, 2000.0f)) ++n;
+        }
     }
     return n;
 }
@@ -185,7 +225,7 @@ static bool AlreadyHave(uintptr_t addr)
     return false;
 }
 
-static int ConsiderCmc(uintptr_t obj)
+static int ConsiderCmc(uintptr_t obj, bool allowNukes)
 {
     char nm[48] = {};
     if (!NameOfLiveObject(obj, nm, sizeof(nm))) return 0;
@@ -201,14 +241,14 @@ static int ConsiderCmc(uintptr_t obj)
     if (!IsWandCmcName(nm)) return 0;
     if (!IsStaffBand(f[0], f[1])) return 0;
     if (AlreadyHave(obj + 0x25C)) return 0;
-    return PatchSix(obj + 0x258);
+    return PatchSix(obj + 0x258, nm, allowNukes);
 }
 
-static int WalkObject(uintptr_t obj, uint32_t bytes, int depth)
+static int WalkObject(uintptr_t obj, uint32_t bytes, int depth, bool allowNukes)
 {
     if (!obj || bytes < 8 || bytes > 0x800 || depth > 2) return 0;
     int n = 0;
-    n += ConsiderCmc(obj);
+    n += ConsiderCmc(obj, allowNukes);
     for (uint32_t off = 0; off + 4 <= bytes; off += 4) {
         uintptr_t p = 0;
         if (!RdPtr((void*)(obj + off), &p) || !LooksHeap(p) || p == obj)
@@ -216,22 +256,25 @@ static int WalkObject(uintptr_t obj, uint32_t bytes, int depth)
         char nm[48] = {};
         if (!NameOfLiveObject(p, nm, sizeof(nm)) || !nm[0]) continue;
         if (!strncmp(nm, "cCmc", 4))
-            n += ConsiderCmc(p);
+            n += ConsiderCmc(p, allowNukes);
         else if (depth < 2 && (!strcmp(nm, "cAIActionInterfaceCmc")
                             || strstr(nm, "ActionInterface")))
-            n += WalkObject(p, 640, depth + 1);
+            n += WalkObject(p, 640, depth + 1, allowNukes);
     }
     return n;
 }
 
-static int WalkPlanWand(uintptr_t ctrl)
+static int WalkPlanWand(uintptr_t ctrl, bool allowNukes)
 {
     const uintptr_t planner =
         Runtime::FindChildByClass(ctrl, 704, "cAIGoalPlanning", 0);
     if (!planner) return 0;
-    // code 55 = WpnWandAtk (PAWN_GOAL_CODES)
-    const uintptr_t block = planner + 0x190 + 55u * 0x110u;
-    return WalkObject(block, 0x110, 0);
+    int n = 0;
+    for (uint32_t code = 0; code < 91; ++code) {
+        const uintptr_t block = planner + 0x190 + code * 0x110u;
+        n += WalkObject(block, 0x110, 0, allowNukes);
+    }
+    return n;
 }
 
 void Restore(const char* why)
@@ -254,12 +297,14 @@ void Restore(const char* why)
 void Init()
 {
     s_enabled = config.getBool("errata", "wandRange", false);
+    s_nukeGating = config.getBool("errata", "nukeGating", true);
     s_firstApplyLogged = false;
     s_firstWaitLogged = false;
     s_applyEvents = 0;
     s_waitRetries = 0;
     logFile << "WandRange: " << (s_enabled ? "enabled" : "disabled")
-            << " (all caster cCmc + Anodyne/Cure/Circle, IceWalk off, 1-10 m -> 15 m)"
+            << " (all caster cCmc + Anodyne/Cure/Circle/FocusedBolt, nukeGating=" << (s_nukeGating ? "on" : "off")
+            << ", 1-10 m -> 15 m)"
             << std::endl;
 }
 
@@ -267,6 +312,14 @@ void SetEnabled(bool on)
 {
     s_enabled = on;
     if (!on) Restore("off");
+}
+
+bool NukeGatingOn() { return s_nukeGating; }
+
+void SetNukeGating(bool on)
+{
+    s_nukeGating = on;
+    s_applied = false; // принудительно обновить патчи на следующем тике
 }
 
 void Tick()
@@ -277,7 +330,9 @@ void Tick()
         return;
     }
 
-    if (s_applied && s_nPatch > 0) {
+    const bool allowNukes = !s_nukeGating || IsLargeEnemyOrBossPresent();
+
+    if (s_applied && s_nPatch > 0 && allowNukes == s_lastAllowNukes) {
         int ok = 0;
         for (int i = 0; i < s_nPatch; ++i) {
             float cur = 0.0f;
@@ -291,6 +346,8 @@ void Tick()
         s_nPatch = 0;
         s_applied = false;
     }
+
+    s_lastAllowNukes = allowNukes;
 
     static DWORD s_lastTry = 0;
     const DWORD now = GetTickCount();
@@ -316,16 +373,16 @@ void Tick()
         const uintptr_t iface = ActionIfaceCtrl(ctrl);
         if (iface) {
             ++nIface;
-            n += WalkObject(iface, 60, 0);
+            n += WalkObject(iface, 60, 0, allowNukes);
         }
-        n += WalkPlanWand(ctrl);
+        n += WalkPlanWand(ctrl, allowNukes);
     }
     s_nLive = n;
     s_applied = n > 0;
 
     if (s_applied) {
         ++s_applyEvents;
-        sprintf_s(s_why, "APPLIED live cCmc %d (seen %d)", n, s_nSeen);
+        sprintf_s(s_why, "APPLIED live cCmc %d (seen %d, nukes=%s)", n, s_nSeen, allowNukes ? "UNLOCKED" : "GATED");
         if (!s_firstApplyLogged) {
             s_firstApplyLogged = true;
             logFile << "WandRange: first " << s_why << std::endl;
@@ -372,6 +429,7 @@ Status Get()
     s.applied = s_applied;
     s.nResource = s_nSeen;
     s.nLive = s_nLive;
+    s.nukeGated = s_nukeGating && !s_lastAllowNukes;
     lstrcpynA(s.why, s_why, sizeof(s.why));
     return s;
 }
