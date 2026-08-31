@@ -2,14 +2,18 @@
 #include "runtime/Runtime.h"
 #include "runtime/MemProbe.h"
 #include "runtime/AggroWatch.h"
+#include "runtime/MonsterTempo.h"
 #include <math.h>
 #include "GuardianDoctrine.h"
 #include "../CombatBus.h"
-#include "../devtools/DevTools.h"
 
 extern BYTE** pBase; // из dinput8.cpp
 
 namespace PawnAI {
+
+using Runtime::Mem::Rd;
+using Runtime::Mem::RdPtr;
+using Runtime::Mem::WrSafe;
 
 // ================= Статичные контракты =================
 
@@ -532,8 +536,55 @@ void GuardianDoctrineTick()
 {
     static GuardianDoctrine d;
 
+    // 1. Ищем пешку с инклинацией Guardian (среди Главной и Наёмных)
+    int foundGuardianSlot = -1;
+    uintptr_t guardianBody = 0;
+    const char* guardianRoleName = "none";
+    int pawnVoc = VOC_UNKNOWN;
+
+    float mainIncl[I_COUNT];
+    ReadAllIncl(mainIncl, 0);
+    if (mainIncl[I_GUARDIAN] >= 350.0f && mainIncl[I_GUARDIAN] >= mainIncl[I_NEXUS]) {
+        foundGuardianSlot = Runtime::PARTY_MAIN;
+        guardianBody = Runtime::MainPawnBody();
+        guardianRoleName = "MainPawn";
+        if (pBase && *pBase) {
+            uintptr_t pawnRec = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET;
+            pawnVoc = ReadVocation(pawnRec);
+        }
+    }
+
+    if (foundGuardianSlot < 0) {
+        for (int slot = Runtime::PARTY_HIRED1; slot <= Runtime::PARTY_HIRED2; ++slot) {
+            uintptr_t b = 0;
+            int v = 0, lvl = 0;
+            if (!Runtime::PartyRecordInfo(slot - 1, &v, &lvl, &b) || !b) continue;
+            float hIncl[I_COUNT];
+            ReadAllIncl(hIncl, slot - 1);
+            if (hIncl[I_GUARDIAN] >= 350.0f && hIncl[I_GUARDIAN] >= hIncl[I_NEXUS]) {
+                foundGuardianSlot = slot;
+                guardianBody = b;
+                guardianRoleName = Runtime::PartyCombatSlotName(slot);
+                pawnVoc = v;
+                break;
+            }
+        }
+    }
+
+    if (foundGuardianSlot < 0 || !guardianBody) return;
+
     GuardianSitRep s;
     BuildGuardianSitRep(s);
+    // Обновляем позицию и вокацию найденного Guardian
+    float gx = 0, gy = 0, gz = 0;
+    if (Rd((const void*)(guardianBody + 0x40), &gx, 4) &&
+        Rd((const void*)(guardianBody + 0x44), &gy, 4) &&
+        Rd((const void*)(guardianBody + 0x48), &gz, 4)) {
+        s.pawnX = gx; s.pawnY = gy; s.pawnZ = gz;
+        s.pawnValid = true;
+    }
+    s.pawnVocation = pawnVoc;
+
     GuardianReport r;
     d.Decide(s, r);
 
@@ -545,28 +596,32 @@ void GuardianDoctrineTick()
 
     // 2. Проактивный захват цели (Proactive Target Pinning)
     static uintptr_t s_lastTarget = 0;
-    const uintptr_t pawn = Runtime::MainPawnBody();
 
-    if (r.zoneEngaged && withinLeash && r.targetThreatBody && pawn) {
+    if (r.zoneEngaged && withinLeash && r.targetThreatBody && guardianBody) {
         // Направляем боевую цель планировщика (uCmc+0x2EB8) и фокус взгляда (+0x14E0) на угрозу в зоне
-        Runtime::Mem::WrSafe((void*)(pawn + 0x2EB8), &r.targetThreatBody, sizeof(uintptr_t));
-        Runtime::Mem::WrSafe((void*)(pawn + 0x14E0), &r.targetThreatBody, sizeof(uintptr_t));
+        Runtime::Mem::WrSafe((void*)(guardianBody + 0x2EB8), &r.targetThreatBody, sizeof(uintptr_t));
+        Runtime::Mem::WrSafe((void*)(guardianBody + 0x14E0), &r.targetThreatBody, sizeof(uintptr_t));
+        Runtime::Tempo::SetOverride(guardianBody, 1.25f, 1.15f, 2500);
 
         if (s_lastTarget != r.targetThreatBody) {
             s_lastTarget = r.targetThreatBody;
             char l[240];
-            sprintf_s(l, "GuardianDoctrine: PROACTIVE TARGET -> %s 0x%08X (%s) dist %.1fm (pawn-Arisen %.1fm)",
+            sprintf_s(l, "GuardianDoctrine: [%s] PROACTIVE TARGET -> %s 0x%08X (%s) dist %.1fm (pawn-Arisen %.1fm)",
+                      guardianRoleName,
                       r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
                       (unsigned)r.targetThreatBody, r.targetThreatKind ? r.targetThreatKind : "?",
                       r.nearestThreatDist, r.pawnAnchorDist);
             logFile << l << std::endl;
         }
     } else if (!r.zoneEngaged || r.threatsInZone == 0 || !withinLeash) {
+        if (s_lastTarget && guardianBody) {
+            Runtime::Tempo::ClearOverride(guardianBody);
+        }
         s_lastTarget = 0;
     }
 
-    // 3. Динамический приоритет
-    if (g_guardianFixEnabled) {
+    // 3. Динамический приоритет (для главной пешки)
+    if (g_guardianFixEnabled && foundGuardianSlot == Runtime::PARTY_MAIN) {
         int32_t desired = -3;
         if (r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0) {
             float dist = r.nearestThreatDist; // метры
@@ -578,12 +633,11 @@ void GuardianDoctrineTick()
         Runtime::GuardianFixTick();
     }
 
-    // 4. Рычаг склонности — тот, у которого есть доказательство. Условие то
-    // же самое, что у прежнего фикса: угроза в зоне и подходящая вокация.
-    if (g_guardianUseInclLever) {
+    // 4. Рычаг склонности — для главной пешки
+    if (g_guardianUseInclLever && foundGuardianSlot == Runtime::PARTY_MAIN) {
         const bool want = r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0;
         InclLeverApply(want);
-    } else {
+    } else if (foundGuardianSlot == Runtime::PARTY_MAIN) {
         GuardianLeverRestore();
     }
 }

@@ -39,11 +39,11 @@ static const SpeciesCard kSpeciesCards[] = {
       0.94f, 1.10f, 1.10f, 0.05f },
     // Goblin: атака быстрее локомоции (малый быстрый боец), коридор 0.93..1.15
     { "uEm0100", 29632u, true, true,  true,
-      1.21f, 1.24f, 1.32f, 1.40f,
+      1.15f, 1.20f, 1.15f, 1.24f,
       0.93f, 1.15f, 1.12f, 0.08f },
-    // Hobgoblin: Same body size as goblin; rage ceiling below goblin
+    // Hobgoblin: тяжелый бронированный гоблин, естественный темп замаха
     { "uEm0101", 29632u, true, true,  true,
-      1.21f, 1.23f, 1.24f, 1.32f,
+      1.15f, 1.20f, 1.10f, 1.18f,
       0.95f, 1.14f, 1.12f, 0.06f },
     // Saurian: обычный ящер
     { "uEm0400", 29568u, true, true,  true,

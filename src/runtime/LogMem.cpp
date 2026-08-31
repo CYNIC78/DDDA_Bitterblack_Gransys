@@ -88,6 +88,13 @@ static PVOID g_vehHandler = nullptr;
 
 static LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
 {
+    if (info && info->ExceptionRecord) {
+        char buf[256];
+        sprintf_s(buf, "\n!!! CRASH: Exception 0x%08X at address 0x%p !!!\n",
+                  info->ExceptionRecord->ExceptionCode,
+                  info->ExceptionRecord->ExceptionAddress);
+        logFile << buf << std::endl;
+    }
     g_buf.Dump();
     if (g_prevFilter) return g_prevFilter(info);
     return EXCEPTION_CONTINUE_SEARCH;

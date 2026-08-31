@@ -1,0 +1,31 @@
+84.56-caster-tactics-hfb-logger
+Онлайн-трекер тактики кастеров и Священного Заряженного Выстрела (HFB Logger) + Детальный лог заклинаний.
+
+Собрать: Release | Win32. Тег: 84.56-caster-tactics-hfb-logger.
+dinput8.dll в папку с DDDA.exe.
+
+Что нового в Milestone 84.56:
+1. Онлайн-трекинг Holy Focused Bolt (HFB) и заряженных атак посоха (CasterWatch):
+   - Логирование момента начала зарядки Focused Bolt с определением активного стихийного баффа:
+     `CasterWatch: [MainPawn] START CHARGING Focused Bolt [Holy / HFB] -> target 0x11020060 (uEm5000) dist=14.2m`
+   - Логирование выстрела с точным таймингом удержания заряда (charge time в миллисекундах):
+     `CasterWatch: [MainPawn] FIRED Focused Bolt [Holy / HFB] -> target 0x11020060 (uEm5000) dist=13.5m (charge=1350ms)`
+   - Трекинг прерываний зарядки при получении урона или уклонении.
+2. Прозрачное логирование каста всех спеллов (Chanting & Cast Completion):
+   - Фиксация начала каста с распознаванием типа спелла (Comestion, Levin, Frigor, Bolide, Maelstrom, Anodyne, Halidom, Holy Affinity и др.):
+     `CasterWatch: [Hired1] START CHANTING High Levin (cCmcLightningCloud) -> target 0x111A7F80 (uEm0101) dist=12.1m`
+   - Фиксация успешного завершения каста (с замером времени каста в мс) или прерывания.
+3. Интеллектуальный трекер стихийных чар оружия (Party Elemental Buff Tracker):
+   - Автоматическое распознавание наложения Holy Affinity / Holy Boon (cCmcEnchantHorly) и других стихий (Fire, Ice, Lightning, Dark).
+   - Все последующие Focused Bolt автоматически помечаются соответствующей стихией ([Holy / HFB], [Fire], [Ice] и т.д.) на время действия баффа (90 сек).
+4. Логирование переключения Nuke Gating:
+   - В лог выводится переход между блокировкой тяжелых 15с спеллов на мелочи и их разблокировкой при появлении крупных боссов:
+     `WandRange: NUKE GATING UNLOCKED (Boss/Large enemy present) -> heavy nukes (Bolide/Maelstrom/Seism) active at 15m`
+5. Мониторинг в оверлее F12 (InGameUI):
+   - В блоке кастеров отображаются счетчики: Заряжено/Выпущено сфер Focused Bolt, Начато/Завершено спеллов, статус и оставшееся время активного баффа (Holy/HFB active), а также последнее боевое событие кастера.
+
+Тест:
+1. Заряжать пешку-мага/чародея Святыми Чарами (Holy Affinity) и наблюдать за логом:
+   - В логе должны появляться строки `START CHARGING Focused Bolt [Holy / HFB]` и `FIRED Focused Bolt [Holy / HFB] (charge=...ms)`.
+2. Оценить каст обычных спеллов (Levin, Comestion) на мелочи и тяжелых спеллов (Bolide, Maelstrom) на боссах:
+   - В логе будут видны точные тайминги каста и переключение гейтинга.

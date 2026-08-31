@@ -41,6 +41,9 @@ $GPP "$T/cordon_t.cpp"
 echo "== 1e/10 DashWatch.cpp =="
 $GPP "$T/dashwatch_t.cpp"
 
+echo "== 1w/10 WandRange.cpp =="
+$GPP "$T/wandrange_t.cpp"
+
 echo "== 1h/10 AggroWatch.cpp =="
 $GPP "$T/aggro_t.cpp"
 
@@ -57,6 +60,9 @@ echo "== 1g/10 GuardianDoctrine.cpp =="
 # SEH под g++ нет: __try/__except подменяем на try/catch. Проверяется не
 # поведение обработчика, а синтаксис тела — этого и хотим.
 $GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/guard_t.cpp"
+
+echo "== 1n/10 NexusDoctrine.cpp =="
+$GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/nexus_t.cpp"
 
 echo "== 2/10 UI block =="
 python3 - <<'PY'
@@ -83,6 +89,9 @@ $GPP "$T/ui_pawn_t.cpp"
 
 echo "== 2c/10 EnemyAI.cpp =="
 $GPP "$T/enemyai_t.cpp"
+
+echo "== 2d/10 EnemyTuner.cpp =="
+$GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/enemytuner_t.cpp"
 
 echo "== 9/10 ASCII in UI strings =="
 python3 - <<'PY'

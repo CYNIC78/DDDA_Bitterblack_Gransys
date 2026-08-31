@@ -20,6 +20,7 @@
 #include "pawnai/PawnAI_Common.h"
 #include "pawnai/PawnAI_BusOrchestrator.h"
 #include "pawnai/GuardianDoctrine.h"
+#include "pawnai/NexusDoctrine.h"
 #include "monsterai/MonsterDirector.h"
 #include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
@@ -125,6 +126,10 @@ void UpdatePawnAI(){
     __try { Runtime::ErrataTick(); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
     __try { PawnAI::GuardianDoctrineTick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // Nexus Doctrine: защита союзных пешек (кастеры/штурмовая двойка)
+    __try { PawnAI::Nexus::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Party Emergency Rescue: общепартийное спасение Аризена при захватах/падениях
@@ -938,7 +943,17 @@ void RenderPawnAIUI(){
             (incl[I_NEXUS] > incl[I_GUARDIAN] + 1.0f) ? "Nexus (anchor = selected pawn)" :
                                                         "Tie (primary inclination decides)";
         ImGui::Text("Guardian %.0f / Nexus %.0f - %s", incl[I_GUARDIAN], incl[I_NEXUS], owner);
-        ImGui::TextDisabled("Observe only.");
+        
+        PawnAI::Nexus::Status nst = PawnAI::Nexus::GetStatus();
+        if (nst.active) {
+            ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f),
+                "Nexus: %s -> guarding %s (%s) | dist %.1f m",
+                Runtime::PartyCombatSlotName(nst.nexusSlot),
+                Runtime::PartyCombatSlotName(nst.partnerSlot),
+                nst.partnerRole, nst.pawnPartnerDist);
+        } else {
+            ImGui::TextDisabled("Nexus: stand-by / no active threat on partner");
+        }
 
         ImGui::Separator();
         // --- ЭРРАТА (слой B): статичная починка сломанного правила ---------
@@ -1005,9 +1020,24 @@ void RenderPawnAIUI(){
             }
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Pawn staff eligibility like a bow. Not the player. IceWalk stays short.");
+
+            bool nukeOn = PawnAI::WandRange::NukeGatingOn();
+            if (ImGui::Checkbox("Smart Nuke Gating (lock 15s spells on trash)", &nukeOn)) {
+                PawnAI::WandRange::SetNukeGating(nukeOn);
+                config.setBool("errata", "nukeGating", nukeOn);
+            }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("Gates Bolide/Maelstrom/Seism when fighting trash mobs, unlocks on bosses/large enemies.");
+
             ImGui::TextColored(ws.applied ? ImVec4(0.3f, 1.0f, 0.3f, 1.0f)
                                           : ImVec4(0.7f, 0.7f, 0.7f, 1.0f),
                                "%s", ws.why);
+            ImGui::Text("Caster stats: Bolts %u/%u (chg/shot) | Spells %u/%u (chg/cast)",
+                        ws.boltsCharged, ws.boltsFired, ws.spellsChanted, ws.spellsCompleted);
+            if (ws.buffRemainingSec > 0) {
+                ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "Buff: Holy/HFB active (%us)", ws.buffRemainingSec);
+            }
+            ImGui::TextDisabled("Caster event: %s", ws.lastCasterEvent);
         }
 
         // --- ВЫПОЛОТО В 75.40 -----------------------------------------------
@@ -1124,6 +1154,7 @@ void Hooks::PawnAI(){
     PawnAI::WandRange::Init();
     PawnAI::Possession::Init();
     PawnAI::Rescue::Init();
+    PawnAI::Nexus::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
@@ -1154,5 +1185,6 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::WandRange::Shutdown();
     PawnAI::Possession::Shutdown();
     PawnAI::Rescue::Shutdown();
+    PawnAI::Nexus::Shutdown();
     g_orch.Shutdown();
 }

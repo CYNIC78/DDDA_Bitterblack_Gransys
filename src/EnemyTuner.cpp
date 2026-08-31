@@ -5,6 +5,7 @@
 #include "EnemyTuner.h"
 #include "EntityConfig.h"
 #include "monsterai/SpeciesCard.h"
+#include "TypeAtlas.Generated.h"
 
 /**
  * Первый шаг применения конфига: РАЗВЕДКА, а не запись.
@@ -199,15 +200,14 @@ static const uint32_t kFldScale          = 0x12C; // スケール値
 
 // Сигнатура блока.
 //
-// ОШИБКА, КОТОРУЮ ЗДЕСЬ ИСПРАВИЛИ: сначала в проверку попало поле +0x120
-// (拘束スローレート Lv1). В файле оно 1.0, но движок ОБНУЛЯЕТ его в рантайме
-// (как и +0x124). Проверка проваливалась на правильной структуре.
-//
+// 1. Поле +0x120 движок пересчитывает сам: в файле 1.0, в рантайме 0.0.
 // Урок: в сигнатуру годятся только поля, которые игра НЕ трогает.
 // Берём три дистанции переключения камер — они статичны и образуют
 // характерную возрастающую тройку 500/800/1200, случайно такое не встретится.
 static bool LooksLikeCharParam(uintptr_t base)
 {
+    if (!base) return false;
+    if (!Runtime::Mem::RegionOk(base, 0x140)) return false;
     float cam0 = 0, cam1 = 0, cam2 = 0, death = 0;
     if (!SafeRead((const void*)(base + 0x0EC), &cam0,  4)) return false;
     if (!SafeRead((const void*)(base + 0x0F4), &cam1,  4)) return false;
@@ -222,6 +222,8 @@ static bool LooksLikeCharParam(uintptr_t base)
 // и ищем сигнатуру. Возвращает 0, если не найдена.
 static uintptr_t FindCharParam(uintptr_t body, uint32_t bodySize)
 {
+    if (!body || bodySize < 0x200) return 0;
+    if (bodySize > 35000) bodySize = 35000;
     for (uint32_t off = 0; off + 0x140 <= bodySize; off += 4) {
         if (LooksLikeCharParam(body + off)) return body + off;
     }
@@ -367,7 +369,7 @@ struct Touched {
     uint32_t charParamOff;
     bool     charParamSearched;
 };
-static const int kMaxTouched = 64;
+static const int kMaxTouched = 128;
 static Touched s_touched[kMaxTouched];
 static int     s_nTouched = 0;
 
@@ -406,7 +408,20 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     if (s_nTouched < kMaxTouched) {
         t = &s_touched[s_nTouched++];
     } else {
-        t = &s_touched[0];
+        int replaceIdx = -1;
+        const int nLive = Runtime::EnemyCount();
+        for (int i = 0; i < s_nTouched; ++i) {
+            bool found = false;
+            for (int k = 0; k < nLive; ++k) {
+                if (Runtime::EnemyBodyAt(k, nullptr) == s_touched[i].body) { found = true; break; }
+            }
+            if (!found) { replaceIdx = i; break; }
+        }
+        if (replaceIdx >= 0) {
+            t = &s_touched[replaceIdx];
+        } else {
+            return nullptr; // buffer full with live enemies, do not corrupt slot 0
+        }
     }
     t->body     = body;
     t->scale    = scale;
@@ -924,8 +939,13 @@ static uint16_t EmIdFromKind(const char* k)
 //
 // 3. Эффект не виден глазом мгновенно: надо отойти и ждать. Поэтому
 //    значения пишем в лог — проверять будем по нему, а не "на глаз".
-static int ApplyLeash(uintptr_t body, Touched* rec, float scale)
+static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kind)
 {
+    if (!rec) return 0;
+    // Исключаем подчасти боссов (например uEm5200_00 голова козла, uEm5200_01 хвост змеи)
+    if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
+        return 0;
+
     uintptr_t base = 0;
     if (rec->charParamSearched) {
         if (!rec->charParamOff) return 0;
@@ -937,7 +957,9 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale)
             base = cand;
             rec->charParamOff = kCharParamOff;
         } else {
-            base = FindCharParam(body, 29632);
+            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
+            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
+            base = FindCharParam(body, bSize);
             rec->charParamOff = base ? (uint32_t)(base - body) : 0;
         }
         if (!base) return 0;
@@ -997,12 +1019,16 @@ static bool IsReturningState(const char* act)
     return strstr(act, "Return") != nullptr
         || strstr(act, "Escape") != nullptr
         || strstr(act, "Retreat") != nullptr
-        || strstr(act, "DashTrace") != nullptr
         || !strcmp(act, "cEm0100ActEscapeStart");
 }
 
 static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t, const char* kind)
 {
+    if (!rec) return 0;
+    // Исключаем подчасти боссов
+    if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
+        return 0;
+
     uintptr_t base = 0;
     if (rec->charParamSearched) {
         if (!rec->charParamOff) return 0;
@@ -1014,7 +1040,9 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
             base = cand;
             rec->charParamOff = kCharParamOff;
         } else {
-            base = FindCharParam(body, 29632);
+            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
+            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
+            base = FindCharParam(body, bSize);
             rec->charParamOff = base ? (uint32_t)(base - body) : 0;
         }
         if (!base) return 0;
@@ -1123,7 +1151,7 @@ static void TickOneBody(uintptr_t body, const char* kind)
     // Раньше здесь стоял общий ранний выход по scaleMin/Max == 1.0, и при
     // выключенном масштабе поводок молча не работал бы.
     if (!NearlyEq(t.leashScale, 1.0f)) {
-        int n = ApplyLeash(body, rec0, t.leashScale);
+        int n = ApplyLeash(body, rec0, t.leashScale, kind);
         if (n > 0) {
             s_writes += n;
             if (rec0->leashLogged < 2) {
