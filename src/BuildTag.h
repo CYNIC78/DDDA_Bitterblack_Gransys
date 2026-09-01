@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.62-dual-guardian-nexus-synergy"
+#define MOD_BUILD_TAG "84.64-tactical-dpad-commands"

@@ -31,6 +31,7 @@
 #include "pawnai/WandRange.h"
 #include "pawnai/Possession.h"
 #include "pawnai/PartyRescueProtocol.h"
+#include "pawnai/OrderWatch.h"
 
 using namespace PawnAI;
 
@@ -134,6 +135,10 @@ void UpdatePawnAI(){
 
     // Party Emergency Rescue: общепартийное спасение Аризена при захватах/падениях
     __try { PawnAI::Rescue::Tick(); }
+    __except(EXCEPTION_EXECUTE_HANDLER) {}
+
+    // OrderWatch: наблюдение за командами D-pad (Ко мне / Вперед / Помогите)
+    __try { PawnAI::OrderWatch::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
@@ -1155,6 +1160,7 @@ void Hooks::PawnAI(){
     PawnAI::Possession::Init();
     PawnAI::Rescue::Init();
     PawnAI::Nexus::Init();
+    PawnAI::OrderWatch::Init();
     int known = CountKnownEnemies();
     logFile << "PawnAI v2.9 Modular initialized — Acquisitor / SmartUtil / Custom Anchors / Tactical via CombatBus (ticker 150ms)" << std::endl;
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
@@ -1186,5 +1192,6 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::Possession::Shutdown();
     PawnAI::Rescue::Shutdown();
     PawnAI::Nexus::Shutdown();
+    PawnAI::OrderWatch::Shutdown();
     g_orch.Shutdown();
 }

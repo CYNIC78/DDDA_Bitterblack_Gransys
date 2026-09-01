@@ -64,6 +64,9 @@ $GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/guard_t.cpp"
 echo "== 1n/10 NexusDoctrine.cpp =="
 $GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/nexus_t.cpp"
 
+echo "== 1o/10 OrderWatch.cpp =="
+$GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/orderwatch_t.cpp"
+
 echo "== 2/10 UI block =="
 python3 - <<'PY'
 p = 'src/devtools/DevTools.cpp'

@@ -13,5 +13,4 @@
 inline LONG InterlockedExchange(volatile LONG* p, LONG v) { LONG o = *p; *p = v; return o; }
 inline LONG InterlockedCompareExchange(volatile LONG* p, LONG v, LONG c)
 { LONG o = *p; if (o == c) *p = v; return o; }
-inline short GetAsyncKeyState(int) { return 0; }
 #include "../../src/runtime/PartyRecon.cpp"

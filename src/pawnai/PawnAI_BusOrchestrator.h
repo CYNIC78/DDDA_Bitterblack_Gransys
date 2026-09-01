@@ -25,6 +25,7 @@
 #include "AcquisitorManager.h"
 #include "SmartUtilitarian.h"
 #include "TacticalSwitch.h"
+#include "OrderWatch.h"
 
 namespace PawnAI {
 
@@ -84,6 +85,7 @@ struct Orchestrator {
         SAFE_MODULE(smartUtil, GetDelta(target, delta));
         SAFE_MODULE(tactical,  GetDelta(target, delta));
         SAFE_MODULE(acquisitor, GetDelta(target, delta)); // бывший кордон: только Acquisitor
+        OrderWatch::GetDelta(target, delta); // тактический импульс приказов (decay 6s)
         // Вокационный кордон идёт ПОСЛЕДНИМ: он ставит потолок Guardian,
         // и его слово должно быть поверх ситуативных надбавок.
         SAFE_MODULE(cordon,    GetDelta(target, delta));

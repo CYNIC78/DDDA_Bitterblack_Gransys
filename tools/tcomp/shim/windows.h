@@ -71,6 +71,12 @@ inline int   wsprintfA(LPSTR, LPCSTR, ...) { return 0; }
 inline BOOL  CreateDirectoryA(LPCSTR, void*) { return 1; }
 inline DWORD GetModuleFileNameA(HMODULE, LPSTR, DWORD) { return 0; }
 
+typedef short SHORT;
+#define VK_F1 0x70
+#define VK_F2 0x71
+#define VK_F3 0x72
+inline SHORT GetAsyncKeyState(int) { return 0; }
+
 #ifndef sprintf_s
 template <size_t N, typename... A>
 inline int sprintf_s(char (&buf)[N], const char* fmt, A... a) { return snprintf(buf, N, fmt, a...); }

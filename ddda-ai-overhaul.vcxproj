@@ -143,6 +143,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\pawnai\AcquisitorManager.cpp" />
     <ClCompile Include="src\pawnai\GuardianDoctrine.cpp" />
     <ClCompile Include="src\pawnai\NexusDoctrine.cpp" />
+    <ClCompile Include="src\pawnai\OrderWatch.cpp" />
     <ClCompile Include="src\pawnai\PresetManager.cpp" />
     <ClCompile Include="src\EnemyAI.cpp" />
     <ClCompile Include="src\CombatIntel.cpp" />
@@ -189,6 +190,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\AcquisitorManager.h" />
     <ClInclude Include="src\pawnai\GuardianDoctrine.h" />
     <ClInclude Include="src\pawnai\NexusDoctrine.h" />
+    <ClInclude Include="src\pawnai\OrderWatch.h" />
     <ClInclude Include="src\pawnai\PresetManager.h" />
     <ClInclude Include="src\pawnai\PawnAI_Common.h" />
     <ClInclude Include="src\pawnai\FieldMap.h" />
