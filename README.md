@@ -6,7 +6,13 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 ---
 
-## 🎯 Текущий Milestone: Build 84.67 (`84.67-evil-eye-subs`)
+## 🎯 Текущий Milestone: Build 84.68 (`84.68-monster-cards`)
+
+**84.68** — полноценные карточки статов всех монстров (106 видов):
+`src/MonsterCards.Generated.h` (CATALOG, read-only) из data-приёмки.
+Резисты подтвердили «физика-только» диска метал-голема (strike 1.0, магия
+0.0; тело — только thunder). Найден FSM `CarcassAppearAir` (падаль/Гарм).
+Гарм подтверждён данными: HP 75000.
 
 **84.67** — возвращены два «затерянных» архива `em5500B`/`em5500C`
 (под-компоненты Злого Глаза, `uEm5500B` gid `0x41` / `uEm5500C` gid `0xAF`);

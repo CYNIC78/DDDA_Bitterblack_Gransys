@@ -1,14 +1,15 @@
-DDDA AI Overhaul — source package 84.67-evil-eye-subs
+DDDA AI Overhaul — source package 84.68-monster-cards
 ========================================================================
-MOD_BUILD_TAG : 84.67-evil-eye-subs
-Дата сборки   : 2026-09-02 03:42 (Europe/Moscow)
-Файлов        : 715
-Архив         : builds/84.67-evil-eye-subs.zip
+MOD_BUILD_TAG : 84.68-monster-cards
+Дата сборки   : 2026-09-02 03:58 (Europe/Moscow)
+Файлов        : 625
+Архив         : builds/84.68-monster-cards.zip
 
 Состав:
-**Build 84.67** — `evil-eye-subs`. Два «затерянных» архива возвращены:
-`em5500B`/`em5500C` — под-компоненты Злого Глаза (`uEm5500B` gid `0x41`,
-`uEm5500C` gid `0xAF`). Счётчик архивов в доках исправлен 95 → **97**
-(сходится с `enemy_arcs.txt`, где и так было верно).
-`intake_monster_cards.py`: убран старый «сдвиг» `ARC_TO_UEM` (эррата 84.66 —
-номер архива = номер DTI) и добавлена защита от сбойного `*.rst`.
+**Build 84.68** — `monster-cards`. Полноценные карточки статов всех монстров:
+106 видов из data-приёмки `resources/enemy_data` → `src/MonsterCards.Generated.h`
+(CATALOG, read-only; запись по этим числам — только после живого A/B).
+Резисты подтвердили «физика-только» диска метал-голема (`uEm5101_00`:
+strike 1.0, slash 0.4, вся магия 0.0; тело `uEm5101`: только thunder 1.0).
+В `em5906` найден FSM `CarcassAppearAir` — CATALOG-вход в механику падали
+(Гарм-некрофаг). Гарм в бестиарии теперь подтверждён данными: HP 75000.
