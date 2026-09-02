@@ -79,22 +79,105 @@ game_main/etc/npc/
 # ============================================================
 # 📂 nativePC/rom/enemy/ — ОТДЕЛЬНЫЕ АРХИВЫ ВРАГОВ
 # ============================================================
+# ЭРРАТА 84.65: старый список ниже был выдуман (em0000/em0300/em1000/em3000/
+# em4000 НЕ существуют; ярлыки были сдвинуты: em0600≠Cyclops, em0700≠Chimera,
+# em5000≠Cursed Dragon). Полный список (97 архивов) сверен со списком
+# заказчика 2026-09-01 + types.tsv + fluffy_em.txt. Номер архива = номер DTI.
 nativePC/rom/enemy/
-├── em0000.arc    # Goblin
-├── em0100.arc    # Hobgoblin
+├── em0100.arc    # Goblin (+ em0101 Hobgoblin, em0102 Grimgoblin внутри)
+├── em0103.arc    # Goblin Shaman / Greater Goblin
 ├── em0200.arc    # Wolf
-├── em0300.arc    # Harpy
+├── em0201.arc    # Direwolf
+├── em0202.arc    # Hellhound
+├── em0203.arc    # Warg
+├── em0204.arc    # Garm
 ├── em0400.arc    # Saurian
+├── em0401.arc    # Sulfur Saurian
+├── em0402.arc    # Geo Saurian
+├── em0403.arc    # Saurian Sage
+├── em0404.arc    # Pyre Saurian (BBI)
+├── em0405..0408.arc  # Saurian variants (неопознаны)
 ├── em0500.arc    # Undead
-├── em0600.arc    # Cyclops
-├── em0700.arc    # Chimera
-├── em1000.arc    # Drake / Dragon
-├── em2000.arc    # BBI enemies start here
-├── em3000.arc    # Eliminator
-├── em4000.arc    # Condemned Gorecyclops
-├── em5000.arc    # Cursed Dragon
-├── em6000.arc    # Death
-└── em7000.arc    # Daimon
+├── em0501.arc    # Stout Undead
+├── em0502.arc    # Undead Warrior
+├── em0503.arc    # Giant Undead
+├── em0504.arc    # Poisoned Undead (BBI)
+├── em0505.arc    # Banshee (BBI)
+├── em0506.arc    # Eliminator (BBI)
+├── em0507.arc    # Undead variant (неопознан)
+├── em0600.arc    # Harpy
+├── em0601.arc    # Snow Harpy
+├── em0602.arc    # Succubus
+├── em0603.arc    # Gargoyle
+├── em0604.arc    # Strigoi (BBI)
+├── em0605.arc    # Siren (BBI)
+├── em0700.arc    # Phantom
+├── em0701.arc    # Phantasm
+├── em0702.arc    # Specter
+├── em0703.arc    # Wraith (BBI)
+├── em0900.arc    # Ogre
+├── em0901.arc    # Elder Ogre (BBI)
+├── em1200.arc    # Scarecrow? (неопознан)
+├── em1201.arc    # (неопознан)
+├── em2000.arc    # Skeleton
+├── em2001.arc    # Skeleton Knight
+├── em2002.arc    # Skeleton Lord
+├── em2003.arc    # Skeleton Brute (BBI)
+├── em2004.arc    # Golden Knight (BBI)
+├── em2005.arc    # Silver Knight (BBI)
+├── em2006.arc    # Living Armor (BBI)
+├── em2007.arc    # Skeleton variant (неопознан)
+├── em2100.arc    # Skeleton Mage
+├── em2101.arc    # Skeleton Sorcerer
+├── em5000.arc    # Cyclops
+├── em5001.arc    # Gorecyclops (BBI)
+├── em5100.arc    # Golem
+├── em5101.arc    # Metal Golem
+├── em5101_00.arc # Metal Golem disc
+├── em5200.arc    # Chimera
+├── em5201.arc    # Gorechimera
+├── em5300.arc    # Hydra
+├── em5301.arc    # Archydra
+├── em5400.arc    # Griffin
+├── em5401.arc    # Cockatrice
+├── em5402.arc    # Griffin variant (неопознан)
+├── em5500.arc    # Evil Eye
+├── em5500B.arc   # Evil Eye sub-part (uEm5500B, gid 0x41)
+├── em5500C.arc   # Evil Eye sub-part (uEm5500C, gid 0xAF)
+├── em5501.arc    # Vile Eye
+├── em5502.arc    # Gazer
+├── em5800.arc    # The Dragon (Grigori)
+├── em5801.arc    # The Ur-Dragon
+├── em5802.arc    # Dragon villain variant
+├── em5900.arc    # Drake
+├── em5901.arc    # Wyrm
+├── em5902.arc    # Wyvern
+├── em5903.arc    # Firedrake (BBI)
+├── em5904.arc    # Frostwyrm (BBI)
+├── em5905.arc    # Thunderwyvern (BBI)
+├── em5906.arc    # Cursed Dragon (BBI)
+├── em6000.arc    # Wight
+├── em6001.arc    # Lich
+├── em6002.arc    # Dark Bishop (BBI)
+├── em6003.arc    # Death (BBI)
+├── em7000.arc    # Daimon (Form 1)
+├── em7001.arc    # Awakened Daimon (Form 2)
+├── em7002.arc    # Daimon chest head
+├── em8000.arc    # Wildlife / camp critter
+├── em8100.arc    # Ambient prop / effect (HP=1)
+├── em8200.arc    # Dragon sub-component
+├── em8201.arc    # Dragon sub-component
+├── em8300.arc    # Cursed Dragon sub-body
+├── em8500.arc    # Deer / Stag
+├── em8501.arc    # Doe
+├── em8600.arc    # Hare / Rabbit
+├── em8601.arc    # Snake / Critter
+├── em8602.arc    # Bat / Crow
+├── em8700.arc    # Ox / Boar
+├── em8900.arc    # The Seneschal
+├── em9000.arc    # (неопознан)
+├── em9100.arc    # Enemy Wizard
+└── em9807.arc    # (неопознан)
 
 # Внутри каждого emXXXX.arc:
 # ├── model/           # Модели

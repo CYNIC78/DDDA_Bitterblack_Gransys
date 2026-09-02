@@ -159,6 +159,19 @@ BESTIARY_UEM_MAP = {
     71: ("uEm7000", "BBI-Boss"),    # Daimon
 }
 
+# bestiary.py сводит несколько видов в один bestiaryId: Warg и Garm оба 52,
+# Greater Goblins и Goblin Shamans оба 50. Дед-дуп по bid оставляет только
+# первый вид слота и молча выбрасывает остальные.
+#   * Goblin Shamans сворачиваем в Greater Goblins (тот же uEm0103) — это
+#     осознанный выбор: один класс, один архив.
+#   * Garm — НЕ вариант Warg: у него свой класс uEm0204, свой gid 0x91
+#     и своя mStudyIdx-полоса (4218..4222). Возвращаем его отдельной строкой.
+# Ключ — bid слота; значение — список (имя в bestiary.py, имя для вывода,
+# uEm-класс, family).
+BID_SHARED_EXTRAS = {
+    52: [("Garm", "Garms", "uEm0204", "BBI-Wolf")],
+}
+
 def generate_enemy_types_header(types_map):
     sorted_entries = sorted(types_map.items(), key=lambda kv: kv[1][0])
     with open(OUT_ENEMY_TYPES, "w", encoding="utf-8") as o:
@@ -231,6 +244,18 @@ def generate_bestiary_headers(types_map, bestiary_list):
 
             o.write(f'    {{ {bid:>2}, 0x{gid:02X}, {midx:>3}, "{name}", "{family}", "{uem}", 0x{vt_rva:06X} }},\n')
 
+            # Виды, разделяющие слот bestiaryId с уже выведенным (Warg/Garm).
+            if bid in BID_SHARED_EXTRAS:
+                for src_name, disp, uem, family in BID_SHARED_EXTRAS[bid]:
+                    extra = next((e for e in bestiary_list if e["name"] == src_name), None)
+                    if not extra:
+                        print("⚠️  %s не найден в bestiary.py — пропуск" % src_name)
+                        continue
+                    t2 = types_map.get(uem, (0xFF, "0x400000", "", "", ""))
+                    gid2 = t2[0]
+                    vt2 = int(t2[1], 16) - 0x400000
+                    o.write(f'    {{ {extra["bestiaryId"]:>2}, 0x{gid2:02X}, {extra["mStudyIdx"]:>3}, "{disp}", "{family}", "{uem}", 0x{vt2:06X} }},\n')
+
         # Wildlife / Animals
         wildlife = [
             ("Deer / Stag", "Wildlife", "uEm8500"),
@@ -249,7 +274,8 @@ def generate_bestiary_headers(types_map, bestiary_list):
             o.write(f'    {{ -1, 0x{gid:02X},  -1, "{w_name}", "{w_fam}", "{w_uem}", 0x{vt_rva:06X} }},\n')
 
         o.write("    { -1, 0x00, -1, nullptr, nullptr, nullptr, 0 }\n};\n\n")
-        o.write("#define BESTIARY_COUNT 72\n\n")
+        total_species = len(unique_bestiary) + sum(len(v) for v in BID_SHARED_EXTRAS.values())
+        o.write(f"#define BESTIARY_COUNT {total_species}\n\n")
         o.write("// Поиск врага по groupId (из damage-хука)\n")
         o.write("inline const EnemyEntry* FindEnemyByGid(uint8_t gid) {\n")
         o.write("    for (auto* e = g_bestiary; e->name; e++)\n")
@@ -300,7 +326,8 @@ def generate_bestiary_headers(types_map, bestiary_list):
         o.write('    if (strstr(f, \"Dragon\") || strstr(f, \"Hydra\") || strstr(f, \"Boss\") || strstr(f, \"Armor\"))  return 5;\n')
         o.write("    return 1;\n}\n")
 
-    print(f"✅ Сгенерирован {OUT_BESTIARY_DATA} ({len(unique_bestiary)} бестиариев)")
+    total_species = len(unique_bestiary) + sum(len(v) for v in BID_SHARED_EXTRAS.values())
+    print(f"✅ Сгенерирован {OUT_BESTIARY_DATA} ({total_species} видов)")
 
     # Также копируем/обновляем Bestiary.Generated.h
     with open(OUT_BESTIARY_GEN, "w", encoding="utf-8") as o:

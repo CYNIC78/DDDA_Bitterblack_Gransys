@@ -83,9 +83,12 @@ python3 tools/generate_act_map.py
 python3 tools/analyze_pawn_ai_assets.py
 python3 tools/analyze_pawn_ai_bridge.py <snapshots...>
 python3 tools/xfs_tree_dump.py <resource>
+python3 tools/package_build.py            # zip билда -> builds/{MOD_BUILD_TAG}.zip
 ```
 
 Сборка DLL: Visual Studio → **Release | Win32** → Build Solution.
+Упаковка билда: `python3 tools/package_build.py` (имя архива = тег сборки,
+см. `docs/BUILD_INSTRUCTIONS_RU.md` §7).
 
 ## Runtime hotkeys
 

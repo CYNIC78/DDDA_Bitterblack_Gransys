@@ -39,3 +39,10 @@ __pycache__/
 # Сгенерированное синтаксическим харнессом
 tools/tcomp/ui_block.inc
 tools/tcomp/ui_pawn_block.inc
+
+# Упаковка билдов: zip — артефакт для скачивания, не исходник в git
+builds/*.zip
+
+# Сырые data-файлы врагов (Capcom): живут только локально/в песочнице.
+# В git едет сгенерированный текст (MonsterCards.Generated.h), не бинарники.
+resources/enemy_data/

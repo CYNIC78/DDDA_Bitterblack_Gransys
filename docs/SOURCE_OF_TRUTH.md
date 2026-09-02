@@ -66,6 +66,8 @@ Transient heap addresses и VA vtable одного запуска **не кан�
 | `BestiaryData.h` / `generate_bestiary.py` | `uEm5900` = «Evil Eyes» | **ЗАКРЫТО (84.38)**: `BESTIARY_UEM_MAP` перемаплен по DTI+TypeAtlas. `uEm5900` = Drake; Evil Eye = **`uEm5500`**; Vile Eye = **`uEm5501`**; Gazer = **`uEm5502`**; Cursed Dragon = **`uEm5906`** |
 | `SOURCE_OF_TRUTH` (старый) §2 | `kPartyBodySize` = 23056 | `RuntimeInternal.h`: `kPartyBodySize=0x5A10` (uPlayer), `kCmcBodySize=0x58E0` (uCmc=22752) — **так и есть** |
 | `WorldScan.cpp` `kPawnBodyBytes` (до 84.22) | сканировал uCmc как 23056 | 84.22: `kCmcBodySize` (`0x58E0`). `PartyStatus` `0x5A40` ещё открыт — §11.4 |
+| `SOURCE_OF_TRUTH.md` §8.5.2 (до 84.65) | «Harpy: архив `em0600`, DTI `uEm0700`; Cyclops: архив `em5000`, DTI `uEm2000`» | **ЗАКРЫТО (84.65)**: сверка 97 архивов `nativePC/rom/enemy/` с `types.tsv` — номер архива = номер DTI (`em0600`→`uEm0600` Harpy, `em5000`→`uEm5000` Cyclops, `em2000`→`uEm2000` Skeleton, `em5100`→`uEm5100` Golem). «Сдвиг» жил только в ярлыках старого `ARC_MAP.txt` |
+| `SOURCE_OF_TRUTH.md` §8.5.1 (до 84.65) | тело Devilfire ~120 м `uEm5000` gid `0x3F` = «голем» | **ЗАКРЫТО (84.65)**: это **Циклоп** (`em5000` = Cyclops, gid `0x3F` — слот между скелетами `0x39..0x3E` и големами `0x47..0x49`); «голем» — ярлык из старого `ARC_MAP.txt` |
 | `PartyStatus.cpp` `kPartyBodyBytes = 0x5A40` | discovery 23104 B на любое тело партии | больше обоих TypeAtlas sizes; тот же класс дыры |
 
 ---
@@ -471,8 +473,10 @@ Roll детерминирован от адреса тела (murmur3). Повт
 
 Оба независимых канала (имя DTI и байт gid) совпали. Это **не** «сканер
 принял глаз за дракона» и не деталь. Каталожная строка `uEm8100` на этом
-спавне **не появляется**. Циклопа (`uEm2000` / `0x39`) в списках не было:
-тело ~120 м — `uEm5000` gid `0x3F` + `cEm5000ActCommon` (голем за кадром).
+спавне **не появляется**. Скелета (`uEm2000` / `0x39`) в списках не было:
+тело ~120 м — `uEm5000` gid `0x3F` + `cEm5000ActCommon`. Это **циклоп**
+(в логе 84.25 был подписан «голем» — ярлык из старого `ARC_MAP.txt`; эрата
+84.65: номер архива = номер DTI, `em5000` = Cyclops).
 
 Гоблин/волк совпадают с таблицей, потому что у них один класс на спавн
 и угаданный маппинг попал. У драконидов несколько словарей сразу.
@@ -522,9 +526,15 @@ XFS нет — это таблица чисел (дальности / флаги
 | `BESTIARY_UEM_MAP` | encyclopedia bid | человеческая наклейка | **ручная догадка, не identity** |
 
 Флаффи **не** подставлять в `BestiaryData.h` / `strcmp` / gid.
-Harpy: архив `em0600`, DTI `uEm0700`. Cyclops: архив `em5000`, DTI `uEm2000`.
-Гоблин/волк/Devilfire Drake (`em5900`↔`uEm5900`) совпали — исключение, не правило.
 Какой `.arc` открывать — Флаффи. Кто живой в памяти — DTI.
+
+**Эрата 84.65:** ранее здесь стояло «Harpy: архив `em0600`, DTI `uEm0700`;
+Cyclops: архив `em5000`, DTI `uEm2000`» — **неверно**. Полный список
+`nativePC/rom/enemy/` (97 архивов, заказчик 2026-09-01) сверен с `types.tsv`:
+номер архива = номер DTI для всех семейств (`em0600`→`uEm0600` Harpy,
+`em5000`→`uEm5000` Cyclops, `em2000`→`uEm2000` Skeleton, `em5100`→`uEm5100`
+Golem). Мнимый «сдвиг» жил только в ярлыках старого `ARC_MAP.txt`
+(см. `POSSESSION_RECON.md` §1) и оттуда просочился сюда.
 
 #### 8.5.3 `em5900` charparam / motion (CATALOG 2026-08-26)
 

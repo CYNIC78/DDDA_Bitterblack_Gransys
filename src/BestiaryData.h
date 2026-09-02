@@ -73,6 +73,7 @@ static const EnemyEntry g_bestiary[] = {
     { 49, 0xE0,  84, "Enemy Person", "Human", "uHumanEnemy", 0x11EB494 },
     { 50, 0x8E,  88, "Greater Goblins", "BBI-Goblin", "uEm0103", 0x11A3424 },
     { 52, 0x90,  10, "Wargs", "BBI-Wolf", "uEm0203", 0x11A5F38 },
+    { 52, 0x91,  11, "Garms", "BBI-Wolf", "uEm0204", 0x11A6250 },
     { 53, 0x3C,  92, "Skeleton Brutes", "BBI-Skeleton", "uEm2003", 0x11B9784 },
     { 54, 0xA9,  92, "Golden Knights", "BBI-Skeleton", "uEm2004", 0x11B9AB4 },
     { 55, 0xAA,  93, "Silver Knights", "BBI-Skeleton", "uEm2005", 0x11B9DE4 },

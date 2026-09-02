@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.64-tactical-dpad-commands"
+#define MOD_BUILD_TAG "84.67-evil-eye-subs"
