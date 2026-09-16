@@ -1,15 +1,17 @@
-DDDA AI Overhaul — source package 84.68-monster-cards
+DDDA AI Overhaul — source package 84.69-music-module-prep
 ========================================================================
-MOD_BUILD_TAG : 84.68-monster-cards
-Дата сборки   : 2026-09-02 03:58 (Europe/Moscow)
-Файлов        : 625
-Архив         : builds/84.68-monster-cards.zip
+MOD_BUILD_TAG : 84.69-music-module-prep
+Дата сборки   : 2026-09-16 22:15 (Europe/Moscow)
+Файлов        : 632
+Архив         : builds/84.69-music-module-prep.zip
 
 Состав:
-**Build 84.68** — `monster-cards`. Полноценные карточки статов всех монстров:
-106 видов из data-приёмки `resources/enemy_data` → `src/MonsterCards.Generated.h`
-(CATALOG, read-only; запись по этим числам — только после живого A/B).
-Резисты подтвердили «физика-только» диска метал-голема (`uEm5101_00`:
-strike 1.0, slash 0.4, вся магия 0.0; тело `uEm5101`: только thunder 1.0).
-В `em5906` найден FSM `CarcassAppearAir` — CATALOG-вход в механику падали
-(Гарм-некрофаг). Гарм в бестиарии теперь подтверждён данными: HP 75000.
+**Build 84.69** — `music-module-prep`. Подготовка музыкального слоя (слой 0,
+атмосфера; логика AI не тронута). Формат STRQ (`.stq`) вскрыт якорным методом
+и подтверждён на двух независимых файлах: запись 24 байта —
+имя/размер/сэмплы/каналы/луп-точки (`docs/generated/STQ_FORMAT.md`),
+парсер `tools/stq_dump.py`, карта 127 записей `docs/generated/BGM_MAP.md`.
+Замысел, факты и протокол R0–R4 — `docs/AUDIO_MUSIC_RECON.md`
+(MVP = вариант A + обязательный транзакционный патч размера; rotation-пулы
+на границе трека; FSM посреди трека осознанно не делаем). Черновик контракта
+маппинга — `ddda_music_map.example.ini`. R0 протокола завершён.

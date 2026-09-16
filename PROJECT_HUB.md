@@ -71,6 +71,7 @@ ddda_pawn_ai_profiles.ini generalized priority sidecar template
 | `docs/PAWN_IDLE_RECON.md` | разведка разнообразия простоя вне боя |
 | `docs/HIRED_PAWNS_SCOPE.md` | наёмные пешки: граница вмешательства и замер общего ресурса |
 | `docs/GUARDIAN_REPORTS_MAP.md` | жалобы игроков на Guardian → механика → замеры |
+| `docs/AUDIO_MUSIC_RECON.md` | музыкальный слой (слой 0): замысел, факты, протокол R0–R4 |
 
 История промежуточных экспериментов находится в Git до Build 47 и не дублируется десятками документов.
 
