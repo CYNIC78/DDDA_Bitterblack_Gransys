@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "84.69-music-module-prep"
+#define MOD_BUILD_TAG "84.95-rate-guard"

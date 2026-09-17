@@ -18,6 +18,7 @@
 #include "devtools/DevTools.h"
 #include "runtime/Runtime.h"
 #include "runtime/PartyStatus.h"
+#include "audio/AudioRedirect.h"
 #include "EntityConfig.h"
 #include "ModPaths.h"
 #include "BuildTag.h"
@@ -59,6 +60,10 @@ void InitHooks()
     // 84.16: read-only прибор статусов партии (PS: строки). Поднимается
     // до UI, работает и без Director; записей не делает.
     Runtime::PartyStatus::Init();
+
+    // 84.69: музыкальный слой 0. Хук CreateFile ставится всегда (дешёвый
+    // фильтр ".sngw"); по умолчанию R1-журнал + разовый пробник STRQ.
+    Audio::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
     Hooks::Hotkeys();
@@ -140,6 +145,7 @@ void Unitialize()
     MonsterAI::Shutdown();
     Runtime::Aggro::Shutdown();
     Runtime::PartyStatus::Shutdown();
+    Audio::Shutdown();
     Runtime::Shutdown();
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
