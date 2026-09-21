@@ -1,11 +1,14 @@
-DDDA AI Overhaul — source package 84.95-rate-guard
+DDDA AI Overhaul — source package 84.98-audio-frozen
 ========================================================================
-MOD_BUILD_TAG : 84.95-rate-guard
-Дата сборки   : 2026-09-17 16:22 (Europe/Moscow)
-Файлов        : 635
-Архив         : builds/84.95-rate-guard.zip
+MOD_BUILD_TAG : 84.98-audio-frozen
+Дата сборки   : 2026-09-20 13:09 (Europe/Moscow)
+Файлов        : 639
+Архив         : builds/84.98-audio-frozen.zip
 
 Состав:
-**Build 84.95** — `rate-guard`. Защита кавер-контракта: частота файла
-обязана быть 48000 (иначе движок сыграет неверный темп/тон). Третья
-железная валидация рядом с каналами и именем.
+**Build 84.98** — runtime-музыкальная ветка заморожена: compile-time gate
+`AUDIO_RUNTIME_EXPERIMENTAL=0`, `enabled=0`; CreateFile-хуки, STRQ-пробник,
+memory-strike и фоновые voice/watch-потоки не запускаются. Музыка полностью
+vanilla, задержка и риск для стабильности убраны. Исторический код оставлен
+для отдельного исследования; основной следующий путь — offline/community
+STQ/ARC patcher.

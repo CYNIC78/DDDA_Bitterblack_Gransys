@@ -2,10 +2,23 @@
  * AudioRedirect — музыкальный слой 0 (docs/AUDIO_MUSIC_RECON.md).
  *
  *   R1 (умолчание): log_requests — журнал обращений к *.sngw;
- *                   probe_stq — разовый поиск STRQ-образов в памяти
+ *                   probe_stq — поиск STRQ-образов в памяти
  *                   (статус полей ответит, «сырой ресурс или распарсен»).
  *   R2 (enabled=1):  подмена файла + транзакционный патч 4 полей записи
  *                   (size/samples/loopIn/loopOut) + readback + WATCH.
+ *   84.95 (recovery): реестр живучий — запись, чья ревалидация провалена
+ *                   (движок перезагрузил таблицу, напр. при загрузке сейва),
+ *                   инвалидируется: пробник перезаряжается, патч повторяется
+ *                   один раз по новой записи (RECOVERY). 84.94: сканеры
+ *                   не касаются PAGE_GUARD-страниц стеков (окно краша 84.72-84.93).
+ *   84.96 (voice-hunt): pass0 на каждый борст подмены; открытия #2/#3 —
+ *                   целевая добивка (LOCAL) рядом с известными живыми
+ *                   копиями; record dump в loop_probe (раскладка структуры
+ *                   голоса); WATCH-дрейф таблицы проактивно инвалидирует.
+ *   84.97 (voice-window): копия голоса рождается ПОСЛЕ pass0 — 6-с
+ *                   окно после подмены: прогон вниз с верха + горячие
+ *                   ±512KB; MEM_MAPPED — телеметрия без записи;
+ *                   абсолютные t= на всех страйках; watch 8 проходов.
  *
  * Патчится ТОЛЬКО запись, валидированная магией STRQ и точным именем
  * (по FIX_RULES: неизвестное состояние → деградируем в ванилу).
@@ -26,6 +39,14 @@
 #include <ctime>
 #include <emmintrin.h>
 #include <intrin.h>
+
+// 84.98: музыкальный runtime-эксперимент заморожен. По умолчанию модуль
+// вообще не ставит CreateFile-хуки, не запускает STRQ-пробник и не создаёт
+// фоновые потоки. Для осознанного продолжения исследования нужно вручную
+// сменить 0 на 1 и отдельно принять задержки/риски в A/B.
+#ifndef AUDIO_RUNTIME_EXPERIMENTAL
+#define AUDIO_RUNTIME_EXPERIMENTAL 0
+#endif
 
 // ---------------------------------------------------------------- state
 
@@ -70,21 +91,50 @@ static const size_t kCatalogCount = sizeof(kCatalog) / sizeof(kCatalog[0]);
 struct FoundRec { BYTE* table = nullptr; BYTE* entry = nullptr; const TrackMeta* meta = nullptr; };
 static std::unordered_map<string, FoundRec> g_found;  // key = имя трека (lower)
 
+// 84.95: реестр общается с тремя сторонами: пробный поток, BGM-поток (хук)
+// и оторванные наблюдатели (PatchWatch/LoopWatch). Одна критическая секция +
+// снимки: 84.94 читал вектор g_tablePatch из PatchWatch, пока хук его
+// дописывал — realloc под ногами. Таблицы патчей — фиксированный массив.
+static CRITICAL_SECTION g_stateCrit;
+struct StateLock {
+    StateLock()  { EnterCriticalSection(&g_stateCrit); }
+    ~StateLock() { LeaveCriticalSection(&g_stateCrit); }
+};
+static bool GetFound(const string& key, FoundRec& out)
+{
+    StateLock lock;
+    auto it = g_found.find(key);
+    if (it == g_found.end() || it->second.meta == nullptr || it->second.entry == nullptr)
+        return false;
+    out = it->second;
+    return true;
+}
+static bool FoundValid(const string& key)
+{
+    FoundRec fr;
+    return GetFound(key, fr);
+}
+
 // R3-2: то, что патчили этой сессией (для фоновых добивок)
 struct ActiveTrack {
     string key;
     const TrackMeta* meta;
+    const BYTE* table = nullptr;   // 84.95: своя сырая таблица (self-skip в страйке)
     unsigned newSize = 0, newSamples = 0, lin = 0, lout = 0;
 };
 static std::vector<ActiveTrack> g_tracks;
-struct PatchRecT { BYTE* addr; unsigned oldV, newV; }; // (PatchRec используем общий ниже)
 static volatile bool g_dying = false;  // 84.84: процесс умирает — хуки сквозные, потоки выходят
 static std::mt19937 g_rng;               // 84.89: srand+rand давал коррелированный первый выбор
 static bool  g_enabled     = false; // [music] enabled  (R2)
 static bool  g_logRequests = true;  // [music] log_requests (R1 журнал)
 static bool  g_probeStq    = true;  // [music] probe_stq (R1 пробник)
 static bool  g_strikeLoops = true;  // [music] strike_loops: бить живые копии лупов (0 — только STRQ-патч)
-static bool  g_strikeCoherence = true; // [music] strike_coherence: требовать соседний size/samples
+// 84.95: OFF по умолчанию. 84.93 включил гейт по умолчанию, и он убивал РЕАЛЬНЫЕ
+// живые пары (в распарсенной копии плеера рядом с луп-точками не обязан сидеть
+// size/samples трека, а арбитр лупов — именно эти копии). Ре-чтение пары
+// (oIn==A, oOut==B) — уже достаточная страховка от случайных чисел (84.84-84.92).
+// Ключ в ini сохранён для A/B.
+static bool  g_strikeCoherence = false; // [music] strike_coherence: требовать соседний size/samples
 static LONG  g_probeDone   = 0;
 static DWORD g_probeLastEnd = 0; // минимум 5 c между проходами (пробник перезапускаем)     // one-shot флаг пробника
 
@@ -195,7 +245,8 @@ static void LoadMap()
     logFile << "AudioR: map keys=" << g_map.size()
             << " | enabled=" << g_enabled
             << " log=" << g_logRequests
-            << " probe=" << g_probeStq << std::endl;
+            << " probe=" << g_probeStq
+            << " coh=" << g_strikeCoherence << std::endl;
 }
 
 // ---------------------------------------------------------------- OGG probe
@@ -272,7 +323,7 @@ static bool ProbeOgg(const string& path, OggInfo& oi)
 // 8-МиБ RAM-буфер общего лога был переполнен за один прогон (урок R1, 84.70).
 
 struct StrqHit { BYTE* entry; BYTE* tableBase; int index; };
-static std::vector<StrqHit> g_hits;      // все STRQ-образы с нашим якорем
+static std::vector<StrqHit> g_hits;      // все STRQ-образы с нашим якорем (только пробный поток)
 static BYTE* g_titleEntry = nullptr;     // валидированная запись титла
 static BYTE* g_titleBase  = nullptr;
 
@@ -304,11 +355,14 @@ static void ConsiderAnchoredAt(const BYTE* base, const BYTE* pos, std::ofstream&
             out << "STRQ@0x" << std::hex << (uintptr_t)tb << " entry#" << std::dec << idx
                 << " @0x" << std::hex << (uintptr_t)entry << " namePtr=0x" << namePtr
                 << std::dec << "\n";
-            StrqHit h; h.entry = (BYTE*)entry; h.tableBase = (BYTE*)tb; h.index = idx;
-            g_hits.push_back(h);
-            if (namePtr && GuardStrEq(tb + namePtr, "bgm\\wave2\\Tittle_DDN", 21)) {
-                g_titleEntry = (BYTE*)entry;
-                g_titleBase = (BYTE*)tb;
+            bool isTitle = namePtr && GuardStrEq(tb + namePtr, "bgm\\wave2\\Tittle_DDN", 21);
+            {
+                StateLock lock;
+                StrqHit h; h.entry = (BYTE*)entry; h.tableBase = (BYTE*)tb; h.index = idx;
+                g_hits.push_back(h);
+                if (isTitle) { g_titleEntry = (BYTE*)entry; g_titleBase = (BYTE*)tb; }
+            }
+            if (isTitle) {
                 out << "TITLE entry CONFIRMED @0x" << std::hex << (uintptr_t)entry
                     << std::dec << " (raw STRQ in memory)" << "\n";
                 logFile << "AudioProbe: TITLE entry CONFIRMED @" << (void*)entry << std::endl;
@@ -323,7 +377,7 @@ static void ConsiderMagicAt(const BYTE* pos, std::ofstream& out)
     // R3: магия STRQ — распознаём ВСЕ записи каталога в этой таблице.
     unsigned cnt = 0;
     if (!GuardRead32(pos + 0x08, cnt) || cnt == 0 || cnt > 4096) return;
-    if (g_found.size() >= kCatalogCount) return;
+    { StateLock lock; if (g_found.size() >= kCatalogCount) return; }
     const BYTE* tb = pos;
     unsigned additions = 0;
     for (unsigned i = 0; i < cnt && i < 300; ++i) {
@@ -338,22 +392,29 @@ static void ConsiderMagicAt(const BYTE* pos, std::ofstream& out)
         for (size_t t = 0; t < kCatalogCount; ++t) {
             string kn = kCatalog[t].name;
             ToLower(kn);
-            if (low != kn || g_found.count(low)) continue;
-            FoundRec fr; fr.table = (BYTE*)tb; fr.entry = (BYTE*)e; fr.meta = &kCatalog[t];
-            g_found[low] = fr;
-            ++additions;
+            if (low != kn) continue;
+            FoundRec found = FoundRec();
+            {
+                StateLock lock;
+                if (g_found.count(low)) continue;
+                found.table = (BYTE*)tb; found.entry = (BYTE*)e; found.meta = &kCatalog[t];
+                g_found[low] = found;
+                ++additions;
+                if (low == "bgm\\wave2\\tittle_ddn") {
+                    g_titleEntry = (BYTE*)e; g_titleBase = (BYTE*)tb;
+                }
+            }
             out << "CATALOG " << nb << " @0x" << std::hex << (uintptr_t)e << std::dec << "\n";
             logFile << "AudioProbe: CATALOG " << nb << " @" << (void*)e << std::endl;
-            if (low == "bgm\\wave2\\tittle_ddn") {
-                g_titleEntry = (BYTE*)e; g_titleBase = (BYTE*)tb;
-                logFile << "AudioProbe: TITLE entry CONFIRMED (via magic) @" << (void*)e << std::endl;
-            }
             break;
         }
     }
     if (additions) {
-        out << "table @0x" << std::hex << (uintptr_t)tb << " cnt=" << std::dec << cnt
-            << " | найдено треков каталога: " << g_found.size() << "/" << kCatalogCount << "\n";
+        size_t total = 0;
+        { StateLock lock; total = g_found.size(); }
+        out << "table @0x" << std::hex << (uintptr_t)tb << std::dec
+            << " cnt=" << std::dec << cnt
+            << " | найдено треков каталога: " << total << "/" << kCatalogCount << "\n";
     }
     (void)cnt;
 }
@@ -368,20 +429,21 @@ static void ScanRegion(const BYTE* base, size_t size, std::ofstream& out,
     static unsigned char buf[4096 + 32]; // пробник однопоточен
     const __m128i va = _mm_set1_epi32((int)ANCHOR);
     const __m128i vm = _mm_set1_epi32((int)MAGIC);
-    for (size_t off = 0; off < size && g_found.size() < kCatalogCount; off += 4096) {
+    for (size_t off = 0; off < size; off += 4096) {
+        { StateLock lock; if (g_found.size() >= kCatalogCount) return; }
         const BYTE* page = base + off;
         size_t span = size - off < 4096 ? size - off : 4096;
         if (!GuardCopy(buf, page, span)) { ++pagesSkipped; continue; }
         memset(buf + span, 0, 32);
-        for (size_t i = 0; i < span && g_found.size() < kCatalogCount; i += 16) {
+        for (size_t i = 0; i < span; i += 16) {
             __m128i blk = _mm_loadu_si128((const __m128i*)(buf + i));
             unsigned ma = (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi32(blk, va));
             unsigned mm = (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi32(blk, vm));
-            while (ma && g_found.size() < kCatalogCount) {
+            while (ma) {
                 unsigned long idx; _BitScanForward(&idx, ma); ma &= ma - 1;
                 ConsiderAnchoredAt(base, page + i + (idx >> 2) * 4, out);
             }
-            while (mm && g_found.size() < kCatalogCount) {
+            while (mm) {
                 unsigned long idx; _BitScanForward(&idx, mm); mm &= mm - 1;
                 ConsiderMagicAt(page + i + (idx >> 2) * 4, out);
             }
@@ -413,7 +475,7 @@ static void ProbeStqThread()
         if (!(pr == PAGE_READONLY || pr == PAGE_READWRITE || pr == PAGE_WRITECOPY ||
               pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY))
             continue;
-        if (g_found.size() >= kCatalogCount) break; // каталог собран — дальше незачем
+        { StateLock lock; if (g_found.size() >= kCatalogCount) break; }
         scanned += mbi.RegionSize;
         if (scanned >= nextMark) {
             out << "... progress " << (scanned >> 20) << " MB, hits=" << g_hits.size() << "\n";
@@ -421,42 +483,80 @@ static void ProbeStqThread()
             nextMark += 256ull << 20;
         }
         ScanRegion((const BYTE*)mbi.BaseAddress, mbi.RegionSize, out, pagesSkipped);
-        if (g_found.size() >= kCatalogCount) break; // каталог собран
+        { StateLock lock; if (g_found.size() >= kCatalogCount) break; } // каталог собран
     }
+    size_t foundN = 0;
+    BYTE* titleE = nullptr;
+    { StateLock lock; foundN = g_found.size(); titleE = g_titleEntry; }
     out << "==== done. scanned=" << (scanned >> 20) << "MB"
         << " (private-only, otherSkip " << (skippedOther >> 20) << "MB, guardSkip " << (skippedGuard >> 10) << "KB)"
         << " hits=" << g_hits.size()
-        << " titleEntry=0x" << std::hex << (uintptr_t)g_titleEntry << std::dec
+        << " titleEntry=0x" << std::hex << (uintptr_t)titleE << std::dec
         << " pagesSkipped=" << pagesSkipped
         << "\n";
-    out << "catalog found: " << g_found.size() << "/" << kCatalogCount << "\n";
+    out << "catalog found: " << foundN << "/" << kCatalogCount << "\n";
     out.close();
     g_probeLastEnd = GetTickCount();
     InterlockedExchange(&g_probeDone, 0); // перезапуск разрешён (таблицы движка догружаются позже)
     logFile << "AudioProbe: done. hits=" << g_hits.size()
-            << " catalog=" << g_found.size() << "/" << kCatalogCount
-            << " titleEntry=" << (void*)g_titleEntry
+            << " catalog=" << foundN << "/" << kCatalogCount
+            << " titleEntry=" << (void*)titleE
             << " (детали: audio_probe.txt)" << std::endl;
 }
 
-static void MaybeProbe()
+static void MaybeProbe(bool force = false)
 {
     if (!g_probeStq) return;
-    if (g_found.size() >= kCatalogCount) return;      // всё нашлось — больше не бегаем
-    if (GetTickCount() - g_probeLastEnd < 5000) return; // не душим CPU на спам-открытиях
-    if (InterlockedCompareExchange(&g_probeDone, 1, 0) == 0)
+    size_t n = 0;
+    { StateLock lock; n = g_found.size(); }
+    if (!force && n >= kCatalogCount) return;      // всё нашлось — больше не бегаем
+    if (!force && GetTickCount() - g_probeLastEnd < 5000) return; // не душим CPU на спам-открытиях
+    if (InterlockedCompareExchange(&g_probeDone, 1, 0) == 0) {
+        if (force)
+            logFile << "AudioR: probe forced (catalog=" << n << "/" << kCatalogCount << ")" << std::endl;
         std::thread(ProbeStqThread).detach();
+    }
+}
+
+// 84.95: ограниченное ожидание записи в каталоге. Первый вариант — гонка
+// 84.72 (трек открыт, а таблица ещё не найдена). Второй — recovery: запись
+// инвалидирована (движок перезагрузил таблицу), ждём повторного прохода.
+// Если первый проход закончился, а записи всё нет — через 6 c форсим ещё
+// один (иначе 5-секундный троттл гонит recovery в тупик).
+static bool WaitForFound(const string& key, DWORD ms)
+{
+    MaybeProbe();
+    DWORD t0 = GetTickCount();
+    bool forced = false;
+    while (GetTickCount() - t0 < ms && !g_dying) {
+        if (FoundValid(key)) break;
+        if (!forced && GetTickCount() - t0 >= 6000) {
+            forced = true;
+            MaybeProbe(true);
+        }
+        Sleep(100);
+    }
+    bool ok = FoundValid(key);
+    logFile << "AudioR: probe wait " << (GetTickCount() - t0)
+            << " ms, " << key << (ok ? " НАЙДЕН" : " НЕ НАЙДЕН") << std::endl;
+    return ok;
 }
 
 // ---------------------------------------------------------------- patch txn (R2)
 
-struct PatchRec { BYTE* addr; unsigned oldV, newV; };
-static PatchRec g_patch[4];
-static bool g_patched = false;                  // легаси-флаг для антиповтора WATCH (84.93: используется реестром)
-static std::vector<PatchRec> g_tablePatch;      // сырые STRQ-поля (откат в Shutdown)
-static std::vector<PatchRec> g_loopPatch;       // вторая очередь: живые копии
+struct PatchRec { BYTE* addr; unsigned oldV, newV; const BYTE* tbl; };
+// 84.95: фиксированный массив (16 треков каталога x 4 поля = 64; запас 128).
+// Вектор 84.94 realloc-ился под PatchWatch, читающим его из оторванного потока.
+static PatchRec g_tablePatch[128];
+static size_t g_tablePatchN = 0;
+static bool g_patched = false;                  // флаг патча (сообщения Shutdown)
+static std::vector<PatchRec> g_loopPatch;       // вторая очередь: живые копии (под лок)
 struct LoopVictim { BYTE* inA; BYTE* outA; };
-static std::vector<LoopVictim> g_loopVictims;   // все найденные живые копии (для дедупа/наблюдателя)
+// 84.96: известные живые копии трека (≤16, хвост). Движок может аллоцировать
+// копию голоса МЕЖДУ открытиями борста (#1..#3) — целевая добивка в ±окне
+// вокруг последних копий (тот же кластер кучи) на миллисекунды, против
+// 3+ c полного прохода.
+static std::unordered_map<string, std::vector<LoopVictim>> g_trackVictims; // под лок
 
 // 84.93: разрешение луп-точек трека по старшинству:
 //   1) ванильный "без лупа" (meta loopOut=0xFFFFFFFF) — священен;
@@ -503,23 +603,87 @@ static bool GuardWrite32(BYTE* p, unsigned v) {
     return GuardRead32(p, chk) && chk == v;
 }
 
+// 84.95: запись мёртвая (движок освободил/перезагрузил таблицу — типично
+// загрузка сейва). Голос обязателен (FIX_RULES 4б): строка в лог.
+// Выбрасываем запись из каталога (пробник перезаряжается: 15/16 < 16/16)
+// и чистим ЕЁ поля из реестра таблицы (мёртвая память — ни писать, ни
+// откатывать). 84.96: ядро без лока — WATCH инвалидирует под своим лок.
+static void InvalidateFoundLocked(const string& key, const FoundRec& fr)
+{
+    g_found.erase(key);
+    if (fr.table) {
+        size_t n = 0;
+        for (size_t i = 0; i < g_tablePatchN; ++i)
+            if (g_tablePatch[i].tbl != fr.table)
+                g_tablePatch[n++] = g_tablePatch[i];
+        g_tablePatchN = n;
+        if (g_titleBase == fr.table) { g_titleEntry = nullptr; g_titleBase = nullptr; }
+    }
+}
+static void InvalidateFound(const string& key, const FoundRec& fr, const char* why)
+{
+    { StateLock lock; InvalidateFoundLocked(key, fr); }
+    logFile << "AudioR: INVALIDATE [" << key << "] tbl=0x" << std::hex
+            << (uintptr_t)fr.table << std::dec << " (" << why
+            << ") — запись сброшена, пробник перезаряжен" << std::endl;
+}
+
 static void PatchWatch() {
     Sleep(2500);
     if (g_dying) return;
-    int drift = 0;
-    size_t n = g_tablePatch.size() < 200 ? g_tablePatch.size() : 200;
-    for (size_t i = 0; i < n; ++i) {
-        unsigned v = 0;
-        GuardRead32(g_tablePatch[i].addr, v);
-        if (v != g_tablePatch[i].newV) {
-            ++drift;
-            if (drift <= 4)
-                logFile << "AudioR: WATCH drift @" << (void*)g_tablePatch[i].addr
-                        << " want=" << g_tablePatch[i].newV << " got=" << v << std::endl;
+    struct Snap { BYTE* a; unsigned v; const BYTE* tbl; } snap[128];
+    size_t n = 0;
+    {
+        StateLock lock;
+        n = g_tablePatchN < 128 ? g_tablePatchN : 128;
+        for (size_t i = 0; i < n; ++i) {
+            snap[i].a = g_tablePatch[i].addr;
+            snap[i].v = g_tablePatch[i].newV;
+            snap[i].tbl = g_tablePatch[i].tbl;
         }
     }
-    logFile << "AudioR: WATCH " << (drift == 0 ? "ok (таблицы держатся 2.5c)" : "DRIFT — движок переписал!")
+    int drift = 0;
+    bool driftFlag[128] = { false };
+    for (size_t i = 0; i < n; ++i) {
+        unsigned v = 0;
+        if (GuardRead32(snap[i].a, v) && v != snap[i].v) {
+            driftFlag[i] = true;
+            ++drift;
+            if (drift <= 4)
+                logFile << "AudioR: WATCH drift @" << (void*)snap[i].a
+                        << " want=" << snap[i].v << " got=" << v << std::endl;
+        }
+    }
+    logFile << "AudioR: WATCH " << (drift == 0 ? "ok (таблицы держатся 2.5с)" : "DRIFT — движок переписал!")
             << " (" << n << " полей)" << std::endl;
+    // 84.96: дрейф ВЕДЬМОЙ таблицы (3+ из 4 полей) = таблица освобождена
+    // (сеи-лоад: поля титла ушли в 0x40A00000 = float-массив движка) или
+    // переписана на месте. Проактивно инвалидируем запись и перезаряжаем
+    // пробник — следующий запрос трека получит НОВУЮ таблицу без 12-сек
+    // простоя (пробник побегает в фоне). Ложный случай (ре-патч той же
+    // таблицы) самоисцеляется: повторный прогон найдёт ту же запись.
+    if (drift > 0) {
+        std::unordered_map<const BYTE*, int> tblDrift;
+        for (size_t i = 0; i < n; ++i)
+            if (driftFlag[i] && snap[i].tbl) tblDrift[snap[i].tbl]++;
+        for (auto& kv : tblDrift) {
+            if (kv.second < 3) continue;
+            std::vector<string> dead;
+            {
+                StateLock lock;
+                for (auto it = g_found.begin(); it != g_found.end(); ++it)
+                    if (it->second.table == kv.first) {
+                        FoundRec fr = it->second;
+                        string k = it->first;
+                        InvalidateFoundLocked(k, fr);
+                        dead.push_back(k);
+                    }
+            }
+            for (auto& k : dead)
+                logFile << "AudioR: INVALIDATE [" << k
+                        << "] (WATCH: поля таблицы больше не наши — освобождена/переписана)" << std::endl;
+        }
+    }
 }
 
 // 84.78 loop-sync: pass0 выполняется СИНХРОННО в первом хуке, до
@@ -532,33 +696,173 @@ static void PatchWatch() {
 // 84.93: страйк по константам КОНКРЕТНОГО трека. Якорь-пара:
 //  - лупящиеся треки: (vanilla loopIn, vanilla loopOut) -> наши разрешённые лупы;
 //  - без-луп-треки  : (vanilla size, vanilla samples) -> (newSize, newSamples).
-// Когерентность (по умолчанию ON, см. strike_coherence): в окне +-48 байт
-// вокруг пары обязан лежать ванильный size или samples ЭТОГО трека — так
-// мы не стреляем по случайным парам чисел (урок телеметрии 84.89).
-static bool TableInRegion(const BYTE* rbase, size_t rsize)
+// 84.95: когерентность (strike_coherence) OFF по умолчанию — см. флаг: гейт
+// убивал реальные живые пары, а ре-чтение (oIn==A, oOut==B) — уже страховка.
+// Пропуск регионов — ТОЛЬКО своей сырой таблицы (84.92); 84.94 пропускал
+// все найденные таблицы — живые копии в чужой куче региона становились
+// недосягаемы. known — локальный список вызывающего (обобщий список 84.94
+// гонялся между pass0 и watch-потоком).
+// 84.96: ядро страйка — одна страница. БУФЕР НА СТЕКЕ (static 84.95 гонялся
+// между pass0 в хуке и watch-потоком). Ре-чтение пары (oIn==A, oOut==B) —
+// главная защита от случайных чисел (84.84-95); когерентность — опция ini.
+// 84.97: телеметрия — 16 u32 вокруг жертвы (отчёт, не logFile): по раскладке
+// живой структуры голоса видно, где сидит samples. Смещения в dec, значения hex.
+static void DumpRec(std::ofstream* pout, const BYTE* at)
 {
-    for (auto it = g_found.begin(); it != g_found.end(); ++it) {
-        const BYTE* t = it->second.table;
-        if (t && t >= rbase && t < rbase + rsize) return true;
+    if (!pout) return;
+    *pout << "  rec @" << std::hex << (uintptr_t)at << std::dec << ":";
+    for (int d = -28; d <= 36; d += 4) {
+        unsigned w = 0;
+        if (GuardRead32(at + d, w))
+            *pout << " +" << d << "=" << std::hex << w << std::dec;
     }
-    return false;
+    *pout << "\n";
 }
 
-static int LoopStrikePass(const ActiveTrack& tr, std::ofstream* pout,
-                          std::vector<LoopVictim>& known)
+// 84.97: копия ЦЕЛОГО региона/чанка одним __try (быстрее постраничного
+// GuardCopy для больших областей; SEH-безопасность та же).
+static bool GuardCopyRegion(unsigned char* dst, const BYTE* src, size_t n)
 {
+    __try { memcpy(dst, src, n); return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+// 84.97: общий скан уже скопированного буфера. Живой адрес = base + offset.
+// Ре-валидация oIn==A/oOut==B из живой памяти — главная защита от случайных
+// чисел (84.84-95). mayStrike==false — только телеметрия (mapped-регионы:
+// запись туда = правка файла игры на диске).
+static void StrikeBuf(const ActiveTrack& tr, const BYTE* base, const unsigned char* buf,
+                      size_t span, std::ofstream* pout, const char* tag,
+                      std::vector<LoopVictim>& known, int& struck, int& cohSkipped,
+                      bool mayStrike, int& mappedHits)
+{
+    if (struck >= 32 || span < 8) return;
     const TrackMeta& meta = *tr.meta;
     const bool looped = (meta.loopOut != 0xFFFFFFFFu);
     const unsigned A  = looped ? meta.loopIn  : meta.size;      // якорь In
     const unsigned B  = looped ? meta.loopOut : meta.samples;   // якорь Out
     const unsigned AP = looped ? tr.lin       : tr.newSize;     // замена In
     const unsigned BP = looped ? tr.lout      : tr.newSamples;  // замена Out
+    const __m128i va = _mm_set1_epi32((int)A);
+    for (size_t i = 0; i + 16 <= span; i += 16) {
+        __m128i blk = _mm_loadu_si128((const __m128i*)(buf + i));
+        unsigned mv = (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi32(blk, va));
+        while (mv) {
+            unsigned long idx; _BitScanForward(&idx, mv); mv &= mv - 1;
+            size_t i2 = i + (idx >> 2) * 4;
+            for (size_t j = 0; j < 17; ++j) {
+                size_t offOut = 0;
+                bool hasOut = false;
+                if (i2 + j * 4 + 4 <= span && *(const unsigned*)(buf + i2 + j * 4) == B) { offOut = i2 + j * 4; hasOut = true; }
+                else if (i2 >= j * 4 && *(const unsigned*)(buf + i2 - j * 4) == B) { offOut = i2 - j * 4; hasOut = true; }
+                if (!hasOut) continue;
+                if (known.size() >= 512 || struck >= 32) break;
+                BYTE* inA = (BYTE*)base + i2;
+                BYTE* outA = (BYTE*)base + offOut;
+                bool dup = false;
+                for (size_t vv = 0; vv < known.size(); ++vv)
+                    if (known[vv].inA >= inA - 16 && known[vv].inA <= inA + 16) { dup = true; break; }
+                if (dup) break;
+                unsigned oIn = 0, oOut = 0;
+                if (!GuardRead32(inA, oIn) || oIn != A ||
+                    !GuardRead32(outA, oOut) || oOut != B) {
+                    known.push_back(LoopVictim{ inA, outA });
+                    break;
+                }
+                if (!mayStrike) {
+                    // 84.97: mapped-телеметрия: видим пару, не трогаем файл
+                    if (pout && mappedHits < 8) {
+                        ++mappedHits;
+                        *pout << "MAPPED-HIT " << tag << " " << tr.key << " t=" << GetTickCount()
+                              << " @0x" << std::hex << (uintptr_t)inA << std::dec
+                              << " (" << oIn << "," << oOut << ")\n";
+                        DumpRec(pout, inA);
+                    }
+                    known.push_back(LoopVictim{ inA, outA });
+                    break;
+                }
+                // когерентность (только если включена в ini): в окне
+                // должен сидеть ванильный size/samples этого трека
+                if (g_strikeCoherence) {
+                    bool okCoh = false;
+                    for (int d = -48; d <= 48 && !okCoh; d += 4) {
+                        unsigned w = 0;
+                        if (GuardRead32(inA + d, w) &&
+                            (w == meta.size || w == meta.samples)) okCoh = true;
+                    }
+                    if (!okCoh) { ++cohSkipped; known.push_back(LoopVictim{ inA, outA }); break; }
+                }
+                if (!GuardWrite32(inA, AP) || !GuardWrite32(outA, BP)) {
+                    logFile << "AudioR: LOOPSTRIKE fail @" << (void*)inA << " (" << tag << ")" << std::endl;
+                    break;
+                }
+                unsigned cIn = 0, cOut = 0;
+                GuardRead32(inA, cIn); GuardRead32(outA, cOut);
+                if (cIn == AP && cOut == BP) {
+                    ++struck;
+                    PatchRec r1 = { inA,  oIn,  AP, nullptr };
+                    PatchRec r2 = { outA, oOut, BP, nullptr };
+                    { StateLock lock; g_loopPatch.push_back(r1); g_loopPatch.push_back(r2); }
+                    known.push_back(LoopVictim{ inA, outA });
+                    if (pout) *pout << "LOOPSTRIKE " << tag << " " << tr.key << " t="
+                                    << GetTickCount() << " @0x" << std::hex << (uintptr_t)inA
+                                    << std::dec << " (" << oIn << "," << oOut << ") -> ("
+                                    << AP << "," << BP << ") [ok]\n";
+                    if (pout) DumpRec(pout, inA);
+                    // 84.96: реестр известных копий (для целевой добивки LOCAL)
+                    {
+                        StateLock lock;
+                        auto& vec = g_trackVictims[tr.key];
+                        vec.push_back(LoopVictim{ inA, outA });
+                        if (vec.size() > 16) vec.erase(vec.begin());
+                    }
+                    // full-record: соседние закэшированные size/samples
+                    for (int d = -48; d <= 48; d += 4) {
+                        BYTE* q = inA + d;
+                        if (q == inA || q == outA) continue;
+                        unsigned val = 0;
+                        if (!GuardRead32(q, val)) continue;
+                        unsigned repl = 0; const char* what = nullptr;
+                        if (val == meta.samples && tr.newSamples) { repl = tr.newSamples; what = "samples"; }
+                        else if (val == meta.size && tr.newSize)  { repl = tr.newSize;   what = "size"; }
+                        if (!repl) continue;
+                        unsigned re2 = 0;
+                        if (!GuardRead32(q, re2) || re2 != val) continue;
+                        if (!GuardWrite32(q, repl)) continue;
+                        unsigned cb = 0; GuardRead32(q, cb);
+                        if (cb == repl) {
+                            PatchRec r3 = { q, val, repl, nullptr };
+                            { StateLock lock; g_loopPatch.push_back(r3); }
+                            if (pout) *pout << "  field " << what << " @0x"
+                                            << std::hex << (uintptr_t)q << std::dec
+                                            << " " << val << " -> " << repl << " [ok]\n";
+                        }
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
+static void StrikePage(const ActiveTrack& tr, const BYTE* page, size_t span,
+                       std::ofstream* pout, const char* tag,
+                       std::vector<LoopVictim>& known, int& struck, int& cohSkipped)
+{
+    unsigned char buf[4096 + 128];
+    if (!GuardCopy(buf, page, span)) return;
+    memset(buf + span, 0, 128);
+    int mapped = 0;
+    StrikeBuf(tr, page, buf, span, pout, tag, known, struck, cohSkipped, true, mapped);
+}
+
+static int LoopStrikePass(const ActiveTrack& tr, std::ofstream* pout, const char* tag,
+                          std::vector<LoopVictim>& known)
+{
     SYSTEM_INFO si; GetSystemInfo(&si);
     const BYTE* addr = (const BYTE*)si.lpMinimumApplicationAddress;
     const BYTE* max  = (const BYTE*)si.lpMaximumApplicationAddress;
-    static unsigned char buf[4096 + 128];
     MEMORY_BASIC_INFORMATION mbi;
-    const __m128i va = _mm_set1_epi32((int)A);
     int struck = 0, cohSkipped = 0;
     while (addr < max) {
         if (VirtualQuery(addr, &mbi, sizeof mbi) != sizeof mbi) break;
@@ -571,92 +875,13 @@ static int LoopStrikePass(const ActiveTrack& tr, std::ofstream* pout,
               pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY))
             continue;
         const BYTE* rbase = (const BYTE*)mbi.BaseAddress;
-        if (TableInRegion(rbase, (size_t)mbi.RegionSize)) continue; // сырья не оплакиваем
-        for (size_t off = 0; off < mbi.RegionSize; off += 4096) {
-            const BYTE* page = rbase + off;
-            size_t span = mbi.RegionSize - off < 4096 ? (size_t)mbi.RegionSize - off : 4096;
-            if (!GuardCopy(buf, page, span)) continue;
-            memset(buf + span, 0, 128);
+        size_t rsize = (size_t)mbi.RegionSize;
+        if (tr.table && tr.table >= rbase && tr.table < rbase + rsize)
+            continue; // своя сырая таблица — не читаем самих себя
+        for (size_t off = 0; off < rsize; off += 4096) {
             if (struck >= 32) return struck;
-            for (size_t i = 0; i < span; i += 16) {
-                __m128i blk = _mm_loadu_si128((const __m128i*)(buf + i));
-                unsigned mv = (unsigned)_mm_movemask_epi8(_mm_cmpeq_epi32(blk, va));
-                while (mv) {
-                    unsigned long idx; _BitScanForward(&idx, mv); mv &= mv - 1;
-                    size_t i2 = i + (idx >> 2) * 4;
-                    for (size_t j = 0; j < 17; ++j) {
-                        size_t k = i2 + j * 4;
-                        BYTE* outA = nullptr;
-                        if (k + 4 <= sizeof buf && *(const unsigned*)(buf + k) == B)
-                            outA = (BYTE*)page + k;
-                        else if (i2 >= j * 4 && *(const unsigned*)(buf + i2 - j * 4) == B)
-                            outA = (BYTE*)page + (i2 - j * 4);
-                        if (!outA) continue;
-                        if (known.size() >= 512 || struck >= 32) break;
-                        bool dup = false;
-                        for (size_t vv = 0; vv < known.size(); ++vv)
-                            if (known[vv].inA >= (BYTE*)page + (int)i2 - 16 &&
-                                known[vv].inA <= (BYTE*)page + (int)i2 + 16) { dup = true; break; }
-                        if (dup) break;
-                        LoopVictim v; v.inA = (BYTE*)page + i2; v.outA = outA;
-                        unsigned oIn = 0, oOut = 0;
-                        if (!GuardRead32(v.inA, oIn) || oIn != A ||
-                            !GuardRead32(v.outA, oOut) || oOut != B) {
-                            known.push_back(v);
-                            break;
-                        }
-                        // когерентность: в окне должен сидеть ванильный size/samples этого трека
-                        if (g_strikeCoherence) {
-                            bool okCoh = false;
-                            for (int d = -48; d <= 48 && !okCoh; d += 4) {
-                                unsigned w = 0;
-                                if (GuardRead32(v.inA + d, w) &&
-                                    (w == meta.size || w == meta.samples)) okCoh = true;
-                            }
-                            if (!okCoh) { ++cohSkipped; known.push_back(v); break; }
-                        }
-                        if (!GuardWrite32(v.inA, AP) || !GuardWrite32(v.outA, BP)) {
-                            logFile << "AudioR: LOOPSTRIKE fail @" << (void*)v.inA << std::endl;
-                            break;
-                        }
-                        unsigned cIn = 0, cOut = 0;
-                        GuardRead32(v.inA, cIn); GuardRead32(v.outA, cOut);
-                        if (cIn == AP && cOut == BP) {
-                            ++struck;
-                            PatchRec r1 = { v.inA,  oIn,  AP };
-                            PatchRec r2 = { v.outA, oOut, BP };
-                            g_loopPatch.push_back(r1); g_loopPatch.push_back(r2);
-                            known.push_back(v);
-                            if (pout) *pout << "LOOPSTRIKE " << tr.key << " @0x"
-                                            << std::hex << (uintptr_t)v.inA << std::dec
-                                            << " (" << oIn << "," << oOut << ") -> (" << AP << "," << BP << ") [ok]\n";
-                            // full-record: соседние закэшированные size/samples
-                            for (int d = -48; d <= 48; d += 4) {
-                                BYTE* q = v.inA + d;
-                                if (q == v.inA || q == v.outA) continue;
-                                unsigned val = 0;
-                                if (!GuardRead32(q, val)) continue;
-                                unsigned repl = 0; const char* what = nullptr;
-                                if (val == meta.samples && tr.newSamples) { repl = tr.newSamples; what = "samples"; }
-                                else if (val == meta.size && tr.newSize)  { repl = tr.newSize;   what = "size"; }
-                                if (!repl) continue;
-                                unsigned re2 = 0;
-                                if (!GuardRead32(q, re2) || re2 != val) continue;
-                                if (!GuardWrite32(q, repl)) continue;
-                                unsigned cb = 0; GuardRead32(q, cb);
-                                if (cb == repl) {
-                                    PatchRec r3 = { (BYTE*)q, val, repl };
-                                    g_loopPatch.push_back(r3);
-                                    if (pout) *pout << "  field " << what << " @0x"
-                                                    << std::hex << (uintptr_t)q << std::dec
-                                                    << " " << val << " -> " << repl << " [ok]\n";
-                                }
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
+            size_t span = rsize - off < 4096 ? rsize - off : 4096;
+            StrikePage(tr, rbase + off, span, pout, tag, known, struck, cohSkipped);
         }
     }
     if (cohSkipped && pout)
@@ -664,46 +889,272 @@ static int LoopStrikePass(const ActiveTrack& tr, std::ofstream* pout,
     return struck;
 }
 
+// 84.96: целевая добивка рядом с известными живыми копиями (открытия #2/#3
+// борста). Голос движок может аллоцировать МЕЖДУ открытиями; полный pass0
+// здесь невозможен (3+ c на аудио-потоке), окно ±512K вокруг последних
+// копий (тот же кластер кучи) — миллисекунды. Сырую таблицу страйк не
+// тронет: после патча там уже наши значения, якорь (A,B) не найдётся.
+static int LocalStrikePass(const ActiveTrack& tr, const char* tag, std::vector<LoopVictim>& known)
+{
+    std::vector<BYTE*> zones;
+    {
+        StateLock lock;
+        auto it = g_trackVictims.find(tr.key);
+        if (it != g_trackVictims.end())
+            for (auto& vr : it->second) zones.push_back(vr.inA);
+    }
+    if (zones.empty()) return 0;
+    int struck = 0, cohSkipped = 0;
+    const uintptr_t WIN = 512u * 1024u;
+    for (size_t zi = 0; zi < zones.size() && struck < 32; ++zi) {
+        uintptr_t z = (uintptr_t)zones[zi];
+        uintptr_t lo = z > WIN ? z - WIN : 0x10000;
+        uintptr_t hi = z + WIN;
+        lo = (lo + 0xFFF) & ~0xFFF;
+        const BYTE* addr = (const BYTE*)lo;
+        const BYTE* max  = (const BYTE*)hi;
+        MEMORY_BASIC_INFORMATION mbi;
+        while (addr < max) {
+            if (VirtualQuery(addr, &mbi, sizeof mbi) != sizeof mbi) break;
+            addr += mbi.RegionSize;
+            if (mbi.State != MEM_COMMIT) continue;
+            if (mbi.Protect & PAGE_GUARD) continue;
+            if (mbi.Type != MEM_PRIVATE) continue;
+            DWORD pr = mbi.Protect & 0xFF;
+            if (!(pr == PAGE_READONLY || pr == PAGE_READWRITE || pr == PAGE_WRITECOPY ||
+                  pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY))
+                continue;
+            uintptr_t rbase = (uintptr_t)mbi.BaseAddress;
+            // 84.96a: std-максимум/минимум БЕЗ ИХ СТРОК — windows.h
+            // определяет макросы min/max, MSVC рвёт вызовы через :: (C2589).
+            // Тернары.
+            uintptr_t rend = rbase + (size_t)mbi.RegionSize;
+            uintptr_t a = (rbase > lo) ? rbase : lo;
+            uintptr_t b = (rend < hi) ? rend : hi;
+            if (a >= b) continue;
+            a = (a + 0xFFF) & ~0xFFF;
+            for (uintptr_t pg = a; pg + 4096 <= b; pg += 4096) {
+                if (struck >= 32) return struck;
+                StrikePage(tr, (const BYTE*)pg, 4096, nullptr, tag, known, struck, cohSkipped);
+            }
+        }
+    }
+    (void)cohSkipped;
+    return struck;
+}
+
+// 84.95: наблюдатель перезапускаемый — после recovery по новой таблице
+// живые копии снова ванильные, а старый watch мог уже отработать свои 3
+// прохода и умереть.
+static volatile LONG g_watchAlive = 0;
+
 static void LoopWatchThread()
 {
+    InterlockedExchange(&g_watchAlive, 1);
     Sleep(6000);
-    if (g_dying) return;
-    std::ofstream out((string(ModPaths::Dir()) + "\\loop_probe.txt").c_str());
-    out << "LoopStrike/Watch report (build " << MOD_BUILD_TAG << ")\n====\n";
-    for (int pass = 1; pass <= 3 && !g_dying; ++pass) {
-        for (size_t ti = 0; ti < g_tracks.size() && !g_dying; ++ti) {
-            int struck = LoopStrikePass(g_tracks[ti], &out, g_loopVictims);
-            out << "--- pass#" << pass << " [" << g_tracks[ti].key << "] struck=" << struck << " ----\n";
-            logFile << "AudioR: loop pass#" << pass << " [" << g_tracks[ti].key
-                    << "] struck=" << struck << std::endl;
+    if (!g_dying) {
+        std::ofstream out((string(ModPaths::Dir()) + "\\loop_probe.txt").c_str());
+        out << "LoopStrike/Watch report (build " << MOD_BUILD_TAG << ")\n====\n";
+        std::vector<LoopVictim> victims; // свои на поток: дедуп между проходами
+        for (int pass = 1; pass <= 8 && !g_dying; ++pass) {
+            std::vector<ActiveTrack> tracks;
+            { StateLock lock; tracks = g_tracks; }
+            for (size_t ti = 0; ti < tracks.size() && !g_dying; ++ti) {
+                char tag[16];
+                sprintf(tag, "pass#%d", pass);
+                int struck = LoopStrikePass(tracks[ti], &out, tag, victims);
+                out << "--- pass#" << pass << " [" << tracks[ti].key << "] struck=" << struck
+                    << " t=" << GetTickCount() << " ----\n";
+                logFile << "AudioR: loop pass#" << pass << " [" << tracks[ti].key
+                        << "] struck=" << struck << " t=" << GetTickCount() << std::endl;
+            }
+            out.flush();
+            if (pass < 8) Sleep(pass == 1 ? 14000 : 15000);
         }
-        out.flush();
-        if (pass < 3) Sleep(pass == 1 ? 14000 : 20000);
+        out << "==== watch done. victims=" << victims.size() << "\n";
     }
-    out << "==== watch done. victims=" << g_loopVictims.size() << "\n";
+    InterlockedExchange(&g_watchAlive, 0);
+}
+
+static void EnsureWatchThread()
+{
+    // CAS 0->1 атомарен: живущий watch не плодим, умерший — заменяем.
+    if (InterlockedCompareExchange(&g_watchAlive, 1, 0) == 0)
+        std::thread(LoopWatchThread).detach();
+}
+
+// ---------------------------------------------------------------- 84.97
+// voice-window: копия голоса рождается ПОСЛЕ возврата CreateFileW (между
+// pass0 и созданием голоса) — pass0 её не видит, LOCAL на #2/#3 опаздывает
+// (уровень 84.96: pass0=2, LOCAL=2/4, watch 21/19/32, а голос ванильный).
+// Короткоживущий поток на 6 с после каждой подмены: (A) полный ПРОГОН ВНИЗ
+// (новые аллокации кучи — вверху пользовательского пространства, до них
+// добегается первым), (B) каждый цикл — быстрая добивка горячих регионов
+// (последние ≤8 копий ±512KB, последние ≤16 страйков ±512KB, таблица ±512KB).
+// MEM_MAPPED: только телеметрия (запись = правка файла на диске).
+static volatile LONG g_windowAlive = 0;
+
+static void ScanReverseAllFast(const ActiveTrack& tr, unsigned char* buf, size_t bsz,
+                               std::ofstream* pout, const char* tag,
+                               std::vector<LoopVictim>& known, int& struck, int& cohSkipped,
+                               int& mappedHits, DWORD deadline)
+{
+    SYSTEM_INFO si; GetSystemInfo(&si);
+    BYTE* addr = (BYTE*)si.lpMaximumApplicationAddress;
+    const BYTE* minU = (const BYTE*)si.lpMinimumApplicationAddress;
+    MEMORY_BASIC_INFORMATION mbi;
+    while (addr > minU) {
+        if (g_dying || struck >= 32 || GetTickCount() >= deadline) break;
+        if (VirtualQuery(addr, &mbi, sizeof mbi) != sizeof mbi) break;
+        addr -= (size_t)mbi.RegionSize;
+        if (mbi.State != MEM_COMMIT) continue;
+        if (mbi.Protect & PAGE_GUARD) continue; // 84.94: не трогаем стековые guard
+        size_t rsz = (size_t)mbi.RegionSize;
+        if (rsz > (size_t)512 * 1024 * 1024) continue; // гиганты — обычным страйкам
+        DWORD pr = mbi.Protect & 0xFF;
+        if (!(pr == PAGE_READONLY || pr == PAGE_READWRITE || pr == PAGE_WRITECOPY ||
+              pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY))
+            continue;
+        // 84.97a: источник ванильных копий ищем и в ОБРАЗАХ (каталог,
+        // зашитый в .rdata/.data DLL): бьём НЕ-исполняемые секции (коду не
+        // трогаем). MAPPED — только телеметрия (запись = правка файла диска).
+        bool mayStrike = (mbi.Type == MEM_PRIVATE) ||
+                         (mbi.Type == MEM_IMAGE && !(pr & PAGE_EXECUTE));
+        if (!mayStrike && mbi.Type != MEM_MAPPED) continue;
+        const BYTE* base = (const BYTE*)mbi.BaseAddress;
+        if (tr.table && tr.table >= base && tr.table < base + rsz) continue;
+        for (size_t off = 0; off < rsz; off += bsz) {
+            if (g_dying || struck >= 32 || GetTickCount() >= deadline) return;
+            size_t span = rsz - off < bsz ? rsz - off : bsz;
+            if (!GuardCopyRegion(buf, base + off, span)) continue;
+            StrikeBuf(tr, base + off, buf, span, pout, tag, known, struck,
+                      cohSkipped, mayStrike, mappedHits);
+        }
+    }
+}
+
+// 84.97: быстрая добивка горячих регионов (один цикл ~несколько МБ).
+static void HotPass(const ActiveTrack& tr, std::ofstream* pout, const char* tag,
+                    std::vector<LoopVictim>& known, int& struck, int& cohSkipped)
+{
+    std::vector<std::pair<BYTE*, BYTE*> > ranges;
+    {
+        StateLock lock;
+        auto it = g_trackVictims.find(tr.key);
+        if (it != g_trackVictims.end()) {
+            const std::vector<LoopVictim>& v = it->second;
+            size_t n0 = (v.size() > 8) ? v.size() - 8 : 0;
+            for (size_t i = n0; i < v.size(); ++i) {
+                uintptr_t c = (uintptr_t)v[i].inA;
+                ranges.push_back(std::make_pair((BYTE*)(c > 0x80000 ? c - 0x80000 : 0x10000),
+                                                (BYTE*)(c + 0x80000)));
+            }
+        }
+    }
+    for (size_t i = (known.size() > 16) ? known.size() - 16 : 0; i < known.size(); ++i) {
+        uintptr_t c = (uintptr_t)known[i].inA;
+        ranges.push_back(std::make_pair((BYTE*)(c > 0x80000 ? c - 0x80000 : 0x10000),
+                                        (BYTE*)(c + 0x80000)));
+    }
+    if (tr.table) {
+        uintptr_t c = (uintptr_t)tr.table;
+        ranges.push_back(std::make_pair((BYTE*)(c > 0x80000 ? c - 0x80000 : 0x10000),
+                                        (BYTE*)(c + 0x80000)));
+    }
+    for (size_t ri = 0; ri < ranges.size(); ++ri) {
+        BYTE* a0 = ranges[ri].first;
+        BYTE* b0 = ranges[ri].second;
+        BYTE* addr = a0;
+        while (addr < b0) {
+            if (g_dying || struck >= 32) return;
+            MEMORY_BASIC_INFORMATION mbi;
+            if (VirtualQuery(addr, &mbi, sizeof mbi) != sizeof mbi) return;
+            addr += mbi.RegionSize;
+            if (mbi.State != MEM_COMMIT) continue;
+            if (mbi.Protect & PAGE_GUARD) continue;
+            if (mbi.Type != MEM_PRIVATE) continue;
+            DWORD pr = mbi.Protect & 0xFF;
+            if (!(pr == PAGE_READONLY || pr == PAGE_READWRITE || pr == PAGE_WRITECOPY ||
+                  pr == PAGE_EXECUTE_READ || pr == PAGE_EXECUTE_READWRITE || pr == PAGE_EXECUTE_WRITECOPY))
+                continue;
+            BYTE* rb = (BYTE*)mbi.BaseAddress;
+            BYTE* re = rb + (size_t)mbi.RegionSize;
+            BYTE* a = rb, *b = re;
+            if ((uintptr_t)a < (uintptr_t)a0) a = (BYTE*)((((uintptr_t)a0 + 0xFFF) & ~(uintptr_t)0xFFF));
+            if ((uintptr_t)b > (uintptr_t)b0) b = (BYTE*)(((uintptr_t)b0) & ~(uintptr_t)0xFFF);
+            for (BYTE* pg = a; pg + 4096 <= b; pg += 4096) {
+                if (struck >= 32) return;
+                StrikePage(tr, pg, 4096, pout, tag, known, struck, cohSkipped);
+            }
+        }
+    }
+}
+
+static void VoiceWindowThread(const string& key)
+{
+    const DWORD DEADB = 8000; // 84.97a: прогон + 2 цикла после возврата хука
+    DWORD t0 = GetTickCount();
+    ActiveTrack tr;
+    {
+        StateLock lock;
+        for (auto& t : g_tracks) if (t.key == key) { tr = t; break; }
+    }
+    if (tr.meta) {
+        std::ofstream out((string(ModPaths::Dir()) + "\\voice_window.txt").c_str());
+        out << "VoiceWindow report (build " << MOD_BUILD_TAG << ")\nkey=" << key
+            << "\nt0=" << t0 << "\n====\n";
+        std::vector<LoopVictim> known;
+        int struck = 0, cohSkipped = 0, mappedHits = 0;
+        const size_t BSZ = 16 * 1024 * 1024;
+        unsigned char* buf = (unsigned char*)VirtualAlloc(nullptr, BSZ,
+                                                          MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        DWORD lastWalk = 0;
+        while (!g_dying && (GetTickCount() - t0) < DEADB && struck < 32) {
+            if (buf && GetTickCount() - lastWalk >= 1500) {
+                DWORD rem = t0 + DEADB - GetTickCount();
+                if (rem > 800)
+                    ScanReverseAllFast(tr, buf, BSZ, &out, "WINDOW", known, struck,
+                                       cohSkipped, mappedHits, GetTickCount() + rem - 800);
+                out.flush();
+                lastWalk = GetTickCount();
+            }
+            HotPass(tr, &out, "WINDOW", known, struck, cohSkipped);
+            Sleep(20);
+        }
+        if (buf) VirtualFree(buf, 0, MEM_RELEASE);
+        out << "==== window done. struck=" << struck << " mapped-hits=" << mappedHits
+            << " in " << (GetTickCount() - t0) << " ms\n";
+        out.flush();
+    }
+    InterlockedExchange(&g_windowAlive, 0);
+}
+
+static void EnsureVoiceWindow(const string& key)
+{
+    // один окно-поток на всё приложение: борст = 3 открытия < 1 c, одно
+    // окно на 6 с покрывает все их пост-открытийную обработку.
+    if (InterlockedCompareExchange(&g_windowAlive, 1, 0) != 0) return;
+    std::thread(VoiceWindowThread, key).detach();
 }
 
 // 84.93: обобщённый транзакционный патч записи трека (size/samples/loopIn/loopOut).
-static bool ApplyTrackPatch(const string& key, FoundRec& fr, const OggInfo& oi)
+// 84.95: fr — снимок (взятый под лок); провал ревалидации = мёртвая запись:
+// инвалидировать и вернуть false (TrySubstitute повторит по новой записи).
+static bool ApplyTrackPatch(const string& key, const FoundRec& fr, const OggInfo& oi)
 {
     const TrackMeta& meta = *fr.meta;
-    BYTE* tb = fr.table;
+    const BYTE* tb = fr.table;
     BYTE* entry = fr.entry;
     // повторная валидация имени (мир мог смениться между пробником и патчем)
     unsigned namePtr = 0;
     string expect = meta.name;
     if (!GuardRead32(entry, namePtr) || namePtr == 0 ||
         !GuardStrEq(tb + namePtr, expect.c_str(), expect.size() + 1)) {
-        logFile << "AudioR: валидация записи " << key << " провалена — ванила" << std::endl;
+        InvalidateFound(key, fr, "валидация имени провалена — таблица перезапущена?");
         return false;
     }
     unsigned stqCh = 0;
     GuardRead32(entry + 0x0C, stqCh);
-    if (oi.rate != 48000) {
-        logFile << "AudioR: частота " << oi.rate << " != 48000 — отказ"
-                << " (игра съест неверный темп/тон), ванила" << std::endl;
-        return false;
-    }
     if (stqCh != (unsigned)oi.channels) {
         logFile << "AudioR: каналы " << oi.channels << " != stq " << stqCh
                 << " — отказ во имя краша, ванила" << std::endl;
@@ -712,7 +1163,7 @@ static bool ApplyTrackPatch(const string& key, FoundRec& fr, const OggInfo& oi)
     unsigned lin = 0, lout = 0;
     ResolveLoops(meta, oi, key, lin, lout);
 
-    ActiveTrack tr; tr.key = key; tr.meta = fr.meta;
+    ActiveTrack tr; tr.key = key; tr.meta = fr.meta; tr.table = tb;
     tr.newSize = (unsigned)oi.fileSize; tr.newSamples = (unsigned)oi.samples;
     tr.lin = lin; tr.lout = lout;
 
@@ -723,44 +1174,67 @@ static bool ApplyTrackPatch(const string& key, FoundRec& fr, const OggInfo& oi)
         BYTE* a = entry + off[i];
         unsigned oldV = 0;
         GuardRead32(a, oldV);
-        rec[i].addr = a; rec[i].oldV = oldV; rec[i].newV = nv[i];
+        rec[i] = PatchRec{ a, oldV, nv[i], tb };
         if (!GuardWrite32(a, nv[i])) {
             logFile << "AudioR: PATCH fail +" << std::hex << off[i] << std::dec
                     << " — откат, ванила" << std::endl;
             for (int j = 0; j < i; ++j) GuardWrite32(rec[j].addr, rec[j].oldV);
+            InvalidateFound(key, fr, "запись поля не удалась — память подменена?");
             return false;
         }
         logFile << "AudioR: PATCH [" << key << "] +" << std::hex << off[i] << std::dec
                 << " " << oldV << " -> " << nv[i] << " [ok]" << std::endl;
     }
-    for (int i = 0; i < 4; ++i) g_tablePatch.push_back(rec[i]);
+    {
+        StateLock lock;
+        for (int i = 0; i < 4 && g_tablePatchN < 128; ++i)
+            g_tablePatch[g_tablePatchN++] = rec[i];
+    }
 
     // реестр активных (для фоновых добивок) — по ключу обновляем, не плодим
-    bool known = false;
-    for (size_t i = 0; i < g_tracks.size(); ++i)
-        if (g_tracks[i].key == key) { g_tracks[i] = tr; known = true; break; }
-    if (!known) g_tracks.push_back(tr);
+    {
+        StateLock lock;
+        bool known = false;
+        for (size_t i = 0; i < g_tracks.size(); ++i)
+            if (g_tracks[i].key == key) { g_tracks[i] = tr; known = true; break; }
+        if (!known) g_tracks.push_back(tr);
+    }
 
-    // страйки: pass0 синхронно при первой подмене трека + фоновые добивки
-    static std::unordered_map<string, bool> s_struck;
-    if (g_strikeLoops && !s_struck[key]) {
-        s_struck[key] = true;
+    // 84.97: окно запускается ДО pass0: его первый прогон идёт параллельно
+    // 4.6-с блокировке pass0 (движок заморожен — бьём статичные области:
+    // образы, старую кучу), и к возврату хука окно уже в работе.
+    if (g_strikeLoops) EnsureVoiceWindow(key);
+
+    // 84.96: pass0 на КАЖДУЮ подмену (борст), а не «один раз на ключ».
+    // Latch 84.95 был дырой: после сейва движок строит НОВЫЕ распарсенные
+    // копии, старый pass0 их не покрывал, а watch (3 прохода, ~40 c) к тому
+    // моменту умирал → голос уходил в ванильные samples (уровень 84.95-logs:
+    // DD_Entrance оборвался на 3058272 smp = ванильная отметка). Открытия
+    // #2/#3 борста ловятся целевой добивкой в кэше g_last (LocalStrikePass).
+    if (g_strikeLoops) {
         DWORD t0 = GetTickCount();
-        int struck = LoopStrikePass(tr, nullptr, g_loopVictims);
+        std::vector<LoopVictim> victims;
+        int struck = LoopStrikePass(tr, nullptr, "pass#0", victims);
         logFile << "AudioR: loop pass#0 [" << key << "] struck=" << struck
-                << " (" << (GetTickCount() - t0) << " ms)" << std::endl;
-        static bool s_watchStarted = false;
-        if (!s_watchStarted) { s_watchStarted = true; std::thread(LoopWatchThread).detach(); }
+                << " (" << (GetTickCount() - t0) << " ms, t=" << GetTickCount() << ")" << std::endl;
+        EnsureWatchThread();
+    }
+    // 84.96: snapshot таблицы в момент, когда движок будет её читать
+    // (контрольная строка: таблица держит наши значения на время голоса).
+    {
+        unsigned s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+        GuardRead32(entry + 0x04, s0);
+        GuardRead32(entry + 0x08, s1);
+        GuardRead32(entry + 0x10, s2);
+        GuardRead32(entry + 0x14, s3);
+        logFile << "AudioR: TABLE [" << key << "] table=0x" << std::hex
+                << (uintptr_t)tb << " entry=0x" << (uintptr_t)entry << std::dec
+                << " size=" << std::dec << s0 << " samples=" << s1
+                << " loopIn=" << s2 << " loopOut=" << s3 << std::endl;
     }
     std::thread(PatchWatch).detach();
     g_patched = true; // для сообщений о выкате в Shutdown
     return true;
-}
-
-static bool CanPatchKey(const string& key)
-{
-    auto it = g_found.find(key);
-    return it != g_found.end() && it->second.meta != nullptr && it->second.entry != nullptr;
 }
 
 // ---------------------------------------------------------------- detours
@@ -780,19 +1254,13 @@ static bool TrySubstitute(const string& key, string& fullOut)
     if (!g_enabled) return false;
     auto it = g_map.find(key);
     if (it == g_map.end()) return false;
-    if (!CanPatchKey(key)) {
+    if (!FoundValid(key)) {
         // Гонка (улов 84.72): трек открывается сразу пачкой, а пробник
         // идёт ~1-2 с в отдельном потоке. Удерживаем первый вызов до
         // валидации записи. R3: ворота теперь под любую запись каталога.
-        if (g_probeStq) {
-            MaybeProbe();
-            DWORD t0 = GetTickCount();
-            while (!g_found.count(key) && GetTickCount() - t0 < 12000) Sleep(100);
-            logFile << "AudioR: probe wait " << (GetTickCount() - t0)
-                    << " ms, " << key
-                    << (g_found.count(key) ? " НАЙДЕН" : " НЕ НАЙДЕН") << std::endl;
-        }
-        if (!CanPatchKey(key)) {
+        if (g_probeStq)
+            WaitForFound(key, 12000);
+        if (!FoundValid(key)) {
             if (g_notedUnknown[key]++ == 0 && !g_probeStq)
                 logFile << "AudioR: ключ " << key
                         << " смаплен, но STRQ-запись неизвестна — ванила (R2-MVP)" << std::endl;
@@ -801,6 +1269,23 @@ static bool TrySubstitute(const string& key, string& fullOut)
     }
     if (g_last.key == key && !g_last.full.empty() &&
         GetTickCount() - g_last.tick < 5000) {
+        // 84.96: открытия #2/#3 борста. Движок может аллоцировать копию
+        // голоса между открытиями (уровень 84.95: pass0 на #1 успевал, а
+        // голос всё равно брал ванильные samples) — целевая добивка в ±окне
+        // вокруг известных копий: миллисекунды вместо 3-сек полного прохода.
+        if (g_strikeLoops) {
+            ActiveTrack tr = ActiveTrack();
+            {
+                StateLock lock;
+                for (auto& t : g_tracks) if (t.key == key) { tr = t; break; }
+            }
+            if (tr.meta) {
+                std::vector<LoopVictim> known;
+                int ls = LocalStrikePass(tr, "LOCAL", known);
+                logFile << "AudioR: LOCAL [" << key << "] struck=" << ls
+                        << " (открытие #2/#3 борста, t=" << GetTickCount() << ")" << std::endl;
+            }
+        }
         fullOut = g_last.full; // то же открытие того же трека
         return true;
     }
@@ -821,10 +1306,29 @@ static bool TrySubstitute(const string& key, string& fullOut)
         logFile << "AudioR: весь пул мёртв (" << pool.files.size() << ") — ванила" << std::endl;
         return false;
     }
-    if (!ApplyTrackPatch(key, g_found[key], oi)) return false; // причины уже в логе
+    // 84.95: recovery. Если запись оказалась мёртвой (движок перезагрузил
+    // STRQ-таблицу — типично после загрузки сейва), ApplyTrackPatch её
+    // уже инвалидировал и перезарядил пробник. Ждём НОВУЮ запись и
+    // повторяем патч ровно один раз; движок открывает трек ~3 раза подряд,
+    // так что следующий вызов этой же функции дождётся готового каталога.
+    bool patched = false;
+    FoundRec fr;
+    if (GetFound(key, fr))
+        patched = ApplyTrackPatch(key, fr, oi);
+    if (!patched && g_probeStq) {
+        WaitForFound(key, 12000);
+        FoundRec fr2;
+        if (GetFound(key, fr2)) {
+            logFile << "AudioR: RECOVERY [" << key << "] новая таблица @0x"
+                    << std::hex << (uintptr_t)fr2.table << std::dec
+                    << " — повторный патч" << std::endl;
+            patched = ApplyTrackPatch(key, fr2, oi);
+        }
+    }
+    if (!patched) return false; // причины уже в логе
     logFile << "AudioR: SUB " << key << " -> " << rel
             << " (" << oi.fileSize << "B, " << oi.samples
-            << " smp, " << oi.channels << "ch)" << std::endl;
+            << " smp, " << oi.channels << "ch, t=" << GetTickCount() << ")" << std::endl;
     g_last.key = key; g_last.full = full; g_last.tick = GetTickCount();
     fullOut = full;
     return true;
@@ -833,7 +1337,8 @@ static bool TrySubstitute(const string& key, string& fullOut)
 static bool LooksSngwW(LPCWSTR w) {
     for (LPCWSTR p = w; *p; ++p)
         if (*p == L'.' && (p[1] == L's' || p[1] == L'S') &&
-            (p[2] == L'n' || p[2] == L'N') && (p[3] == L'g' || p[3] == L'G') &&
+            (p[2] == L'n' || p[2] == L'N') &&
+            (p[3] == L'g' || p[3] == L'G') &&
             (p[4] == L'w' || p[4] == L'W') && p[5] == 0) return true;
     return false;
 }
@@ -882,6 +1387,11 @@ static HANDLE WINAPI Hook_CreateFileW(LPCWSTR lpFileName, DWORD da, DWORD sm,
 
 void Audio::Init()
 {
+    InitializeCriticalSection(&g_stateCrit); // 84.95: реестр общий для потоков
+#if !AUDIO_RUNTIME_EXPERIMENTAL
+    logFile << "AudioR: runtime-ветка заморожена (84.98), музыка = vanilla, хуки не ставятся" << std::endl;
+    return;
+#else
     LoadMap();
     // 84.89: смешанный сид — первый rand() после srand(tick) коррелировал с сидом,
     // и запуски подряд давали один и тот же выбор пула (улов 5 из 5 одного файла).
@@ -892,36 +1402,49 @@ void Audio::Init()
     if (!k32) { logFile << "AudioR: kernel32 не найден, модуль выключен" << std::endl; return; }
     void* pw = GetProcAddress(k32, "CreateFileW");
     void* pa = GetProcAddress(k32, "CreateFileA");
-    Hooks::CreateHook("AudioR CreateFileW", pw, Hook_CreateFileW, (LPVOID*)&oCreateFileW);
-    Hooks::CreateHook("AudioR CreateFileA", pa, Hook_CreateFileA, (LPVOID*)&oCreateFileA);
+    Hooks::CreateHook("AudioR CreateFileW", pw,
+                      reinterpret_cast<LPVOID>(Hook_CreateFileW), (LPVOID*)&oCreateFileW);
+    Hooks::CreateHook("AudioR CreateFileA", pa,
+                      reinterpret_cast<LPVOID>(Hook_CreateFileA), (LPVOID*)&oCreateFileA);
+#endif
 }
 
 void Audio::Shutdown()
 {
     g_dying = true; // сразу: хуки становятся сквозными, потоки выходят
     logFile << "AudioR: shutdown начат" << std::endl;
-    if (!g_tablePatch.empty()) {
-        // 84.82/84.93: откат только если там до сих пор наше значение.
+    // 84.82/84.95: откат только если там до сих пор наше значение; снимки
+    // под лок, сами записи — вне (SEH-guarded обращения к памяти игры).
+    std::vector<PatchRec> tp;
+    std::vector<PatchRec> lp;
+    {
+        StateLock lock;
+        for (size_t i = 0; i < g_tablePatchN; ++i) tp.push_back(g_tablePatch[i]);
+        g_tablePatchN = 0;
+        lp = g_loopPatch;
+        g_loopPatch.clear();
+    }
+    if (!tp.empty()) {
         int restored = 0;
-        for (size_t i = 0; i < g_tablePatch.size(); ++i) {
+        for (size_t i = 0; i < tp.size(); ++i) {
             unsigned cur = 0;
-            if (GuardRead32(g_tablePatch[i].addr, cur) && cur == g_tablePatch[i].newV) {
-                if (GuardWrite32(g_tablePatch[i].addr, g_tablePatch[i].oldV)) ++restored;
+            if (GuardRead32(tp[i].addr, cur) && cur == tp[i].newV) {
+                if (GuardWrite32(tp[i].addr, tp[i].oldV)) ++restored;
             }
         }
-        g_tablePatch.clear();
         g_patched = false;
-        logFile << "AudioR: rollback таблиц выполнен (" << restored << " полей)" << std::endl;
+        logFile << "AudioR: rollback таблиц выполнен (" << restored << "/" << tp.size() << " полей)" << std::endl;
     }
     int lr = 0;
-    for (size_t i = 0; i < g_loopPatch.size(); ++i) {
+    for (size_t i = 0; i < lp.size(); ++i) {
         unsigned cur = 0;
-        if (GuardRead32(g_loopPatch[i].addr, cur) && cur == g_loopPatch[i].newV) {
-            if (GuardWrite32(g_loopPatch[i].addr, g_loopPatch[i].oldV)) ++lr;
+        if (GuardRead32(lp[i].addr, cur) && cur == lp[i].newV) {
+            if (GuardWrite32(lp[i].addr, lp[i].oldV)) ++lr;
         }
     }
-    if (!g_loopPatch.empty())
+    if (!lp.empty())
         logFile << "AudioR: rollback луп-копий выполнен (" << lr << "/"
-                << g_loopPatch.size() << ")" << std::endl;
+                << lp.size() << ")" << std::endl;
     logFile << "AudioR: shutdown окончен" << std::endl;
+    DeleteCriticalSection(&g_stateCrit);
 }

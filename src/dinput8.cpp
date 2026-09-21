@@ -61,8 +61,8 @@ void InitHooks()
     // до UI, работает и без Director; записей не делает.
     Runtime::PartyStatus::Init();
 
-    // 84.69: музыкальный слой 0. Хук CreateFile ставится всегда (дешёвый
-    // фильтр ".sngw"); по умолчанию R1-журнал + разовый пробник STRQ.
+    // 84.98: музыкальный runtime-эксперимент заморожен compile-time;
+    // Audio::Init() оставляет vanilla и НЕ ставит CreateFile-хуки.
     Audio::Init();
 
     // Инициализируем горячие клавиши (ОБЯЗАТЕЛЬНО перед InGameUI!)
