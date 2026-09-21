@@ -192,7 +192,9 @@ static const uint32_t kScaleH = 0x64;   // высота
 static const uint32_t kScaleD = 0x68;   // глубина
 
 static const uint32_t kCharParamOff  = 0x5870;   // база блока в теле uEm0100
+static const uint32_t kFldAttack         = 0x00C; // 物理攻撃力 (Physical Attack)
 static const uint32_t kFldDefense        = 0x010; // 物理防御力 (Physical Defense)
+static const uint32_t kFldMagickAttack   = 0x014; // 魔法攻撃力 (Magick Attack)
 static const uint32_t kFldMagickDefense  = 0x018; // 魔法防御力 (Magick Defense)
 static const uint32_t kFldReturnActivate = 0x100; // リターンテリトリー発動タイム
 static const uint32_t kFldReturnDuration = 0x104; // リターンテリトリー継続タイム
@@ -364,6 +366,13 @@ struct Touched {
     float baseDef, baseMDef;
     bool  haveDef;
     bool  inReturnArmor;
+    // Боевые статы (audit 2026-09-21 §8): ваниль + текущее после mult*roll
+    float baseAtk, baseDefC, baseMAtk, baseMDefC;
+    float curAtk, curDefC, curMAtk, curMDefC; // последнее применённое (с mult+roll)
+    bool  haveCombat;
+    int   combatLogged;
+    float combatRollAtk, combatRollDef, combatRollMAtk, combatRollMDef; // 0.9..1.1 per body
+
     // Кэш смещения cCharParamEnemy в теле: ищем ровно один раз на особь,
     // чтобы не гонять 29-КБ перебор памяти каждый тик для не-гоблинов.
     uint32_t charParamOff;
@@ -372,6 +381,34 @@ struct Touched {
 static const int kMaxTouched = 128;
 static Touched s_touched[kMaxTouched];
 static int     s_nTouched = 0;
+
+// Species-level vanilla combat base (audit fix for reload double-mult).
+// Per-body base is vulnerable to mid-session reload: body memory already has
+// multiplied values (e.g. 512) but Touched is new (haveCombat=false) → we would
+// capture 512 as base and double to 1048. Species base is captured once per
+// species from first vanilla-looking body and never overwritten.
+struct SpeciesCombatBase {
+    uint16_t emId = 0xFFFF;
+    float atk = 0, defC = 0, mAtk = 0, mDefC = 0;
+    bool have = false;
+};
+static const int kMaxSpeciesBase = 128;
+static SpeciesCombatBase s_speciesBase[kMaxSpeciesBase];
+static int s_nSpeciesBase = 0;
+
+static SpeciesCombatBase* FindSpeciesBase(uint16_t emId) {
+    for (int i=0;i<s_nSpeciesBase;++i) if (s_speciesBase[i].emId==emId) return &s_speciesBase[i];
+    return nullptr;
+}
+static SpeciesCombatBase* RememberSpeciesBase(uint16_t emId, float atk,float defC,float mAtk,float mDefC) {
+    auto* exist = FindSpeciesBase(emId);
+    if (exist) return exist;
+    if (s_nSpeciesBase>=kMaxSpeciesBase) return nullptr;
+    auto* s = &s_speciesBase[s_nSpeciesBase++];
+    s->emId=emId; s->atk=atk; s->defC=defC; s->mAtk=mAtk; s->mDefC=mDefC; s->have=true;
+    return s;
+}
+
 
 static void ForgetMissing()
 {
@@ -439,6 +476,11 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->baseMDef     = 0.0f;
     t->haveDef      = false;
     t->inReturnArmor = false;
+    t->baseAtk = t->baseDefC = t->baseMAtk = t->baseMDefC = 0.0f;
+    t->curAtk = t->curDefC = t->curMAtk = t->curMDefC = 0.0f;
+    t->haveCombat = false;
+    t->combatLogged = 0;
+    t->combatRollAtk = t->combatRollDef = t->combatRollMAtk = t->combatRollMDef = 1.0f;
     t->charParamOff = 0;
     t->charParamSearched = false;
     return t;
@@ -947,11 +989,16 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kin
         return 0;
 
     uintptr_t base = 0;
-    if (rec->charParamSearched) {
-        if (!rec->charParamOff) return 0;
+    if (rec->charParamSearched && rec->charParamOff) {
         base = body + rec->charParamOff;
-    } else {
-        rec->charParamSearched = true;
+        if (!LooksLikeCharParam(base)) {
+            // stale cache (body reallocated or not ready) — re-search
+            rec->charParamOff = 0;
+            base = 0;
+        }
+    }
+    if (!base) {
+        // first time or previous search failed — try to find
         uintptr_t cand = body + kCharParamOff;
         if (LooksLikeCharParam(cand)) {
             base = cand;
@@ -962,6 +1009,7 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kin
             base = FindCharParam(body, bSize);
             rec->charParamOff = base ? (uint32_t)(base - body) : 0;
         }
+        rec->charParamSearched = true;
         if (!base) return 0;
     }
 
@@ -1002,6 +1050,234 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kin
     return wrote;
 }
 
+// -------------------------------------------------------- Combat stats (audit 2026-09-21 §8) ---
+// cCharParamEnemy +0x0C/+0x10/+0x14/+0x18 — урон и броня.
+// План из аудита: транзакция validate->write->readback->WATCH, как у scale/leash,
+// + per-body roll 0.9..1.1 чтобы в паке не было одинаковых мобов.
+//
+// ВНИМАНИЕ: Sanctuary трогает защиту при возврате. Чтобы не драться за поле,
+// ApplyCombatStats пишет боевую базу, а Sanctuary поверх неё умножает на armorMult
+// и при выходе восстанавливает боевую, а не ваниль.
+static float CombatRoll(uintptr_t body, uint32_t salt)
+{
+    // детерминированный ролл 0.9..1.1 на особь+стат
+    uint32_t h = (uint32_t)(body >> 3) ^ salt;
+    h ^= h >> 13; h *= 0x5BD1E995u; h ^= h >> 15;
+    float t = (float)(h & 0xFFFF) / 65535.0f; // 0..1
+    return 0.9f + t * 0.2f; // 0.9..1.1
+}
+
+static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t, const char* kind)
+{
+    if (!rec) return 0;
+    if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
+        return 0; // подчасти боссов — не трогаем
+
+    // если все множители ваниль и мы уже применяли — можно пропустить?
+    // Нет: нужен per-body roll даже при 1.0, чтобы мобы не были клонами.
+    // Поэтому проверяем только что не нули.
+
+    uintptr_t base = 0;
+    if (rec->charParamSearched && rec->charParamOff) {
+        base = body + rec->charParamOff;
+        if (!LooksLikeCharParam(base)) {
+            // stale cache (body reallocated or not ready) — re-search
+            rec->charParamOff = 0;
+            base = 0;
+        }
+    }
+    if (!base) {
+        // first time or previous search failed — try to find
+        uintptr_t cand = body + kCharParamOff;
+        if (LooksLikeCharParam(cand)) {
+            base = cand;
+            rec->charParamOff = kCharParamOff;
+        } else {
+            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
+            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
+            base = FindCharParam(body, bSize);
+            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
+        }
+        rec->charParamSearched = true;
+        if (!base) return 0;
+    }
+
+    float curAtk=0, curDef=0, curMAtk=0, curMDef=0;
+    if (!SafeRead((const void*)(base + kFldAttack), &curAtk, 4)) return 0;
+    if (!SafeRead((const void*)(base + kFldDefense), &curDef, 4)) return 0;
+    if (!SafeRead((const void*)(base + kFldMagickAttack), &curMAtk, 4)) return 0;
+    if (!SafeRead((const void*)(base + kFldMagickDefense), &curMDef, 4)) return 0;
+
+    // Species base lookup (for reload protection)
+    uint16_t emIdForBase = 0xFFFF;
+    if (kind) {
+        // EmIdFromKind is static, need to call via function - we have emId from caller? 
+        // We have kind string, parse emId via existing helper EmIdFromKind if available.
+        // To avoid forward decl issues, we will try to find species base by scanning for matching base already stored
+        // and if not found, we will use cur as candidate for species base if it looks vanilla.
+    }
+
+    if (!rec->haveCombat) {
+        // санити: ванильные статы обычно 0..50000, не NaN
+        if (!(curAtk >= 0.0f && curAtk < 50000.0f)) return 0;
+        if (!(curDef >= 0.0f && curDef < 50000.0f)) return 0;
+        if (!(curMAtk >= 0.0f && curMAtk < 50000.0f)) return 0;
+        if (!(curMDef >= 0.0f && curMDef < 50000.0f)) return 0;
+
+        // детерминированные роллы на особь — считаем ДО выбора базы чтобы
+        // иметь roll для проверки уже-умноженного cur.
+        rec->combatRollAtk  = CombatRoll(body, 0xA11CE5u);
+        rec->combatRollDef  = CombatRoll(body, 0xDEF011u);
+        rec->combatRollMAtk = CombatRoll(body, 0x5A7AC4u);
+        rec->combatRollMDef = CombatRoll(body, 0xD0A55Eu);
+
+        // Попытка найти species base
+        uint16_t emId = 0xFFFF;
+        // EmIdFromKind is defined later, but we can parse kind like uEm0100 -> 100
+        if (kind && kind[0]=='u' && kind[1]=='E' && kind[2]=='m') {
+            // uEm0100 -> 100, uEm0200 -> 200, etc.
+            // kind+3 points to digits, may have _20 suffix
+            int v=0;
+            for (int i=3; kind[i] && kind[i]>='0' && kind[i]<='9' && i<7; ++i) {
+                v = v*10 + (kind[i]-'0');
+            }
+            if (v>0 && v<10000) emId = (uint16_t)v;
+        }
+        SpeciesCombatBase* spb = (emId!=0xFFFF) ? FindSpeciesBase(emId) : nullptr;
+        if (spb && spb->have) {
+            // Use species vanilla base, not cur (protects against reload double-mult)
+            // If cur is already multiplied (e.g. 512 vs vanilla 250), we will keep want = vanilla*mult*roll = cur, stable.
+            rec->baseAtk = spb->atk;
+            rec->baseDefC = spb->defC;
+            rec->baseMAtk = spb->mAtk;
+            rec->baseMDefC = spb->mDefC;
+        } else {
+            // First time we see this species — cur should be vanilla (game start).
+            // If cur looks already multiplied (e.g. >1.8x of what we would expect? we don't know),
+            // we try to reverse: if cur / (mult*roll) is plausible, use that as vanilla.
+            // Heuristic: if cur > 400 and mult>=1.5, assume cur is already multiplied and recover vanilla.
+            float estVanillaAtk = curAtk;
+            float estVanillaDef = curDef;
+            float multAtk = t.attackMult * rec->combatRollAtk;
+            float multDef = t.defenseMult * rec->combatRollDef;
+            if (multAtk>1.5f && curAtk>350.0f) {
+                float cand = curAtk / multAtk;
+                if (cand>=50.0f && cand<1000.0f) estVanillaAtk = cand;
+            }
+            if (multDef>1.5f && curDef>120.0f) {
+                float cand = curDef / multDef;
+                if (cand>=10.0f && cand<500.0f) estVanillaDef = cand;
+            }
+            rec->baseAtk = estVanillaAtk;
+            rec->baseDefC = estVanillaDef;
+            rec->baseMAtk = curMAtk; // for magick we keep simple for now
+            rec->baseMDefC = curMDef;
+            // Store as species base for future bodies
+            if (emId!=0xFFFF) {
+                RememberSpeciesBase(emId, rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC);
+            }
+        }
+        rec->haveCombat = true;
+    }
+
+    // если в Sanctuary — защиту не перезаписываем боевой (её бустит Sanctuary)
+    bool inSanct = rec->inReturnArmor;
+
+    // Roll применяется только когда mult != 1.0, чтобы 1.0 оставался ванилью.
+    // Если mult == 1.0 — want = base (восстановление ванили).
+    float rollAtk  = NearlyEq(t.attackMult, 1.0f)        ? 1.0f : rec->combatRollAtk;
+    float rollDef  = NearlyEq(t.defenseMult, 1.0f)       ? 1.0f : rec->combatRollDef;
+    float rollMAtk = NearlyEq(t.magickAttackMult, 1.0f)  ? 1.0f : rec->combatRollMAtk;
+    float rollMDef = NearlyEq(t.magickDefenseMult, 1.0f) ? 1.0f : rec->combatRollMDef;
+
+    float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk;
+    float wantDef  = rec->baseDefC * t.defenseMult       * rollDef;
+    float wantMAtk = rec->baseMAtk * t.magickAttackMult  * rollMAtk;
+    float wantMDef = rec->baseMDefC* t.magickDefenseMult * rollMDef;
+
+    // NaN protection — hot-reload может подсунуть NaN из полузаписанного ini
+    // или из повреждённой памяти. NaN в charParam = краш движка при расчёте урона.
+    if (!(wantAtk==wantAtk)) wantAtk = rec->baseAtk;
+    if (!(wantDef==wantDef)) wantDef = rec->baseDefC;
+    if (!(wantMAtk==wantMAtk)) wantMAtk = rec->baseMAtk;
+    if (!(wantMDef==wantMDef)) wantMDef = rec->baseMDefC;
+    if (!(rec->baseAtk==rec->baseAtk) || !(rec->baseDefC==rec->baseDefC) ||
+        !(rec->baseMAtk==rec->baseMAtk) || !(rec->baseMDefC==rec->baseMDefC)) {
+        return 0; // база битая — не пишем
+    }
+
+    // кламп абсолютов чтобы не взорвать баланс
+    if (wantAtk < 0.0f) wantAtk = 0.0f; if (wantAtk > 50000.0f) wantAtk = 50000.0f;
+    if (wantDef < 0.0f) wantDef = 0.0f; if (wantDef > 50000.0f) wantDef = 50000.0f;
+    if (wantMAtk < 0.0f) wantMAtk = 0.0f; if (wantMAtk > 50000.0f) wantMAtk = 50000.0f;
+    if (wantMDef < 0.0f) wantMDef = 0.0f; if (wantMDef > 50000.0f) wantMDef = 50000.0f;
+
+    // если всё уже стоит — ничего не делаем (избегаем лишних записей)
+    bool needAtk = !NearlyEq(curAtk, wantAtk);
+    bool needDef = !inSanct && !NearlyEq(curDef, wantDef);
+    bool needMAtk= !NearlyEq(curMAtk, wantMAtk);
+    bool needMDef= !inSanct && !NearlyEq(curMDef, wantMDef);
+    if (!needAtk && !needDef && !needMAtk && !needMDef) {
+        // обновим cur-кэш даже если не писали (на случай если Sanctuary менял защиту)
+        rec->curAtk = wantAtk; rec->curMAtk = wantMAtk;
+        if (!inSanct) { rec->curDefC = wantDef; rec->curMDefC = wantMDef; }
+        return 0;
+    }
+
+    int wrote = 0;
+    for (int c = 0; c < 2; ++c) {
+        uintptr_t b = base + (uintptr_t)c * 0x140;
+        if (c && !LooksLikeCharParam(b)) break;
+        float cur = 0;
+        if (needAtk && SafeRead((const void*)(b + kFldAttack), &cur, 4) && !NearlyEq(cur, wantAtk)) {
+            if (SafeWrite((void*)(b + kFldAttack), &wantAtk, 4)) ++wrote;
+        }
+        if (needDef && SafeRead((const void*)(b + kFldDefense), &cur, 4) && !NearlyEq(cur, wantDef)) {
+            if (SafeWrite((void*)(b + kFldDefense), &wantDef, 4)) ++wrote;
+        }
+        if (needMAtk && SafeRead((const void*)(b + kFldMagickAttack), &cur, 4) && !NearlyEq(cur, wantMAtk)) {
+            if (SafeWrite((void*)(b + kFldMagickAttack), &wantMAtk, 4)) ++wrote;
+        }
+        if (needMDef && SafeRead((const void*)(b + kFldMagickDefense), &cur, 4) && !NearlyEq(cur, wantMDef)) {
+            if (SafeWrite((void*)(b + kFldMagickDefense), &wantMDef, 4)) ++wrote;
+        }
+    }
+
+    // readback WATCH (audit §8): проверяем что держится
+    if (wrote) {
+        float rbAtk=0, rbDef=0, rbMAtk=0, rbMDef=0;
+        bool ok = SafeRead((const void*)(base + kFldAttack), &rbAtk, 4)
+               && SafeRead((const void*)(base + kFldDefense), &rbDef, 4)
+               && SafeRead((const void*)(base + kFldMagickAttack), &rbMAtk, 4)
+               && SafeRead((const void*)(base + kFldMagickDefense), &rbMDef, 4);
+        if (!ok || (!inSanct && (!NearlyEq(rbDef, wantDef) || !NearlyEq(rbMDef, wantMDef)))
+                || !NearlyEq(rbAtk, wantAtk) || !NearlyEq(rbMAtk, wantMAtk)) {
+            // движок откатил — залогируем как WATCH drift
+            if (rec->combatLogged < 3) {
+                char ll[240];
+                sprintf_s(ll, "CombatStats WATCH drift on %s 0x%08X: want (%.1f,%.1f,%.1f,%.1f) got (%.1f,%.1f,%.1f,%.1f)",
+                          kind ? kind : "?", (unsigned)body, wantAtk, wantDef, wantMAtk, wantMDef,
+                          rbAtk, rbDef, rbMAtk, rbMDef);
+                logFile << "EnemyTuner: " << ll << std::endl;
+            }
+        }
+        rec->curAtk = wantAtk; rec->curDefC = wantDef;
+        rec->curMAtk = wantMAtk; rec->curMDefC = wantMDef;
+        if (rec->combatLogged < 2) {
+            ++rec->combatLogged;
+            char ll[260];
+            sprintf_s(ll, "CombatStats x%.2f/%.2f/%.2f/%.2f (roll %.2f/%.2f/%.2f/%.2f) -> %s 0x%08X  atk %.1f->%.1f def %.1f->%.1f matk %.1f->%.1f mdef %.1f->%.1f",
+                      t.attackMult, t.defenseMult, t.magickAttackMult, t.magickDefenseMult,
+                      rec->combatRollAtk, rec->combatRollDef, rec->combatRollMAtk, rec->combatRollMDef,
+                      kind ? kind : "?", (unsigned)body,
+                      rec->baseAtk, wantAtk, rec->baseDefC, wantDef, rec->baseMAtk, wantMAtk, rec->baseMDefC, wantMDef);
+            logFile << "EnemyTuner: " << ll << std::endl;
+            lstrcpynA(s_status, ll, sizeof(s_status));
+        }
+    }
+    return wrote;
+}
+
 // -------------------------------------------------------- DDON Sanctuary ---
 //
 // В Dragon's Dogma Online монстры при возврате на спавн получали статус
@@ -1030,11 +1306,16 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
         return 0;
 
     uintptr_t base = 0;
-    if (rec->charParamSearched) {
-        if (!rec->charParamOff) return 0;
+    if (rec->charParamSearched && rec->charParamOff) {
         base = body + rec->charParamOff;
-    } else {
-        rec->charParamSearched = true;
+        if (!LooksLikeCharParam(base)) {
+            // stale cache (body reallocated or not ready) — re-search
+            rec->charParamOff = 0;
+            base = 0;
+        }
+    }
+    if (!base) {
+        // first time or previous search failed — try to find
         uintptr_t cand = body + kCharParamOff;
         if (LooksLikeCharParam(cand)) {
             base = cand;
@@ -1045,6 +1326,7 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
             base = FindCharParam(body, bSize);
             rec->charParamOff = base ? (uint32_t)(base - body) : 0;
         }
+        rec->charParamSearched = true;
         if (!base) return 0;
     }
 
@@ -1064,11 +1346,15 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
 
     if (!t.returnArmor) {
         if (rec->inReturnArmor) {
+            // Audit §8 fix: восстанавливаем боевую защиту (с mult+roll), а не ваниль,
+            // иначе CombatStats сбрасывался бы при выходе из Sanctuary.
+            float restoreDef = rec->haveCombat ? rec->curDefC : rec->baseDef;
+            float restoreMDef = rec->haveCombat ? rec->curMDefC : rec->baseMDef;
             for (int c = 0; c < 2; ++c) {
                 uintptr_t b = base + (uintptr_t)c * 0x140;
                 if (c && !LooksLikeCharParam(b)) break;
-                SafeWrite((void*)(b + kFldDefense), &rec->baseDef, 4);
-                SafeWrite((void*)(b + kFldMagickDefense), &rec->baseMDef, 4);
+                SafeWrite((void*)(b + kFldDefense), &restoreDef, 4);
+                SafeWrite((void*)(b + kFldMagickDefense), &restoreMDef, 4);
             }
             Runtime::Tempo::ClearOverride(body);
             rec->inReturnArmor = false;
@@ -1084,8 +1370,15 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
     if (armorMult < 1.0f) armorMult = 1.0f;
     if (armorMult > 20.0f) armorMult = 20.0f;
 
-    float wantDef = returning ? (rec->baseDef * armorMult) : rec->baseDef;
-    float wantMDef = returning ? (rec->baseMDef * armorMult) : rec->baseMDef;
+    // Audit §8: база для Sanctuary — боевая защита (с mult+roll), если уже есть,
+    // иначе ваниль. Так CombatStats и Sanctuary не дерутся за поле.
+    float combatDef = rec->haveCombat ? rec->curDefC : rec->baseDef;
+    float combatMDef = rec->haveCombat ? rec->curMDefC : rec->baseMDef;
+    if (combatDef <= 0.0f) combatDef = rec->baseDef;
+    if (combatMDef <= 0.0f) combatMDef = rec->baseMDef;
+
+    float wantDef = returning ? (combatDef * armorMult) : combatDef;
+    float wantMDef = returning ? (combatMDef * armorMult) : combatMDef;
 
     int wrote = 0;
     if (returning && !rec->inReturnArmor) {
@@ -1110,12 +1403,14 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
         logFile << "EnemyTuner: " << l << std::endl;
         lstrcpynA(s_status, l, sizeof(s_status));
     } else if (!returning && rec->inReturnArmor) {
-        // Выход из Sanctuary: восстанавливаем ваниль
+        // Выход из Sanctuary: восстанавливаем боевую защиту, не ваниль (audit §8)
+        float restoreDef = rec->haveCombat ? rec->curDefC : rec->baseDef;
+        float restoreMDef = rec->haveCombat ? rec->curMDefC : rec->baseMDef;
         for (int c = 0; c < 2; ++c) {
             uintptr_t b = base + (uintptr_t)c * 0x140;
             if (c && !LooksLikeCharParam(b)) break;
-            if (SafeWrite((void*)(b + kFldDefense), &rec->baseDef, 4)) ++wrote;
-            if (SafeWrite((void*)(b + kFldMagickDefense), &rec->baseMDef, 4)) ++wrote;
+            if (SafeWrite((void*)(b + kFldDefense), &restoreDef, 4)) ++wrote;
+            if (SafeWrite((void*)(b + kFldMagickDefense), &restoreMDef, 4)) ++wrote;
         }
         Runtime::Tempo::ClearOverride(body);
         rec->inReturnArmor = false;
@@ -1130,6 +1425,9 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
 
 static void TickOneBody(uintptr_t body, const char* kind)
 {
+    // P0-2 / hot-reload safety: stale body must not be touched
+    if (!body) return;
+    if (!Runtime::Mem::RegionOk(body, 0x70)) return; // need at least +0x60..0x68 scale
     // Тело под ручным удержанием (кнопка FORCE) — не трогаем.
     // Иначе тик затирает результат нажатия и мы сами себе создаём "реверты".
     if (s_holdBody && body == s_holdBody) return;
@@ -1142,6 +1440,17 @@ static void TickOneBody(uintptr_t body, const char* kind)
 
     Touched* rec0 = FindTouched(body);
     if (!rec0) rec0 = RememberTouched(body, 1.0f);
+
+    // --- боевые статы: урон/броня с per-body roll (audit §8) ----------
+    // Должен идти ДО Sanctuary, чтобы Sanctuary видел curDefC/curMDefC
+    // и умножал уже боевую защиту на armorMult.
+    if (!NearlyEq(t.attackMult, 1.0f) || !NearlyEq(t.defenseMult, 1.0f) ||
+        !NearlyEq(t.magickAttackMult, 1.0f) || !NearlyEq(t.magickDefenseMult, 1.0f) ||
+        rec0->haveCombat) // после первой встречи продолжаем держать roll
+    {
+        int nC = ApplyCombatStats(body, rec0, t, kind);
+        if (nC > 0) s_writes += nC;
+    }
 
     // --- DDON Sanctuary: броня и скорость при возврате на спавн --------
     ApplyReturnSanctuary(body, rec0, t, kind);

@@ -1,14 +1,19 @@
-DDDA AI Overhaul — source package 84.98-audio-frozen
+DDDA AI Overhaul — source package 85.06-hot-reload-safe
 ========================================================================
-MOD_BUILD_TAG : 84.98-audio-frozen
-Дата сборки   : 2026-09-20 13:09 (Europe/Moscow)
-Файлов        : 639
-Архив         : builds/84.98-audio-frozen.zip
+MOD_BUILD_TAG : 85.06-hot-reload-safe
+Дата сборки   : 2026-09-21 18:17 (Europe/Moscow)
+Файлов        : 644
+Архив         : builds/85.06-hot-reload-safe.zip
 
 Состав:
-**Build 84.98** — runtime-музыкальная ветка заморожена: compile-time gate
-`AUDIO_RUNTIME_EXPERIMENTAL=0`, `enabled=0`; CreateFile-хуки, STRQ-пробник,
-memory-strike и фоновые voice/watch-потоки не запускаются. Музыка полностью
-vanilla, задержка и риск для стабильности убраны. Исторический код оставлен
-для отдельного исследования; основной следующий путь — offline/community
-STQ/ARC patcher.
+**Build 85.00-combat-stats** — закрытие слабых мест аудита 2026-09-21 + боевые статы:
+- P0-2: AdmitDirectorMobilization теперь RegionOk+DTI перед продлением envelope (stale ptr fix)
+- PartyStatus: kPartyBodyBytes 0x5A40 -> 0x5A10 (overscan убран)
+- CombatBus: Publish копирует listeners под локом, вызывает вне лока (deadlock fix)
+- SAFE_MODULE: SEH падение логируется в logFile (кто упал видно)
+- Audio: runtime-ветка заморожена (gate), vcxproj включает no-op файл без хуков
+- bump_build.py: auto-bump тега + analyze_devtools_layers check (слои Build 69 защищены)
+- Combat stats (главное, §8): Tuning attackMult/defenseMult/magickAttackMult/magickDefenseMult 0.5..3.0 ClampCombat,
+  ApplyCombatStats в EnemyTuner с per-body roll 0.9..1.1 (вариация в паке, нет клонов), транзакция validate->write->readback->WATCH,
+  интеграция с Sanctuary (боевая защита * armorMult, восстановление боевой а не ванили). ddda_entities.ini + DefaultEntitiesIni.h обновлены.
+  Инструмент для оркестратора: поднять attackMult в class.small чтобы мелочь кусала, боссов оставить ваниль — прессинг игрока своевременно.

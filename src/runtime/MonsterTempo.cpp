@@ -1583,6 +1583,15 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
         reason = "director-mobilization-urgency-invalid";
     else if (!ttlMs)
         reason = "director-mobilization-ttl-required";
+    // P0-2 fix (audit 2026-09-21): stale pointer must not extend envelope.
+    else if (!Mem::RegionOk(body, kAnimRateOff0 + kAnimRateCount * 4))
+        reason = "director-mobilization-body-not-readable";
+    else {
+        char liveKind[32] = {};
+        if (!Mem::NameOfLiveObject(body, liveKind, sizeof(liveKind)) ||
+            !liveKind[0] || strcmp(liveKind, exactKind) != 0)
+            reason = "director-mobilization-kind-mismatch";
+    }
     if (reason[0] != 'd' || strcmp(reason, "director-mobilization-ready")) {
         if (reasonOut) *reasonOut = reason;
         return false;

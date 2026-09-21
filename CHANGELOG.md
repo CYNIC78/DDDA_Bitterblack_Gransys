@@ -21,7 +21,28 @@
 | [День 18](docs/changelog/CHANGELOG_DAY18.md) | 18.08 | 69.0 | **Разделение слоёв**: продукт вынесен в `src/runtime/`, перестал зависеть от `[devtools] enabled`; удалено ~900 строк мёртвого кода |
 | [День 19](docs/changelog/CHANGELOG_DAY19.md) | 19.08 | 70.x–73.11 | **Темп движений монстров найден и превращён в систему**: ряд множителей воспроизведения `+0x0EE4…+0x0EF4`, две независимые ручки с разбросом по особям, режиссёр стороны монстров на общей шине, рывок пешки взамен отсутствующего спринта |
 
+
 ## Текущий milestone
+
+**Build 85.06-hot-reload-safe** — hot-reload safe: Clamp* NaN-safe, TickOneBody RegionOk,
+charParamOff re-validate, защита от полузаписанного ini. Краш на спринте после правки ini закрыт.
+
+**Build 85.05-combat-species-base** — видовая база боевых статов s_speciesBase[emId],
+защита от дабл-мульта при релоаде DLL mid-session (512→1048 → стабильно).
+
+**Build 85.04-entities-backfill-fix** — фикс наследования ddda_entities.ini:
+autoBackfill=false, теперь отсутствие ключа = наследование default→class→em,
+а не запись 1 которая переопределяла attackMult=2.0.
+
+**Build 85.00-combat-stats** — закрытие слабых мест аудита 2026-09-21 + боевые статы:
+- P0-2: AdmitDirectorMobilization теперь RegionOk+DTI перед продлением envelope (stale ptr fix)
+- PartyStatus: kPartyBodyBytes 0x5A40 -> 0x5A10 (overscan убран)
+- CombatBus: Publish копирует listeners под локом, вызывает вне лока (deadlock fix)
+- SAFE_MODULE: SEH падение логируется
+- bump_build.py: auto-bump + analyze_devtools_layers check
+- Combat stats: Tuning attackMult/defenseMult/magickAttackMult/magickDefenseMult 0.5..3.0,
+  ApplyCombatStats с per-body roll 0.9..1.1, транзакция validate->write->readback->WATCH,
+  интеграция с Sanctuary. Пруф: atk 250->486/519/528 def 75->144/149/158 на x2.0.
 
 **Build 84.98** — runtime-музыкальная ветка заморожена: compile-time gate
 `AUDIO_RUNTIME_EXPERIMENTAL=0`, `enabled=0`; CreateFile-хуки, STRQ-пробник,

@@ -17,16 +17,19 @@ namespace EntityCfg {
 
 // ---------------------------------------------------------------- клампы ----
 float ClampSpeed(float v) {
+    if (!(v == v)) return 1.0f;
     if (v < 0.5f) return 0.5f;
     if (v > 1.5f) return 1.5f;   // выше — рассинхрон хитбокса, проверено
     return v;
 }
 float ClampAngle(float v) {
+    if (!(v == v)) return 0.0f; // 0 = vanilla
     if (v < (float)Limits::kSightAngleMin) return (float)Limits::kSightAngleMin;
     if (v > (float)Limits::kSightAngleMax) return (float)Limits::kSightAngleMax;
     return v;
 }
 float ClampScale(float v) {
+    if (!(v == v)) return 1.0f;
     // Ниже 0.7 модель проваливается в землю, выше 1.4 расходится с хитбоксом.
     // Границы консервативные: сначала убедимся, что вообще работает.
     if (v < 0.7f) return 0.7f;
@@ -34,8 +37,17 @@ float ClampScale(float v) {
     return v;
 }
 float ClampRadius(float v, float maxv) {
+    if (!(v == v)) return 0.0f; // 0 = vanilla
     if (v < 0.0f) return 0.0f;
     if (v > maxv) return maxv;
+    return v;
+}
+float ClampCombat(float v) {
+    // NaN protection: hot-reload may read half-written file -> stof throws -> defValue,
+    // but also direct NaN from file or corrupted memory. NaN must not reach engine.
+    if (!(v == v)) return 1.0f; // NaN -> vanilla
+    if (v < 0.5f) return 0.5f;
+    if (v > 3.0f) return 3.0f;
     return v;
 }
 
@@ -91,6 +103,10 @@ static void SetVanilla(Tuning& t)
     t.scaleMin    = 1.0f;
     t.scaleMax    = 1.0f;
     t.scaleJitter = 0.0f;
+    t.attackMult        = 1.0f;
+    t.defenseMult       = 1.0f;
+    t.magickAttackMult  = 1.0f;
+    t.magickDefenseMult = 1.0f;
     t.enabled     = true;
 }
 
@@ -139,6 +155,10 @@ static void ReadSection(iniConfig& cfg, const char* section, Tuning& t)
         if (rdc > 0.95f) rdc = 0.95f;
         t.returnDamageCut = rdc;
     }
+    t.attackMult        = ClampCombat(cfg.getFloat(section, "attackMult",        t.attackMult));
+    t.defenseMult       = ClampCombat(cfg.getFloat(section, "defenseMult",       t.defenseMult));
+    t.magickAttackMult  = ClampCombat(cfg.getFloat(section, "magickAttackMult",  t.magickAttackMult));
+    t.magickDefenseMult = ClampCombat(cfg.getFloat(section, "magickDefenseMult", t.magickDefenseMult));
     t.enabled     = cfg.getBool(section, "enabled",     t.enabled);
 }
 
@@ -182,6 +202,14 @@ void Load()
     EnsureFileExists(path);
 
     iniConfig cfg(path);
+    // Audit 2026-09-21: entities.ini использует трёхуровневое наследование
+    // default -> class.* -> emXXXX. Авто-дописка недостающих ключей (backfill)
+    // ломает наследование: при первом чтении [class.small] не имеет attackMult,
+    // backfill пишет туда 1, и он переопределяет 2.0 из [default]. Поэтому
+    // для этого файла backfill выключен — файл остаётся как создан из
+    // DefaultEntitiesIni.h (только [default] с новыми ключами), а отсутствие
+    // ключа = наследование, а не запись дефолта.
+    cfg.autoBackfill = false;
 
     s_enabled = cfg.getBool("global", "enabled", true);
     // Запись выключена по умолчанию: читать и смотреть безопасно всегда.

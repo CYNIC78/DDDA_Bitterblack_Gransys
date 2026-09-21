@@ -55,6 +55,17 @@ struct Tuning {
     // относительно высоты. Даёт коренастых и долговязых особей.
     float scaleJitter;
 
+    // боевые статы (cCharParamEnemy). Audit 2026-09-21 §8: mod был лёгким как
+    // sorcerer потому что менял только tempo/scale/aggro, а не урон/броню.
+    // 1.0 = ваниль. Кламп 0.5..3.0. Применяется в EnemyTuner::TickOneBody
+    // транзакционно: validate->write->readback->WATCH (как scale/leash).
+    // Вариация на особь: каждый моб в паке получает индивидуальный roll
+    // внутри [mult*0.9 .. mult*1.1] чтобы не было одинакового урона.
+    float attackMult;        // +0x0C phys attack
+    float defenseMult;       // +0x10 phys defense
+    float magickAttackMult;  // +0x14 magick attack
+    float magickDefenseMult; // +0x18 magick defense (для симметрии)
+
     bool  enabled;       // выключить мутации для этого вида целиком
 };
 
@@ -70,6 +81,7 @@ float ClampSpeed(float v);   // 0.5 .. 1.5
 float ClampScale(float v);   // 0.7 .. 1.4 — вне этого ломается хитбокс/анимация
 float ClampAngle(float v);   // 10 .. 360
 float ClampRadius(float v, float maxv);
+float ClampCombat(float v);  // 0.5 .. 3.0 — урон/броня, audit §8
 
 // ---- Доступ ----------------------------------------------------------------
 

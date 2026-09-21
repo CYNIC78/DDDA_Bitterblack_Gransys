@@ -29,15 +29,25 @@
 
 namespace PawnAI {
 
-#define SAFE_MODULE(name, call)                         \
-    do {                                                \
-        if (!name.enabled) break;                       \
-        __try {                                         \
-            name.call;                                  \
-        } __except(EXCEPTION_EXECUTE_HANDLER) {         \
-            name.enabled = false;                       \
-        }                                               \
-    } while(0)
+// Audit 2026-09-21 fix C2713/C2712: MSVC запрещает смешивать __try и C++ try
+// в одной функции. Раньше SAFE_MODULE делал __try + try{log} в Tick() —
+// компилятор падал C2713. Теперь SEH изолирован в отдельной функции без
+// C++ объектов, а лог — в Tick() без SEH.
+namespace Detail {
+template<typename Mod>
+inline bool CallSEH(Mod& mod, float* target, float* delta) {
+    __try {
+        mod.GetDelta(target, delta);
+        return true;
+    } __except(EXCEPTION_EXECUTE_HANDLER) {
+        mod.enabled = false;
+        return false;
+    }
+}
+inline void LogFall(const char* name) {
+    logFile << "PawnAI BusOrchestrator: module " << name << " SEH fall, disabled" << std::endl;
+}
+} // namespace Detail
 
 struct Orchestrator {
     PresetManager      presets;
@@ -80,15 +90,27 @@ struct Orchestrator {
         float target[I_COUNT];
         presets.GetBaseTarget(target);
 
-        // 3) Дельта модулей (каждый в своём SEH)
+        // 3) Дельта модулей (каждый в своём SEH, лог вне SEH — фикс C2713)
         float delta[I_COUNT] = {};
-        SAFE_MODULE(smartUtil, GetDelta(target, delta));
-        SAFE_MODULE(tactical,  GetDelta(target, delta));
-        SAFE_MODULE(acquisitor, GetDelta(target, delta)); // бывший кордон: только Acquisitor
+        if (smartUtil.enabled) {
+            if (!Detail::CallSEH(smartUtil, target, delta))
+                Detail::LogFall("smartUtil");
+        }
+        if (tactical.enabled) {
+            if (!Detail::CallSEH(tactical, target, delta))
+                Detail::LogFall("tactical");
+        }
+        if (acquisitor.enabled) {
+            if (!Detail::CallSEH(acquisitor, target, delta))
+                Detail::LogFall("acquisitor");
+        }
         OrderWatch::GetDelta(target, delta); // тактический импульс приказов (decay 6s)
         // Вокационный кордон идёт ПОСЛЕДНИМ: он ставит потолок Guardian,
         // и его слово должно быть поверх ситуативных надбавок.
-        SAFE_MODULE(cordon,    GetDelta(target, delta));
+        if (cordon.enabled) {
+            if (!Detail::CallSEH(cordon, target, delta))
+                Detail::LogFall("cordon");
+        }
 
         // 4) finalTarget = base + delta
         for (int i = 0; i < I_COUNT; i++) {
@@ -104,7 +126,5 @@ struct Orchestrator {
         }
     }
 };
-
-#undef SAFE_MODULE
 
 }

@@ -38,7 +38,9 @@ static const int kNBlocks        = 2;
 static const int kBlockMaxDwords = 152 / 4;   // 38
 
 // Размер тела для discovery-обхода: uPlayer 23056 (0x5A40) / uCmc 22752.
-static const uint32_t kPartyBodyBytes = 0x5A40;
+// P0-1 fix (audit 2026-09-21): use exact TypeAtlas sizes, not 0x5A40 which was 48-352 B over tail.
+// uPlayer = 0x5A10, uCmc = 0x58E0. For generic discovery we take max 0x5A10 and validate per-body via DTI.
+static const uint32_t kPartyBodyBytes = 0x5A10; // was 0x5A40 overscan
 
 static const DWORD kTickMs          = 500;    // каденс прибора
 static const DWORD kDiscoverMs      = 3000;   // один класс на тело за проход

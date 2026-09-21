@@ -122,11 +122,15 @@ public:
     }
 
     // Опубликовать удар (вызывает CombatIntel). Топчет lastReport.
+    // Audit 2026-09-21 fix: copy listeners under lock, call outside to avoid deadlock
+    // if subscriber calls Subscribe/Unsubscribe/LastReport.
     void Publish(const CombatReport& rpt){
+        std::vector<Listener> copy;
         AcquireSRWLockExclusive(&m_lock);
         lastReport = rpt;
-        for(auto &fn: listeners) if(fn) fn(rpt);
+        copy = listeners;
         ReleaseSRWLockExclusive(&m_lock);
+        for(auto &fn: copy) if(fn) fn(rpt);
     }
 
     CombatReport LastReport() const {
