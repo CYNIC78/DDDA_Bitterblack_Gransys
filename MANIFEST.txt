@@ -1,9 +1,16 @@
-DDDA AI Overhaul — source package 85.11-loot-window
+DDDA AI Overhaul — source package 85.20-bolt-truth
 ========================================================================
-MOD_BUILD_TAG : 85.11-loot-window
-Дата сборки   : 2026-09-22 18:57 (Europe/Moscow)
-Файлов        : 654
-Архив         : builds/85.11-loot-window.zip
+MOD_BUILD_TAG : 85.20-bolt-truth
+Дата сборки   : 2026-09-25 15:56 (Europe/Moscow)
+Файлов        : 667
+Архив         : builds/85.20-bolt-truth.zip
 
 Состав:
-**Build 85.11-loot-window** — накопительный числовой эксперимент Acquisitor: defaults +650/20000 мс вместо +180/8000, боевой cap100 и возврат4000 сохранены. Только главная пешка; алгоритм не менялся. Существующий INI требует ручной правки двух ключей. Production subscriber/GetDelta tests PASS, MSVC/игра pending. Контракт: docs/ACQUISITOR_MANAGER.md.
+**Build 85.20-bolt-truth** — CasterWatch больше не объявляет Holy Focused
+Bolt по умолчанию: заряд/выстрел логируется как `Focused Bolt
+[element=unverified]`. Начальный элемент NONE, после истечения подсказки
+элемент снова NONE; каст Affinity и ручная подсказка не считаются доказательством
+зачарования посоха. Панель показывает только подсказку, не «HFB active».
+**Подтверждение HFB пока отключено**: в проекте нет проверенного датчика
+действующего Holy на оружии именно стрелявшей пешки. Счётчик выстрелов —
+всех Focused Bolt, не HFB. GOAP и доктрины не менялись. MSVC/игра pending.

@@ -45,6 +45,17 @@ static bool  g_enabled = true;
 // же промах дал C2065 на статике, теперь C3861 на функции.
 void HiredInclSelfTestTick();
 
+// Базовые значения склонностей главной пешки — ползунки игрока, без
+// ситуативных импульсов и без лерпа. Роль пешки считается по ним: иначе
+// команда «Вперёд!» (+300 Scather на 6 с) на шесть секунд переделывала бы
+// гвардиана в штурмовика. См. docs/PAWN_ROLE_STACK.md §4.
+bool PawnAIBaseInclinations(float out[I_COUNT])
+{
+    if (!out) return false;
+    g_orch.presets.GetBaseTarget(out);
+    return true;
+}
+
 void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
@@ -78,11 +89,13 @@ void UpdatePawnAI(){
 
     if(!g_enabled || !pBase || !*pBase) {
         PawnAI::WandRange::Restore("pawn AI off");
+        PawnAI::GuardianStackLogReset();
         PawnAI::Nexus::Shutdown();
         return;
     }
     if(!IsInActiveGameplay()) {
         PawnAI::WandRange::Restore("not in gameplay");
+        PawnAI::GuardianStackLogReset();
         PawnAI::Nexus::Shutdown();
         return;
     }
@@ -383,6 +396,24 @@ void RenderPawnAIUI(){
     ImGui::PushID("PawnAI");
 
     if(ImGui::Checkbox("Enable Pawn AI Master", &g_enabled)) config.setBool("pawnAI", "enabled", g_enabled);
+    ImGui::Separator();
+
+    // [UI-BLOCK-ROLES-BEGIN]  <- синтаксическая проверка блока панели
+    // Постоянный UI показывает только роли, диагностика остаётся в логе.
+    ImGui::TextDisabled("Party roles");
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
+        PawnRoleCard rc;
+        if (!GuardianPawnCard(slot, &rc, nullptr)) continue;
+        if (!rc.valid) {
+            ImGui::TextDisabled("  %s: -", Runtime::PartyCombatSlotName(slot));
+            continue;
+        }
+        ImGui::Text("  %s: %s / %s r%d%s",
+                    Runtime::PartyCombatSlotName(slot), VocationName(rc.vocation),
+                    GuardianPersonaName(rc.persona), rc.personaRank,
+                    rc.eligible ? " (active)" : "");
+    }
+    // [UI-BLOCK-ROLES-END]
     ImGui::Separator();
 
     {
@@ -1042,7 +1073,7 @@ void RenderPawnAIUI(){
             ImGui::Text("Caster stats: Bolts %u/%u (chg/shot) | Spells %u/%u (chg/cast)",
                         ws.boltsCharged, ws.boltsFired, ws.spellsChanted, ws.spellsCompleted);
             if (ws.buffRemainingSec > 0) {
-                ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "Buff: Holy/HFB active (%us)", ws.buffRemainingSec);
+                ImGui::TextColored(ImVec4(1.0f, 0.9f, 0.3f, 1.0f), "Element hint (weapon unverified): %us", ws.buffRemainingSec);
             }
             ImGui::TextDisabled("Caster event: %s", ws.lastCasterEvent);
         }
@@ -1151,6 +1182,13 @@ void Hooks::PawnAI(){
     PawnAI::g_guardianPreemptRadius = config.getFloat("pawnAI", "guardianPreemptRadius", 10.0f);
     PawnAI::g_guardianDaggerBiasMelee = config.getInt("pawnAI", "guardianDaggerBiasMelee", 2);
     PawnAI::g_guardianDaggerBiasPreempt = config.getInt("pawnAI", "guardianDaggerBiasPreempt", 0);
+    // 85.12: роль пешки считается по её собственному стеку склонностей,
+    // а не по порядку слотов. Порог по РАНГУ — основной: именно ранг решает,
+    // какие правила cmc.prt стреляют (docs/PAWN_ROLE_STACK.md).
+    PawnAI::g_guardianMinRank     = config.getInt("pawnAI", "guardianMinRank", 1);
+    PawnAI::g_guardianMinIncl     = config.getFloat("pawnAI", "guardianMinIncl", 350.0f);
+    PawnAI::g_guardianTelemetryMs = (DWORD)config.getInt("pawnAI", "guardianTelemetryMs", 1000);
+    PawnAI::g_guardianProbeLog = config.getBool("pawnAI", "guardianProbeLog", true);
     g_orch.acquisitor.suppressFloor = config.getFloat("pawnAI", "acquisitorCombatFloor", 100.0f);
     g_orch.acquisitor.boostAmount   = config.getFloat("pawnAI", "acquisitorLootBoost", 650.0f);
     g_orch.acquisitor.boostWindowMs = (DWORD)config.getInt("pawnAI", "acquisitorBoostWindowMs", 20000);

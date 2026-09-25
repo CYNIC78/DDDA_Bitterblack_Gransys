@@ -38,11 +38,25 @@ int main() {
     assert(a.Select(c, 3800) == 2);
     assert(a.primary.body == 21);
     a.Reset();
-    c[2].score = 0; c[2].emergency = false;
-    assert(a.Select(c, 3900) == -1); // Guardian excluded normally
+    c[2].score = 0; c[2].emergency = false; c[2].valid = false;
+    assert(a.Select(c, 3900) == -1); // Guardian/Nexus excluded outright
     c[2].emergency = true;
-    assert(a.Select(c, 4000) == 2); // but eligible for emergency
+    assert(a.Select(c, 4000) == -1); // not even an emergency partner
     c[2].emergency = false;
     a.Select(c, 0xfffffff0u);
     assert(a.Select(c, 0x00000ba8u) == -1); // DWORD wrap, 3000 ms
+
+    // Two Nexus actors, one independent assignment each, same third pawn.
+    Candidate forFirst[4] = {}, forSecond[4] = {};
+    forFirst[3] = Candidate{30, 300, 30, true, false};
+    forSecond[3] = Candidate{30, 300, 30, true, false};
+    Assignment first, second;
+    assert(first.Select(forFirst, 100) == 3);
+    assert(second.Select(forSecond, 100) == 3);
+    first.Reset();
+    assert(second.primary.slot == 3); // reset one actor does not reset another
+    // All three are Nexus: every candidate is invalid, nobody guards a Nexus.
+    Candidate allNexus[4] = {};
+    Assignment third;
+    assert(third.Select(allNexus, 100) == -1);
 }

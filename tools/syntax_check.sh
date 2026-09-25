@@ -32,6 +32,16 @@ $GPP -DDDDA_PACKOBSERVE_PORTABLE "$T/packobserve_t.cpp"
 echo "== 1j/10 MonsterTempo.cpp =="
 $GPP -DDDDA_TEMPO_PORTABLE_FIXTURE "$ROOT/src/runtime/MonsterTempo.cpp"
 
+echo "== 1j2/10 WorldScan.cpp (планировщик пешек) =="
+# ЗАЧЕМ. 85.12 заменил кэш планировщика с одного тела (два скаляра
+# g_plannerBody/g_plannerPtr) на массив из трёх записей. Старые имена
+# остались лежать в блоке разгрузки мира — и поехали к тестеру как C2065,
+# то есть ценой целой сборки. Проверка ловит ровно это за секунду:
+# shim уже есть (tempo_stdafx.h через -DDDDA_TEMPO_PORTABLE_FIXTURE),
+# SEH подменяем так же, как для enemytuner_t.
+$GPP -DDDDA_TEMPO_PORTABLE_FIXTURE "-D__try=try" "-D__except(x)=catch(...)" \
+     "$ROOT/src/runtime/WorldScan.cpp"
+
 echo "== 1c/10 PawnHaste.cpp =="
 $GPP "$T/pawnhaste_t.cpp"
 
@@ -89,6 +99,21 @@ end = s.rindex('\n', start, s.index('[UI-BLOCK-PAWN-END]', start))
 open('tools/tcomp/ui_pawn_block.inc', 'w', encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_pawn_t.cpp"
+
+echo "== 2b2/10 UI block: roles (PawnAI.cpp, 85.12) =="
+# ЗАЧЕМ ЕЩЁ ОДИН БЛОК. Тот же принцип, что у блока склонностей: вызовы
+# ImGui из нового куска панели должны ловиться g++ за секунду, а не
+# сборкой у тестера. Своя пара меток, потому что блок ролей стоит ВЫШЕ по
+# той же функции: расширить старую метку нельзя — в проверку попадут
+# Possession, CombatBus и SEH, двойников которым в ui_pawn_t.cpp нет.
+python3 - <<'PY'
+p = 'src/PawnAI.cpp'
+s = open(p, encoding='utf-8').read()
+start = s.index('\n', s.index('[UI-BLOCK-ROLES-BEGIN]')) + 1
+end = s.rindex('\n', start, s.index('[UI-BLOCK-ROLES-END]', start))
+open('tools/tcomp/ui_roles_block.inc','w',encoding='utf-8').write(s[start:end])
+PY
+$GPP "$T/ui_roles_t.cpp"
 
 echo "== 2c/10 EnemyAI.cpp =="
 $GPP "$T/enemyai_t.cpp"

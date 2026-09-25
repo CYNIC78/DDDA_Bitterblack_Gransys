@@ -214,26 +214,52 @@ static const uint32_t kAICtrlBytes    = 704;      // cAICtrl
 static const uint32_t kGoalSlot0      = 0x08;     // массив загруженных целей
 static const int32_t  kMaxGoalCode    = 91;       // коды 0..90
 
-static uintptr_t g_plannerBody    = 0;
-static uintptr_t g_plannerPtr     = 0;
-static DWORD     g_plannerTryMs   = 0;
+// Кэш на три тела (своя + две наёмных). Раньше он был на одно: пока мы
+// смотрели только за главной пешкой, этого хватало. Доктрины теперь работают
+// с каждой пешкой, и телеметрия обязана уметь показать, КАКУЮ цель выбрал
+// планировщик именно файтера, а не главной.
+struct PlannerCache {
+    uintptr_t body;
+    uintptr_t ptr;
+    DWORD     tryMs;
+};
+static PlannerCache g_plannerCache[3] = {};
 
-static uintptr_t ResolvePawnPlanner()
+// Гасим все три записи сразу. Вызов — при выходе из мира: тела пешек
+// освобождены, держать указатели нельзя, иначе чтение пойдёт по чужой памяти.
+static void ResetPawnPlannerCache()
 {
-    if (!InWorld()) { g_plannerBody = 0; g_plannerPtr = 0; return 0; }
+    for (int i = 0; i < 3; ++i) memset(&g_plannerCache[i], 0, sizeof(g_plannerCache[i]));
+}
 
-    const uintptr_t body = MainPawnBody();
-    if (!body) { g_plannerBody = 0; g_plannerPtr = 0; return 0; }
-    if (body == g_plannerBody && g_plannerPtr) return g_plannerPtr;
+static uintptr_t ResolvePawnPlannerFor(uintptr_t body)
+{
+    if (!InWorld() || !body) {
+        // Вышли из мира (титры, загрузка, смена зоны) — все три записи больше
+        // недействительны.
+        ResetPawnPlannerCache();
+        return 0;
+    }
 
+    const DWORD now = MsNow();
+
+    PlannerCache* c = 0;
+    for (int i = 0; i < 3; ++i)
+        if (g_plannerCache[i].body == body) { c = &g_plannerCache[i]; break; }
+    if (!c) {
+        // Вытесняем запись, которую не трогали дольше всех.
+        c = &g_plannerCache[0];
+        for (int i = 1; i < 3; ++i)
+            if (g_plannerCache[i].tryMs < c->tryMs) c = &g_plannerCache[i];
+        memset(c, 0, sizeof(*c));
+        c->body = body;
+    }
+
+    if (c->ptr) return c->ptr;
     // Не искать чаще раза в две секунды: перебор по именам классов —
     // дорогая работа, а тик пешек частый.
-    const DWORD now = MsNow();
-    if (body == g_plannerBody && g_plannerTryMs && now - g_plannerTryMs < 2000)
-        return 0;
-    g_plannerBody  = body;
-    g_plannerTryMs = now;
-    g_plannerPtr   = 0;
+    if (c->tryMs && now - c->tryMs < 2000) return 0;
+    c->tryMs = now;
 
     // Шаг 1: cAICtrl. Сначала по известному смещению, но С ПРОВЕРКОЙ ИМЕНИ.
     uintptr_t ctrl = 0;
@@ -248,14 +274,20 @@ static uintptr_t ResolvePawnPlanner()
     if (!ctrl) return 0;
 
     // Шаг 2: планировщик внутри cAICtrl — тоже по имени.
-    g_plannerPtr = FindChildByClass(ctrl, kAICtrlBytes, "cAIGoalPlanning", 0);
-    return g_plannerPtr;
+    c->ptr = FindChildByClass(ctrl, kAICtrlBytes, "cAIGoalPlanning", 0);
+    return c->ptr;
 }
 
-bool PawnPriorityCode(int32_t* codeOut)
+static uintptr_t ResolvePawnPlanner()
+{
+    return ResolvePawnPlannerFor(MainPawnBody());
+}
+
+bool PawnPriorityCodeFor(uintptr_t body, int32_t* codeOut)
 {
     if (codeOut) *codeOut = -1;
-    const uintptr_t planner = ResolvePawnPlanner();
+    if (!body) return false;
+    const uintptr_t planner = ResolvePawnPlannerFor(body);
     if (!planner) return false;
     int32_t code = -1;
     if (!Rd((void*)(planner + 0x17C), &code, 4)) return false;
@@ -263,12 +295,18 @@ bool PawnPriorityCode(int32_t* codeOut)
     return true;
 }
 
-bool PawnGoalName(int32_t code, char* out, int cap)
+bool PawnPriorityCode(int32_t* codeOut)
+{
+    return PawnPriorityCodeFor(MainPawnBody(), codeOut);
+}
+
+bool PawnGoalNameFor(uintptr_t body, int32_t code, char* out, int cap)
 {
     if (!out || cap < 2) return false;
     out[0] = 0;
     if (code < 0 || code >= kMaxGoalCode) return false;
-    const uintptr_t planner = ResolvePawnPlanner();
+    if (!body) return false;
+    const uintptr_t planner = ResolvePawnPlannerFor(body);
     if (!planner) return false;
 
     uintptr_t res = 0;
@@ -294,6 +332,11 @@ bool PawnGoalName(int32_t code, char* out, int cap)
     for (const char* p = path; *p; ++p) if (*p == '\\' || *p == '/') tail = p + 1;
     lstrcpynA(out, tail, cap);
     return out[0] != 0;
+}
+
+bool PawnGoalName(int32_t code, char* out, int cap)
+{
+    return PawnGoalNameFor(MainPawnBody(), code, out, cap);
 }
 
 // Моторные интерфейсы внутри живого блока плана.
@@ -985,8 +1028,9 @@ void WorldScan_Tick()
             // Tempo-хуки множат координаты по адресам из мёртвой таблицы.
             g_nAct = 0;
             memset(g_act, 0, sizeof(g_act));
-            g_plannerBody = 0;
-            g_plannerPtr = 0;
+            // 85.12: кэш планировщика — на три тела (своя + две наёмных),
+            // гасим все. Раньше это были два скаляра на одну главную пешку.
+            ResetPawnPlannerCache();
             Tempo::OnWorldUnload();
             {
                 WorldReport empty{};

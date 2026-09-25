@@ -180,6 +180,66 @@ void BuildGuardianSitRep(GuardianSitRep& s);
 extern bool g_guardianFixEnabled;
 extern float g_guardianMeleeRadius;    // м (по умолч. 6)
 extern float g_guardianPreemptRadius;  // м (по умолч. 10)
+
+// --- роль пешки: пороги и телеметрия (85.12) -----------------------------
+//
+// Доктрина больше не ищет «одного гвардиана на партию». Каждая пешка
+// проверяется по СВОЕМУ стеку склонностей (docs/PAWN_ROLE_STACK.md):
+//   guardianMinRank  — минимальный ранг Guardian (2 первичная, 1 вторичная,
+//                      0 третичная, -1 вне стека). По умолчанию 1:
+//                      третичная склонность на поведение почти не влияет и
+//                      доктрину включать не должна.
+//   guardianMinIncl  — минимальный вес той же склонности (0..1000).
+//   guardianTelemetryMs — как часто печатать строку состояния по каждому
+//                      гвардиану (0 = не печатать).
+extern int   g_guardianMinRank;
+extern float g_guardianMinIncl;
+extern DWORD g_guardianTelemetryMs;
+extern bool  g_guardianProbeLog; // event-only WAKE / INTERCEPT START+RESULT
+
+// --- карточка пешки для панели (85.12) -------------------------------------
+//
+// То же самое, что уходит в лог, но в виде структуры: панель DDDAFix должна
+// показать роль и живые числа, не читая файл. Типы намеренно простые —
+// заголовок не тянет за собой PawnPersona.h, потому что его включают и
+// DevTools, и пробы.
+//
+// ПОЧЕМУ ЭТО НЕ «ПРИБОР». Никакого отдельного окна, никакой новой подсистемы
+// наблюдения: три строки внутри уже существующей панели Pawn AI, ровно те же
+// числа, что печатает телеметрия, только на экране.
+struct PawnRoleCard {
+    int       slot;          // Runtime::PARTY_MAIN..PARTY_HIRED2
+    int       vocation;
+    uintptr_t body;
+    float     guardianIncl;
+    float     nexusIncl;
+    int       persona;       // Persona::Kind (0 none, 1 guardian, 2 nexus)
+    int       personaRank;   // 2 первичная, 1 вторичная, 0 третичная, -1 вне стека
+    float     personaValue;
+    bool      eligible;      // доктрина к пешке применяется
+    bool      valid;         // слот вообще прочитан
+};
+
+struct GuardianLiveCard {
+    bool      valid;
+    float     pawnAnchorDist;   // пешка -> Аризен, м
+    float     pawnEnemyDist;    // пешка -> ближайший враг, м
+    float     anchorEnemyDist;  // Аризен -> тот же враг, м
+    float     bearing;          // -1..1: >0 пешка со стороны врага, <0 за спиной
+    int       zoneEngaged;
+    int       threatsInZone;
+    uintptr_t target;
+    char      act[48];         // живое действие
+    int32_t   code;            // код цели планировщика (-1 = неизвестен)
+    char      goal[32];        // имя этой цели
+};
+
+// Снимок по слоту. Заполняется в GuardianDoctrineTick, панель только читает.
+// Любой из выходов может быть нулевым. Возвращает false, если слот вне 0..2.
+bool GuardianPawnCard(int slot, PawnRoleCard* roleOut, GuardianLiveCard* liveOut);
+// Имя персоны для строки панели; всегда ASCII.
+const char* GuardianPersonaName(int persona);
+
 extern int32_t g_guardianDaggerBiasMelee;     // desired при угрозе в melee-радиусе (по умолч. +2)
 extern int32_t g_guardianDaggerBiasPreempt;
 
@@ -230,5 +290,6 @@ bool  GuardianDoctrineOwnsRule();       // рычаг занят доктрин�
 void  GuardianLeverRestore();           // откат (выгрузка, выключение)
 bool  GuardianLeverIsActive();   // desired при угрозе в preempt-радиусе (по умолч. 0)
 void GuardianDoctrineTick();
+void GuardianStackLogReset(); // reset discovery logging on leaving gameplay
 
 } // namespace PawnAI

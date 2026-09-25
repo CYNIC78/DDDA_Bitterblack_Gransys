@@ -20,8 +20,10 @@ static const char* s_iniKeys[I_COUNT] = {
 };
 
 void PresetManager::Init() {
-    // По умолчанию — Balanced в ползунки. LoadConfig() поверх прочитает ini.
-    LoadPreset(5);
+    // НИКАКИХ записей при старте. LoadPreset(5) вызывает SaveConfig() и
+    // раньше перезаписывал пользовательский [customAnchor] на Balanced ДО
+    // чтения INI. Значения anchor[] уже инициализированы Balanced в .h;
+    // LoadConfig читает сохранённый выбор, не изменяя файл.
     LoadConfig();
 }
 

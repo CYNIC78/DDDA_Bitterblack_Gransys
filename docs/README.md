@@ -22,6 +22,7 @@
 |---|---|
 | [`ACQUISITOR_MANAGER.md`](ACQUISITOR_MANAGER.md) | Acquisitor 85.11: +650 / 20 с, миграция INI, scope |
 | [`GUARDIAN_HARDENING.md`](GUARDIAN_HARDENING.md) | Guardian 85.09/85.10: исправления и полевой чеклист |
+| [`PAWN_ROLE_STACK.md`](PAWN_ROLE_STACK.md) | роль пешки из её стека склонностей: ранг первее веса, несколько гвардианов (до кода) |
 | [`NEXUS_DOCTRINE.md`](NEXUS_DOCTRINE.md) | Nexus 85.08: политика исходников, ограничения и приёмка |
 | [`TEMPO_SYSTEM.md`](TEMPO_SYSTEM.md) | примитив темпа |
 | [`SPECIES_ROLLOUT.md`](SPECIES_ROLLOUT.md) | метод допуска вида |

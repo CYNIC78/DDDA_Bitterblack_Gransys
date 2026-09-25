@@ -1,6 +1,8 @@
 #include "stdafx.h"
 #include "NexusDoctrine.h"
 #include "NexusPolicy.h"
+#include "GuardianDoctrine.h" // единая карточка базового стека/ранга каждой пешки
+#include "PawnPersona.h"
 #include "PartyRescueProtocol.h"
 #include "PawnAI_Common.h"
 #include "runtime/Runtime.h"
@@ -19,17 +21,43 @@ using Runtime::Mem::RdPtr;
 using Runtime::Mem::WrSafe;
 using Runtime::Mem::NameOfLiveObjectSafe;
 
-static bool      s_enabled = true;
-static bool      s_active = false;
-static int       s_nexusSlot = -1;
-static int       s_partnerSlot = -1;
-static const char* s_partnerRole = "none";
-static float     s_pawnPartnerDist = 1e9f;
-static int       s_threatsInZone = 0;
-static uintptr_t s_targetThreatBody = 0;
-static char      s_targetThreatKind[32] = {};
-static bool      s_criticalThreat = false;
-static uintptr_t s_lastLoggedTarget = 0;
+static bool s_enabled = true;
+static bool s_probeLog = true; // [pawnAI] nexusProbeLog (events only)
+
+// У каждого исполнителя своя привязка, latch и последняя цель. Роль
+// выбирается его собственным стеком; две Nexus могут охранять одну пешку.
+struct NexusState {
+    bool active;
+    int partnerSlot;
+    const char* partnerRole;
+    float pawnPartnerDist;
+    int threatsInZone;
+    uintptr_t targetThreatBody;
+    char targetThreatKind[32];
+    bool criticalThreat;
+    uintptr_t lastLoggedTarget;
+    uintptr_t probeBody;       // one fixed enemy for the whole 2.5s window
+    DWORD probeStartMs, probeNextMs;
+    float probePawnEnemyM, probePartnerEnemyM;
+    NexusPolicy::Assignment assignment;
+    uintptr_t actorBody, actorRecord;
+    DWORD lastEncounterMs;
+    bool encounterSeen;
+    bool emergencyLatch[4];
+    uintptr_t candidateBody[4], candidateRecord[4];
+    NexusState() : active(false), partnerSlot(-1), partnerRole("none"),
+        pawnPartnerDist(1e9f), threatsInZone(0), targetThreatBody(0),
+        criticalThreat(false), lastLoggedTarget(0), probeBody(0),
+        probeStartMs(0), probeNextMs(0), probePawnEnemyM(0),
+        probePartnerEnemyM(0), actorBody(0),
+        actorRecord(0), lastEncounterMs(0), encounterSeen(false) {
+        memset(targetThreatKind, 0, sizeof(targetThreatKind));
+        memset(emergencyLatch, 0, sizeof(emergencyLatch));
+        memset(candidateBody, 0, sizeof(candidateBody));
+        memset(candidateRecord, 0, sizeof(candidateRecord));
+    }
+};
+static NexusState s_state[4]; // индексы PARTY_MAIN..PARTY_HIRED2
 
 static float Dist3D(float ax, float ay, float az, float bx, float by, float bz)
 {
@@ -38,22 +66,15 @@ static float Dist3D(float ax, float ay, float az, float bx, float by, float bz)
 }
 
 // Actor/anchor identity is compared only; cached pointers are never dereferenced.
-static NexusPolicy::Assignment s_assignment;
-static uintptr_t s_actorBody = 0, s_actorRecord = 0;
-static DWORD s_lastEncounterMs = 0;
-static bool s_encounterSeen = false;
-static bool s_emergencyLatch[4] = {};
-static uintptr_t s_candidateBody[4] = {}, s_candidateRecord[4] = {};
-
-static void ResetAssignment()
+static void ResetAssignment(NexusState& st)
 {
-    s_assignment.Reset();
-    s_actorBody = s_actorRecord = 0;
-    s_lastEncounterMs = 0;
-    s_encounterSeen = false;
-    memset(s_emergencyLatch, 0, sizeof(s_emergencyLatch));
-    memset(s_candidateBody, 0, sizeof(s_candidateBody));
-    memset(s_candidateRecord, 0, sizeof(s_candidateRecord));
+    st.assignment.Reset();
+    st.actorBody = st.actorRecord = 0;
+    st.lastEncounterMs = 0;
+    st.encounterSeen = false;
+    memset(st.emergencyLatch, 0, sizeof(st.emergencyLatch));
+    memset(st.candidateBody, 0, sizeof(st.candidateBody));
+    memset(st.candidateRecord, 0, sizeof(st.candidateRecord));
 }
 
 static bool MeleeExecutor(const Runtime::PartyCombatMember& m)
@@ -63,35 +84,29 @@ static bool MeleeExecutor(const Runtime::PartyCombatMember& m)
         (m.vocation == VOC_FIGHTER || m.vocation == VOC_WARRIOR || m.vocation == VOC_STRIDER);
 }
 
-static int SelectAnchorPartner(int mySlot, const Runtime::PartyCombatSnapshot& party, const char** outRole)
+static int SelectAnchorPartner(int mySlot, NexusState& st, const Runtime::PartyCombatSnapshot& party,
+                               const bool eligibleNexus[4], const bool eligibleGuardian[4],
+                               const char** outRole)
 {
     const Runtime::PartyCombatMember& actor = party.member[mySlot];
-    if (s_actorBody != actor.body || s_actorRecord != actor.record) {
-        ResetAssignment();
-        s_actorBody = actor.body; s_actorRecord = actor.record;
+    if (st.actorBody != actor.body || st.actorRecord != actor.record) {
+        ResetAssignment(st);
+        st.actorBody = actor.body; st.actorRecord = actor.record;
     }
     NexusPolicy::Candidate c[4] = {};
     const WorldReport world = CombatBus::Instance().LastWorld();
     bool encounter = false;
-    int guardianSlot = -1;
-    for (int slot = 1; slot <= 3; ++slot) {
-        const Runtime::PartyCombatMember& m = party.member[slot];
-        if (!m.recordValid || !m.bodyValid) continue;
-        float incl[I_COUNT]; ReadAllIncl(incl, slot - 1);
-        if (incl[I_GUARDIAN] >= 350.f && incl[I_GUARDIAN] >= incl[I_NEXUS]) {
-            guardianSlot = slot; break;
-        }
-    }
     for (int slot = 1; slot <= 3; ++slot) {
         const Runtime::PartyCombatMember& m = party.member[slot];
         if (slot == mySlot || !m.recordValid || !m.bodyValid || !m.positionValid) {
-            s_emergencyLatch[slot] = false; continue;
+            st.emergencyLatch[slot] = false; continue;
         }
-        if (s_candidateBody[slot] != m.body || s_candidateRecord[slot] != m.record) {
-            s_emergencyLatch[slot] = false;
-            s_candidateBody[slot] = m.body; s_candidateRecord[slot] = m.record;
+        if (st.candidateBody[slot] != m.body || st.candidateRecord[slot] != m.record) {
+            st.emergencyLatch[slot] = false;
+            st.candidateBody[slot] = m.body; st.candidateRecord[slot] = m.record;
         }
-        c[slot].valid = true; c[slot].body = m.body; c[slot].record = m.record;
+        c[slot].valid = !(eligibleGuardian[slot] || eligibleNexus[slot]);
+        c[slot].body = m.body; c[slot].record = m.record;
         bool nearbyThreat = false;
         for (int i = 0; i < world.count; ++i) {
             const WorldPresence& u = world.units[i];
@@ -103,75 +118,75 @@ static int SelectAnchorPartner(int mySlot, const Runtime::PartyCombatSnapshot& p
         }
         // Low HP alone is not an emergency. Three seconds of clear state
         // release the temporary anchor in the pure policy.
-        if (!m.hpValid || m.currentHp <= 0 || !nearbyThreat) s_emergencyLatch[slot] = false;
+        if ((eligibleGuardian[slot] || eligibleNexus[slot]) || !m.hpValid || m.currentHp <= 0 || !nearbyThreat) st.emergencyLatch[slot] = false;
         else {
             float ratio = m.currentHp / m.maxHp;
-            if (ratio < .30f) s_emergencyLatch[slot] = true;
-            else if (ratio >= .45f) s_emergencyLatch[slot] = false;
+            if (ratio < .30f) st.emergencyLatch[slot] = true;
+            else if (ratio >= .45f) st.emergencyLatch[slot] = false;
         }
-        c[slot].emergency = s_emergencyLatch[slot];
-        if (slot != guardianSlot && m.hpValid && m.currentHp > 0 && !m.downedHint) {
+        c[slot].emergency = st.emergencyLatch[slot];
+        if (!(eligibleGuardian[slot] || eligibleNexus[slot]) && m.hpValid && m.currentHp > 0 && !m.downedHint) {
             c[slot].score = m.vocation == VOC_MAGE ? 10 :
                 (m.vocation == VOC_SORCERER || m.vocation == VOC_FIGHTER ||
                  m.vocation == VOC_WARRIOR) ? 30 : 20;
         }
     }
     DWORD now = MsNow();
-    if (encounter) { s_lastEncounterMs = now; s_encounterSeen = true; }
-    else if (s_encounterSeen && DWORD(now - s_lastEncounterMs) >= 8000) {
-        s_assignment.Reset(); s_encounterSeen = false;
+    if (encounter) { st.lastEncounterMs = now; st.encounterSeen = true; }
+    else if (st.encounterSeen && DWORD(now - st.lastEncounterMs) >= 8000) {
+        st.assignment.Reset(); st.encounterSeen = false;
     }
-    if (!s_encounterSeen) { *outRole = "waiting for encounter"; return -1; }
-    int chosen = s_assignment.Select(c, now);
-    *outRole = s_assignment.temporary.slot >= 1 ? "Emergency Cover" : "Assigned Partner";
+    if (!st.encounterSeen) { *outRole = "waiting for encounter"; return -1; }
+    int chosen = st.assignment.Select(c, now);
+    *outRole = chosen < 0 ? "no eligible partner" :
+               st.assignment.temporary.slot >= 1 ? "Emergency Cover" : "Assigned Partner";
     return chosen;
-}
-
-void Init()
-{
-    ResetAssignment();
-    s_active = false;
-    s_nexusSlot = -1;
-    s_partnerSlot = -1;
-    s_partnerRole = "none";
-    s_pawnPartnerDist = 1e9f;
-    s_threatsInZone = 0;
-    s_targetThreatBody = 0;
-    s_targetThreatKind[0] = 0;
-    s_criticalThreat = false;
-    s_lastLoggedTarget = 0;
-    s_enabled = config.getBool("pawnAI", "nexusEnabled", true);
-
-    logFile << "NexusDoctrine: initialized (ally partner bodyguard & assault wingman active)" << std::endl;
 }
 
 void Shutdown()
 {
-    ResetAssignment();
-    s_pawnPartnerDist = 1e9f;
-    s_active = false;
-    s_nexusSlot = s_partnerSlot = -1;
-    s_partnerRole = "none";
-    s_targetThreatBody = s_lastLoggedTarget = 0;
-    s_targetThreatKind[0] = 0;
-    s_threatsInZone = 0;
-    s_criticalThreat = false;
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot)
+        s_state[slot] = NexusState();
+}
+
+void Init()
+{
+    Shutdown();
+    s_enabled = config.getBool("pawnAI", "nexusEnabled", true);
+    s_probeLog = config.getBool("pawnAI", "nexusProbeLog", true);
+    logFile << "NexusDoctrine: initialized (per-pawn partner assignments)" << std::endl;
+}
+
+Status GetStatusFor(int slot)
+{
+    Status out = {};
+    out.enabled = s_enabled;
+    out.nexusSlot = slot;
+    out.partnerSlot = -1;
+    out.partnerRole = "none";
+    out.pawnPartnerDist = 1e9f;
+    if (slot < Runtime::PARTY_MAIN || slot > Runtime::PARTY_HIRED2) return out;
+    const NexusState& st = s_state[slot];
+    out.active = st.active;
+    out.partnerRole = st.partnerRole;
+    out.partnerSlot = st.partnerSlot;
+    out.pawnPartnerDist = st.pawnPartnerDist;
+    out.threatsInZone = st.threatsInZone;
+    out.targetThreatBody = st.targetThreatBody;
+    lstrcpynA(out.targetThreatKind, st.targetThreatKind, sizeof(out.targetThreatKind));
+    out.criticalThreat = st.criticalThreat;
+    return out;
 }
 
 Status GetStatus()
 {
-    Status st;
-    st.enabled = s_enabled;
-    st.active = s_active;
-    st.partnerRole = s_partnerRole;
-    st.nexusSlot = s_nexusSlot;
-    st.partnerSlot = s_partnerSlot;
-    st.pawnPartnerDist = s_pawnPartnerDist;
-    st.threatsInZone = s_threatsInZone;
-    st.targetThreatBody = s_targetThreatBody;
-    lstrcpynA(st.targetThreatKind, s_targetThreatKind, sizeof(st.targetThreatKind));
-    st.criticalThreat = s_criticalThreat;
-    return st;
+    // Совместимость со старой панелью: первый активный, затем первый
+    // назначенный. Полный список доступен через GetStatusFor(slot).
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot)
+        if (s_state[slot].active) return GetStatusFor(slot);
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot)
+        if (s_state[slot].partnerSlot >= Runtime::PARTY_MAIN) return GetStatusFor(slot);
+    return GetStatusFor(-1);
 }
 
 void SetEnabled(bool on)
@@ -180,102 +195,97 @@ void SetEnabled(bool on)
     if (!on) Shutdown();
 }
 
-void Tick()
+// One start + one result per window per Nexus, never a per-tick log.
+// WorldReport is the only source of enemy coordinates: stale pointers are
+// never dereferenced. Disappearance is printed as "gone", not distance 0.
+static void NexusProbeResult(int slot, NexusState& st,
+                             const Runtime::PartyCombatSnapshot& party)
 {
-    if (!s_enabled) return;
-    s_active = false;
-    s_threatsInZone = 0;
-    s_criticalThreat = false;
-    s_targetThreatBody = 0;
-    s_targetThreatKind[0] = 0;
-
-    Runtime::PartyCombatSnapshot party;
-    if (!Runtime::ReadPartyCombatSnapshot(&party)) {
-        Shutdown();
-        return;
+    if (!st.probeBody || DWORD(MsNow() - st.probeStartMs) < 2500) return;
+    const Runtime::PartyCombatMember& actor = party.member[slot];
+    const WorldReport w = CombatBus::Instance().LastWorld();
+    const WorldPresence* threat = 0;
+    for (int i = 0; i < w.count; ++i)
+        if (w.units[i].ptr == st.probeBody) { threat = &w.units[i]; break; }
+    char act[48] = {};
+    Runtime::ReadLiveAct(actor.body, act, sizeof(act));
+    int32_t code = -1;
+    Runtime::PawnPriorityCodeFor(actor.body, &code);
+    uintptr_t current = 0;
+    const bool targetOk = RdPtr((void*)(actor.body + 0x2EB8), &current);
+    float pawnEnemy = -1.0f, partnerEnemy = -1.0f;
+    if (threat && actor.positionValid)
+        pawnEnemy = Dist3D(actor.x, actor.y, actor.z,
+                           threat->x, threat->y, threat->z) / 100.0f;
+    if (threat && st.partnerSlot >= Runtime::PARTY_MAIN &&
+        st.partnerSlot <= Runtime::PARTY_HIRED2 &&
+        party.member[st.partnerSlot].positionValid) {
+        const Runtime::PartyCombatMember& partner = party.member[st.partnerSlot];
+        partnerEnemy = Dist3D(partner.x, partner.y, partner.z,
+                              threat->x, threat->y, threat->z) / 100.0f;
     }
-
-    // 1. Ищем пешку, у которой активна склонность Nexus
-    int foundNexusSlot = -1;
-    uintptr_t nexusBody = 0;
-    const char* nexusRoleName = "none";
-
-    // Проверяем Главную пешку
-    float mainIncl[I_COUNT];
-    ReadAllIncl(mainIncl, 0);
-    if (mainIncl[I_NEXUS] >= 350.0f && mainIncl[I_NEXUS] > mainIncl[I_GUARDIAN] &&
-        MeleeExecutor(party.member[Runtime::PARTY_MAIN])) {
-        foundNexusSlot = Runtime::PARTY_MAIN; // 1
-        nexusBody = party.member[Runtime::PARTY_MAIN].body;
-        nexusRoleName = "MainPawn";
+    if (s_probeLog) {
+        char line[320];
+        sprintf_s(line, "NexusDoctrine: [%s] PROBE RESULT enemy 0x%08X %s P-E %.1f->%.1fm A-E %.1f->%.1fm code %d act %s target %s0x%08X",
+                  Runtime::PartyCombatSlotName(slot), (unsigned)st.probeBody,
+                  threat ? "seen" : "gone", st.probePawnEnemyM, pawnEnemy,
+                  st.probePartnerEnemyM, partnerEnemy, code,
+                  act[0] ? act : "?", targetOk ? "" : "unreadable/",
+                  (unsigned)current);
+        logFile << line << std::endl;
     }
+    st.probeBody = 0;
+    st.probeNextMs = MsNow();
+}
 
-    // Если у Главной пешки Guardian > Nexus, проверяем наёмных пешек
-    if (foundNexusSlot < 0) {
-        for (int slot = Runtime::PARTY_HIRED1; slot <= Runtime::PARTY_HIRED2; ++slot) {
-            const Runtime::PartyCombatMember& M = party.member[slot];
-            if (!M.recordValid || !M.body) continue;
-            // У наемных пешек проверяем наличие склонности Нексус
-            float hIncl[I_COUNT];
-            ReadAllIncl(hIncl, slot - 1);
-            if (hIncl[I_NEXUS] >= 350.0f && hIncl[I_NEXUS] > hIncl[I_GUARDIAN] && MeleeExecutor(M)) {
-                foundNexusSlot = slot;
-                nexusBody = M.body;
-                nexusRoleName = Runtime::PartyCombatSlotName(slot);
-                break;
-            }
-        }
-    }
-
-    if (foundNexusSlot < 0 || !nexusBody) {
-        Shutdown();
-        s_nexusSlot = -1;
-        s_partnerSlot = -1;
-        s_partnerRole = "none";
-        return;
-    }
-
-    s_nexusSlot = foundNexusSlot;
-
-    // 2. Выбираем защищаемого партнера (Anchor Pawn)
+static void TickOne(int slot, NexusState& st, const Runtime::PartyCombatSnapshot& party,
+                    const bool eligibleNexus[4], const bool eligibleGuardian[4])
+{
+    st.active = false;
+    st.threatsInZone = 0;
+    st.criticalThreat = false;
+    st.targetThreatBody = 0;
+    st.targetThreatKind[0] = 0;
+    const Runtime::PartyCombatMember& actor = party.member[slot];
+    NexusProbeResult(slot, st, party);
+    const uintptr_t nexusBody = actor.body;
+    const char* nexusRoleName = Runtime::PartyCombatSlotName(slot);
     const char* selectedRole = "none";
-    int partnerSlot = SelectAnchorPartner(foundNexusSlot, party, &selectedRole);
-    if (partnerSlot < 1 || partnerSlot >= Runtime::PARTY_COMBAT_SLOTS) {
-        s_active = false;
-        s_targetThreatBody = s_lastLoggedTarget = 0;
-        s_targetThreatKind[0] = 0;
-        s_partnerSlot = -1;
-        s_partnerRole = "no allied pawn";
+    int partnerSlot = SelectAnchorPartner(slot, st, party, eligibleNexus,
+                                          eligibleGuardian, &selectedRole);
+    if (partnerSlot < Runtime::PARTY_MAIN || partnerSlot > Runtime::PARTY_HIRED2) {
+        if (st.partnerRole != selectedRole &&
+            !strcmp(selectedRole, "no eligible partner"))
+            logFile << "NexusDoctrine: [" << nexusRoleName
+                    << "] no eligible partner (Guardian/Nexus excluded)" << std::endl;
+        st.active = false;
+        st.targetThreatBody = st.lastLoggedTarget = 0;
+        st.targetThreatKind[0] = 0;
+        st.partnerSlot = -1;
+        st.partnerRole = selectedRole; // waiting for encounter / no eligible partner
         return;
     }
-
-    if (s_partnerSlot != partnerSlot || s_partnerRole != selectedRole) {
-        logFile << "NexusDoctrine: ASSIGN actor=" << foundNexusSlot
-                << " primary=" << s_assignment.primary.slot
-                << " temporary=" << s_assignment.temporary.slot
+    if (st.partnerSlot != partnerSlot || st.partnerRole != selectedRole) {
+        logFile << "NexusDoctrine: ASSIGN actor=" << slot
+                << " primary=" << st.assignment.primary.slot
+                << " temporary=" << st.assignment.temporary.slot
                 << " effective=" << partnerSlot << " role=" << selectedRole << std::endl;
     }
-    s_partnerSlot = partnerSlot;
-    s_partnerRole = selectedRole;
+    st.partnerSlot = partnerSlot;
+    st.partnerRole = selectedRole;
 
     const Runtime::PartyCombatMember& partner = party.member[partnerSlot];
     const uintptr_t partnerBody = partner.body;
     if (!partnerBody) return;
-
-    // Читаем координаты партнера и пешки с Нексусом
     float ax = 0, ay = 0, az = 0;
     float px = 0, py = 0, pz = 0;
     if (!Rd((const void*)(partnerBody + 0x40), &ax, 4) ||
         !Rd((const void*)(partnerBody + 0x44), &ay, 4) ||
-        !Rd((const void*)(partnerBody + 0x48), &az, 4))
-        return;
-
+        !Rd((const void*)(partnerBody + 0x48), &az, 4)) return;
     if (!Rd((const void*)(nexusBody + 0x40), &px, 4) ||
         !Rd((const void*)(nexusBody + 0x44), &py, 4) ||
-        !Rd((const void*)(nexusBody + 0x48), &pz, 4))
-        return;
-
-    s_pawnPartnerDist = Dist3D(px, py, pz, ax, ay, az) / 100.0f; // метры
+        !Rd((const void*)(nexusBody + 0x48), &pz, 4)) return;
+    st.pawnPartnerDist = Dist3D(px, py, pz, ax, ay, az) / 100.0f;
 
     // 3. Сканируем угрозы вокруг партнера (двухуровневый периметр: Melee 6м, Preempt 12м)
     const WorldReport w = CombatBus::Instance().LastWorld();
@@ -307,48 +317,99 @@ void Tick()
         }
     }
 
-    s_threatsInZone = inZone;
-    s_criticalThreat = criticalThreat;
+    st.threatsInZone = inZone;
+    st.criticalThreat = criticalThreat;
 
     // 4. Реализация перехвата и удержания строя
-    const bool withinLeash = (s_pawnPartnerDist <= 18.0f);
+    const bool withinLeash = (st.pawnPartnerDist <= 18.0f);
 
     if (inZone > 0 && bestThreatBody && withinLeash && !PawnAI::Rescue::IsActive()) {
-        s_active = true;
-        s_targetThreatBody = bestThreatBody;
-        lstrcpynA(s_targetThreatKind, bestThreatKind, sizeof(s_targetThreatKind));
+        st.active = true;
+        st.targetThreatBody = bestThreatBody;
+        lstrcpynA(st.targetThreatKind, bestThreatKind, sizeof(st.targetThreatKind));
 
         // Направляем боевую цель планировщика (uCmc+0x2EB8) и взгляд (+0x14E0) на угрозу
         uintptr_t readback = 0;
         if (!Runtime::Mem::RegionOk(nexusBody + 0x2EB8, sizeof(uintptr_t)) ||
-            !WrSafe((void*)(nexusBody + 0x2EB8), &s_targetThreatBody, sizeof(uintptr_t)) ||
+            !WrSafe((void*)(nexusBody + 0x2EB8), &st.targetThreatBody, sizeof(uintptr_t)) ||
             !Rd((void*)(nexusBody + 0x2EB8), &readback, sizeof(readback)) ||
-            readback != s_targetThreatBody) {
-            s_active = false;
+            readback != st.targetThreatBody) {
+            st.active = false;
             return;
+        }
+        // One probe per >=8s, even when the chosen enemy switches each tick.
+        // The first eligible signal fixes the enemy body for comparison.
+        const DWORD probeNow = MsNow();
+        if (s_probeLog && !st.probeBody &&
+            (!st.probeNextMs || DWORD(probeNow - st.probeNextMs) >= 8000)) {
+            for (int i = 0; i < w.count; ++i) if (w.units[i].ptr == bestThreatBody) {
+                const WorldPresence& t = w.units[i];
+                st.probeBody = bestThreatBody;
+                st.probeStartMs = probeNow;
+                st.probePawnEnemyM = Dist3D(px, py, pz, t.x, t.y, t.z) / 100.0f;
+                st.probePartnerEnemyM = Dist3D(ax, ay, az, t.x, t.y, t.z) / 100.0f;
+                char act[48] = {};
+                Runtime::ReadLiveAct(nexusBody, act, sizeof(act));
+                int32_t code = -1;
+                Runtime::PawnPriorityCodeFor(nexusBody, &code);
+                char line[280];
+                sprintf_s(line, "NexusDoctrine: [%s] PROBE START enemy 0x%08X partner %s P-E %.1fm A-E %.1fm code %d act %s",
+                          nexusRoleName, (unsigned)bestThreatBody,
+                          Runtime::PartyCombatSlotName(partnerSlot),
+                          st.probePawnEnemyM, st.probePartnerEnemyM,
+                          code, act[0] ? act : "?");
+                logFile << line << std::endl;
+                break;
+            }
         }
         // Leave gaze to the engine: avoid a second, non-atomic write.
 
         // Даем скоростной рывок для перехвата
         // No shared tempo override: Nexus cannot safely own/clear another module's entry.
 
-        if (s_lastLoggedTarget != s_targetThreatBody) {
-            s_lastLoggedTarget = s_targetThreatBody;
+        if (st.lastLoggedTarget != st.targetThreatBody) {
+            st.lastLoggedTarget = st.targetThreatBody;
             char l[256];
             sprintf_s(l, "NexusDoctrine: [%s] PROACTIVE TARGET -> %s 0x%08X (%s) dist=%.1fm (pawn-partner=%.1fm, partner: %s [%s])",
                       nexusRoleName, criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
-                      (unsigned)s_targetThreatBody, s_targetThreatKind, minThreatDist,
-                      s_pawnPartnerDist, Runtime::PartyCombatSlotName(partnerSlot), s_partnerRole);
+                      (unsigned)st.targetThreatBody, st.targetThreatKind, minThreatDist,
+                      st.pawnPartnerDist, Runtime::PartyCombatSlotName(partnerSlot), st.partnerRole);
             logFile << l << std::endl;
         }
     } else {
-        if (s_active) {
+        if (st.active) {
             // No shared tempo entry to clear.
-            s_active = false;
+            st.active = false;
         }
-        s_targetThreatBody = 0;
-        s_targetThreatKind[0] = 0;
-        s_lastLoggedTarget = 0;
+        st.targetThreatBody = 0;
+        st.targetThreatKind[0] = 0;
+        st.lastLoggedTarget = 0;
+    }
+}
+
+void Tick()
+{
+    if (!s_enabled) return;
+    Runtime::PartyCombatSnapshot party;
+    if (!Runtime::ReadPartyCombatSnapshot(&party)) { Shutdown(); return; }
+    bool eligibleNexus[4] = {}, eligibleGuardian[4] = {};
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
+        const Runtime::PartyCombatMember& m = party.member[slot];
+        PawnRoleCard role;
+        if (!GuardianPawnCard(slot, &role, 0) || !role.valid ||
+            role.body != m.body || !m.recordValid || !m.bodyValid) continue;
+        eligibleGuardian[slot] = role.eligible;
+        eligibleNexus[slot] =
+            role.persona == Persona::PERSONA_NEXUS &&
+            Persona::Eligible(role.personaRank, role.personaValue,
+                              g_guardianMinRank, g_guardianMinIncl);
+    }
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
+        if (eligibleNexus[slot] && MeleeExecutor(party.member[slot]))
+            TickOne(slot, s_state[slot], party,
+                                         eligibleNexus, eligibleGuardian);
+        else if (s_state[slot].actorBody || s_state[slot].partnerSlot >= 0)
+            s_state[slot] = NexusState();
     }
 }
 

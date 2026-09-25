@@ -56,8 +56,8 @@ struct PawnCasterTracker {
 };
 
 static PawnCasterTracker s_tracker[4] = {};
-static ElementType       s_partyElement = ELEM_HOLY; // Holy by default for HFB preview / user Holy Affinity
-static DWORD             s_partyElementExpiryMs = 0xFFFFFFFFu; // active unless overridden
+static ElementType       s_partyElement = ELEM_NONE; // inferred cast telemetry only; never weapon proof
+static DWORD             s_partyElementExpiryMs = 0;
 
 static uint32_t s_boltsCharged = 0;
 static uint32_t s_boltsFired = 0;
@@ -68,7 +68,7 @@ static char     s_lastCasterEvent[128] = "idle";
 static const char* ElementName(ElementType elem)
 {
     switch (elem) {
-    case ELEM_HOLY:      return "Holy / HFB";
+    case ELEM_HOLY:      return "Holy (cast hint, weapon unverified)";
     case ELEM_FIRE:      return "Fire";
     case ELEM_ICE:       return "Ice";
     case ELEM_LIGHTNING: return "Lightning";
@@ -526,7 +526,8 @@ static void TrackCasterActions()
 
     // Check party elemental buff expiry
     if (s_partyElement != ELEM_NONE && s_partyElementExpiryMs != 0xFFFFFFFFu && now >= s_partyElementExpiryMs) {
-        s_partyElement = ELEM_HOLY; // reset back to Holy baseline
+        s_partyElement = ELEM_NONE;
+        s_partyElementExpiryMs = 0;
     }
 
     const int nPawn = Runtime::PawnBodyCount();
@@ -593,10 +594,10 @@ static void TrackCasterActions()
                 trk.targetBody = combatTarget;
                 lstrcpynA(trk.targetKind, targetKind, sizeof(trk.targetKind));
                 trk.targetDistM = targetDist;
-                trk.appliedElement = s_partyElement;
+                trk.appliedElement = ELEM_NONE; // No validated per-weapon enchant sensor: fail closed.
                 ++s_boltsCharged;
 
-                const char* elemStr = ElementName(trk.appliedElement);
+                const char* elemStr = "element=unverified";
                 sprintf_s(s_lastCasterEvent, sizeof(s_lastCasterEvent),
                           "[%s] CHARGING Focused Bolt [%s] -> %s (%.1fm)",
                           pawnRole, elemStr, targetKind, targetDist);
@@ -613,7 +614,7 @@ static void TrackCasterActions()
                 trk.fsmState = CFSM_IDLE;
                 ++s_boltsFired;
 
-                const char* elemStr = ElementName(trk.appliedElement);
+                const char* elemStr = "element=unverified";
                 sprintf_s(s_lastCasterEvent, sizeof(s_lastCasterEvent),
                           "[%s] FIRED Focused Bolt [%s] -> %s (%.1fm, %ums)",
                           pawnRole, elemStr, trk.targetKind, targetDist, (unsigned)dur);
@@ -657,7 +658,7 @@ static void TrackCasterActions()
                 } else if (dur >= 400) {
                     // Bolt was released
                     ++s_boltsFired;
-                    const char* elemStr = ElementName(trk.appliedElement);
+                    const char* elemStr = "element=unverified";
                     char l[256];
                     sprintf_s(l, "CasterWatch: [%s] FIRED Focused Bolt [%s] -> target 0x%08X (%s) dist=%.1fm (charge=%ums)",
                               pawnRole, elemStr, (unsigned)trk.targetBody, trk.targetKind, targetDist, (unsigned)dur);
@@ -689,7 +690,7 @@ static void TrackCasterActions()
                     if (strstr(trk.activeCmc, "EnchantHorly") || strstr(trk.activeCmc, "EnchantHoly")) {
                         s_partyElement = ELEM_HOLY;
                         s_partyElementExpiryMs = now + 90000;
-                        logFile << "CasterWatch: PARTY BUFF ACTIVATED -> Holy Affinity [HFB Active for 90s]" << std::endl;
+                        logFile << "CasterWatch: Holy Affinity cast observed; weapon enchant NOT verified (HFB unconfirmed)" << std::endl;
                     } else if (strstr(trk.activeCmc, "EnchantFire")) {
                         s_partyElement = ELEM_FIRE;
                         s_partyElementExpiryMs = now + 90000;
@@ -744,8 +745,8 @@ void Init()
     s_boltsFired = 0;
     s_spellsChanted = 0;
     s_spellsCompleted = 0;
-    s_partyElement = ELEM_HOLY;
-    s_partyElementExpiryMs = 0xFFFFFFFFu;
+    s_partyElement = ELEM_NONE;
+    s_partyElementExpiryMs = 0;
     memset(s_tracker, 0, sizeof(s_tracker));
     lstrcpynA(s_lastCasterEvent, "idle", sizeof(s_lastCasterEvent));
 
@@ -753,7 +754,7 @@ void Init()
             << " (all caster cCmc + Anodyne/Cure/Circle/FocusedBolt, nukeGating=" << (s_nukeGating ? "on" : "off")
             << ", 1-10 m -> 15 m)"
             << std::endl;
-    logFile << "CasterWatch: live HFB and spell tracking initialized" << std::endl;
+    logFile << "CasterWatch: Focused Bolt and spell tracking initialized; weapon element unverified (HFB disabled)" << std::endl;
 }
 
 void SetEnabled(bool on)
@@ -776,7 +777,7 @@ void SetPartyElementBuff(ElementType elem, uint32_t durationMs)
     s_partyElement = elem;
     s_partyElementExpiryMs = now + durationMs;
     char l[128];
-    sprintf_s(l, "CasterWatch: manual party element set to [%s] for %us",
+    sprintf_s(l, "CasterWatch: manual party element hint [%s] for %us (weapon unverified; NOT HFB proof)",
               ElementName(elem), durationMs / 1000);
     logFile << l << std::endl;
 }
@@ -795,7 +796,7 @@ void Tick()
         if (allowNukes) {
             logFile << "WandRange: NUKE GATING UNLOCKED (Safe distance / Target pack engaged) -> heavy nukes (Bolide/Maelstrom/Seism) active at 15m" << std::endl;
         } else {
-            logFile << "WandRange: NUKE GATING ENGAGED (Enemy in melee <6m or lone trash mob) -> heavy nukes gated to fast spells (Comestion/Levin/HFB)" << std::endl;
+            logFile << "WandRange: NUKE GATING ENGAGED (Enemy in melee <6m or lone trash mob) -> heavy nukes gated to fast spells (Comestion/Levin/Focused Bolt)" << std::endl;
         }
         // Сбросить статус удержания, чтобы перепатчить planner
         s_applied = false;

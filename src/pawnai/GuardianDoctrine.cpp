@@ -5,6 +5,9 @@
 #include "runtime/MonsterTempo.h"
 #include <math.h>
 #include "GuardianDoctrine.h"
+#include "PawnPersona.h"
+#include "OrderWatch.h"
+#include "PartyRescueProtocol.h"
 #include "../CombatBus.h"
 
 extern BYTE** pBase; // из dinput8.cpp
@@ -566,95 +569,639 @@ static bool BindGuardianActor(GuardianSitRep& s, uintptr_t body, int vocation,
     return true;
 }
 
-void GuardianDoctrineTick()
+// ============================================================================
+// Роль пешки — из её собственного стека. Состояние — на КАЖДУЮ пешку.
+// ============================================================================
+//
+// Раньше здесь был один статический `GuardianDoctrine` и один `s_lastTarget`
+// на весь модуль, а носитель выбирался первым подходящим слотом с `break`.
+// Из-за этого доктрина работала ровно на одной пешке — и, как показал лог
+// 85.11, не на той: 27 событий ушли Страйдеру, у которого Guardian даже не
+// входил в стек, а наёмный файтер с Guardian-первичной остался ни с чем.
+//
+// Теперь: состояние своё у каждого слота, гвардианов в партии может быть
+// несколько, пешек между собой мы не сравниваем.
+// docs/PAWN_ROLE_STACK.md.
+
+// Карточка пешки: всё, что нужно, чтобы решить роль и написать её в лог.
+struct PawnView {
+    int            slot;
+    uintptr_t      body;
+    int            vocation;
+    float          incl[9];
+    int            rank[9];
+    Persona::Kind  persona;
+    int            personaRank;
+    float          personaValue;
+    bool           eligible;
+};
+
+struct GuardianProbe {
+    uintptr_t body;
+    DWORD sinceMs, nextMs;
+    float pawnEnemyM, arisenEnemyM;
+};
+
+struct GuardianSlotState {
+    GuardianDoctrine doctrine;
+    uintptr_t        lastTarget;
+    DWORD            lastTargetSinceMs;
+    DWORD            lastTelemetryMs;
+    bool             tempoHeld;
+    DWORD            wakeLastMs; // один сигнал, затем пауза; per body
+    uintptr_t        wakeTarget;
+    DWORD            wakeSinceMs;
+    PawnView         view;       // кем оказалась пешка в последнем тике
+    bool             viewValid;
+    GuardianLiveCard live;       // снимок для панели, обновляется раз в секунду
+    GuardianProbe probe[2];     // 0=WAKE, 1=INTERCEPT; independent windows
+};
+
+// Индекс = slot - PARTY_MAIN (0..2).
+static GuardianSlotState s_slotState[3];
+
+// Пороги роли. Ранг — основной фильтр: именно он решает, стреляют ли
+// правила cmc.prt. Значение — вторичный.
+int   g_guardianMinRank     = Persona::RANK_SECOND;  // ini [pawnAI] guardianMinRank
+float g_guardianMinIncl     = 350.0f;                // ini [pawnAI] guardianMinIncl
+// Телеметрия: как часто печатать строку состояния по каждому гвардиану.
+DWORD g_guardianTelemetryMs = 1000;                  // ini [pawnAI] guardianTelemetryMs
+bool g_guardianProbeLog = true;                       // ini [pawnAI] guardianProbeLog
+
+// Measures exactly the enemy signalled, not a different nearest enemy.
+// Only WorldReport coordinates; never dereference an enemy address.
+static void GuardianProbeStart(GuardianSlotState& st, int slot,
+                               const GuardianSitRep& s, uintptr_t body,
+                               uintptr_t enemy, int kind)
 {
-    static GuardianDoctrine d;
-
-    // 1. Ищем пешку с инклинацией Guardian (среди Главной и Наёмных)
-    int foundGuardianSlot = -1;
-    uintptr_t guardianBody = 0;
-    const char* guardianRoleName = "none";
-    GuardianSitRep s;
-    BuildGuardianSitRep(s); // shared anchor/threats; actor fields rebound below
-
-    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
-        uintptr_t body = 0;
-        int vocation = VOC_UNKNOWN;
-        if (slot == Runtime::PARTY_MAIN) {
-            body = Runtime::MainPawnBody();
-            if (pBase && *pBase) {
-                uintptr_t record = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET;
-                vocation = ReadVocation(record);
-            }
-        } else {
-            int level = 0;
-            if (!Runtime::PartyRecordInfo(slot - 1, &vocation, &level, &body)) continue;
-        }
-        float incl[I_COUNT];
-        ReadAllIncl(incl, slot - 1);
-        if (!BindGuardianActor(s, body, vocation, incl[I_GUARDIAN], incl[I_NEXUS]))
-            continue; // invalid/unavailable main must not block a valid hired pawn
-        foundGuardianSlot = slot;
-        guardianBody = body;
-        guardianRoleName = slot == Runtime::PARTY_MAIN ? "MainPawn" : Runtime::PartyCombatSlotName(slot);
+    if (!g_guardianProbeLog || kind < 0 || kind > 1) return;
+    GuardianProbe& p = st.probe[kind];
+    const DWORD now = MsNow();
+    if (p.body || (p.nextMs && DWORD(now - p.nextMs) < 8000)) return;
+    const float scale = st.doctrine.worldUnitsPerMeter > 0.0f
+                      ? st.doctrine.worldUnitsPerMeter : 100.0f;
+    for (int i = 0; i < s.threatCount; ++i) if (s.threats[i].body == enemy) {
+        const GuardianThreat& t = s.threats[i];
+        p.body = enemy;
+        p.sinceMs = now;
+        p.pawnEnemyM = Dist3(s.pawnX, s.pawnY, s.pawnZ, t.x, t.y, t.z) / scale;
+        p.arisenEnemyM = Dist3(s.anchorX, s.anchorY, s.anchorZ, t.x, t.y, t.z) / scale;
+        int32_t code = -1;
+        Runtime::PawnPriorityCodeFor(body, &code);
+        char act[48] = {};
+        Runtime::ReadLiveAct(body, act, sizeof(act));
+        char line[280];
+        sprintf_s(line, "GuardianDoctrine: [%s] PROBE %s START enemy 0x%08X P-E %.1fm A-E %.1fm code %d act %s",
+                  Runtime::PartyCombatSlotName(slot), kind ? "INTERCEPT" : "WAKE",
+                  (unsigned)enemy, p.pawnEnemyM, p.arisenEnemyM, code,
+                  act[0] ? act : "?");
+        logFile << line << std::endl;
         break;
     }
-    if (foundGuardianSlot < 0 || !guardianBody) return;
+}
 
-    GuardianReport r;
-    d.Decide(s, r);
+static void GuardianProbeResult(GuardianSlotState& st, int slot,
+                                const GuardianSitRep& s, uintptr_t body)
+{
+    for (int kind = 0; kind < 2; ++kind) {
+        GuardianProbe& p = st.probe[kind];
+        if (!p.body || DWORD(MsNow() - p.sinceMs) < 2500) continue;
+        const GuardianThreat* t = 0;
+        for (int i = 0; i < s.threatCount; ++i)
+            if (s.threats[i].body == p.body) { t = &s.threats[i]; break; }
+        const float scale = st.doctrine.worldUnitsPerMeter > 0.0f
+                          ? st.doctrine.worldUnitsPerMeter : 100.0f;
+        const float pe = t ? Dist3(s.pawnX,s.pawnY,s.pawnZ,t->x,t->y,t->z)/scale : -1.0f;
+        const float ae = t ? Dist3(s.anchorX,s.anchorY,s.anchorZ,t->x,t->y,t->z)/scale : -1.0f;
+        int32_t code = -1;
+        Runtime::PawnPriorityCodeFor(body, &code);
+        char act[48] = {};
+        Runtime::ReadLiveAct(body, act, sizeof(act));
+        uintptr_t current = 0;
+        const bool readOk = RdPtr((void*)(body + 0x2EB8), &current);
+        char line[320];
+        sprintf_s(line, "GuardianDoctrine: [%s] PROBE %s RESULT enemy 0x%08X %s P-E %.1f->%.1fm A-E %.1f->%.1fm code %d act %s target %s0x%08X",
+                  Runtime::PartyCombatSlotName(slot), kind ? "INTERCEPT" : "WAKE",
+                  (unsigned)p.body, t ? "seen" : "gone",
+                  p.pawnEnemyM, pe, p.arisenEnemyM, ae, code,
+                  act[0] ? act : "?", readOk ? "" : "unreadable/", (unsigned)current);
+        if (g_guardianProbeLog) logFile << line << std::endl;
+        p.body = 0;
+        p.nextMs = MsNow();
+    }
+}
 
-    VocationClass vc = VocationClassOf(s.pawnVocation);
-    bool meleeOrHybrid = (vc == VCL_MELEE || vc == VCL_HYBRID);
+static bool ReadPawnView(int slot, PawnView& v)
+{
+    memset(&v, 0, sizeof(v));
+    v.slot     = slot;
+    v.vocation = VOC_UNKNOWN;
+    v.persona  = Persona::PERSONA_NONE;
 
-    // 1. Поводок безопасности: пешка не атакует цели, если находится дальше leashDistance от Аризена
-    const bool withinLeash = (r.pawnAnchorDist <= (d.leashDistance + d.hysteresisExit));
-
-    // 2. Проактивный захват цели (Proactive Target Pinning)
-    static uintptr_t s_lastTarget = 0;
-
-    if (r.zoneEngaged && withinLeash && r.targetThreatBody && guardianBody) {
-        // Направляем боевую цель планировщика (uCmc+0x2EB8) и фокус взгляда (+0x14E0) на угрозу в зоне
-        Runtime::Mem::WrSafe((void*)(guardianBody + 0x2EB8), &r.targetThreatBody, sizeof(uintptr_t));
-        Runtime::Mem::WrSafe((void*)(guardianBody + 0x14E0), &r.targetThreatBody, sizeof(uintptr_t));
-        Runtime::Tempo::SetOverride(guardianBody, 1.25f, 1.15f, 2500);
-
-        if (s_lastTarget != r.targetThreatBody) {
-            s_lastTarget = r.targetThreatBody;
-            char l[240];
-            sprintf_s(l, "GuardianDoctrine: [%s] PROACTIVE TARGET -> %s 0x%08X (%s) dist %.1fm (pawn-Arisen %.1fm)",
-                      guardianRoleName,
-                      r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
-                      (unsigned)r.targetThreatBody, r.targetThreatKind ? r.targetThreatKind : "?",
-                      r.nearestThreatDist, r.pawnAnchorDist);
-            logFile << l << std::endl;
+    if (slot == Runtime::PARTY_MAIN) {
+        v.body = Runtime::MainPawnBody();
+        if (pBase && *pBase) {
+            const uintptr_t record = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET;
+            v.vocation = ReadVocation(record);
         }
-    } else if (!r.zoneEngaged || r.threatsInZone == 0 || !withinLeash) {
-        if (s_lastTarget && guardianBody) {
-            Runtime::Tempo::ClearOverride(guardianBody);
+        // Свою пешку оцениваем по ПОЛЗУНКАМ ИГРОКА: импульсы («Вперёд!»
+        // даёт Scather +300) не должны на шесть секунд менять её роль.
+        float full[I_COUNT];
+        if (PawnAIBaseInclinations(full)) {
+            for (int i = 0; i < 9; ++i) v.incl[i] = full[i];
+        } else {
+            ReadAllIncl(full, 0);
+            for (int i = 0; i < 9; ++i) v.incl[i] = full[i];
         }
-        s_lastTarget = 0;
+    } else {
+        int level = 0;
+        if (!Runtime::PartyRecordInfo(slot - 1, &v.vocation, &level, &v.body) || !v.body)
+            return false;
+        float full[I_COUNT];
+        ReadAllIncl(full, slot - 1);
+        for (int i = 0; i < 9; ++i) v.incl[i] = full[i];
     }
 
-    // 3. Динамический приоритет (для главной пешки)
-    if (g_guardianFixEnabled && foundGuardianSlot == Runtime::PARTY_MAIN) {
-        int32_t desired = -3;
-        if (r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0) {
-            float dist = r.nearestThreatDist; // метры
-            if (dist < g_guardianMeleeRadius)        desired = g_guardianDaggerBiasMelee;
-            else if (dist < g_guardianPreemptRadius) desired = g_guardianDaggerBiasPreempt;
+    v.persona = Persona::Of(v.incl, &v.personaRank, &v.personaValue);
+    Persona::RanksOf(v.incl, v.rank);
+    v.eligible = (v.persona == Persona::PERSONA_GUARDIAN) &&
+                 Persona::Eligible(v.personaRank, v.personaValue,
+                                   g_guardianMinRank, g_guardianMinIncl);
+    return v.body != 0;
+}
+
+// Full inclination evidence at body discovery and on material change.
+// The main pawn's source is the saved player anchor. Hired pawns are read
+// from their own LIVE record: this is the best available snapshot, NOT a
+// proven persistent baseline. Do not describe it as "base" in the log.
+struct StackLogState {
+    uintptr_t body;
+    int vocation;
+    float incl[9];
+    int rank[9];
+    DWORD lastMs;
+};
+static StackLogState s_stackLog[3] = {};
+static char s_roleSig[512] = {};
+
+void GuardianStackLogReset()
+{
+    for (int i = 0; i < 3; ++i) s_stackLog[i] = StackLogState();
+    s_roleSig[0] = 0;
+}
+
+
+static void LogPawnStackIfChanged(const PawnView* views, int n)
+{
+    bool seen[3] = {};
+    for (int vi = 0; vi < n; ++vi) {
+        const PawnView& v = views[vi];
+        const int idx = v.slot - Runtime::PARTY_MAIN;
+        if (idx < 0 || idx >= 3) continue;
+        seen[idx] = true;
+        StackLogState& prev = s_stackLog[idx];
+        const bool newBody = prev.body != v.body || prev.vocation != v.vocation;
+        bool rankChanged = false;
+        float maxDelta = 0.0f;
+        for (int j = 0; j < 9; ++j) {
+            if (prev.rank[j] != v.rank[j]) rankChanged = true;
+            float d = v.incl[j] - prev.incl[j];
+            if (d < 0.0f) d = -d;
+            if (d > maxDelta) maxDelta = d;
+        }
+        const DWORD now = MsNow();
+        // Dragging main-pawn sliders is a meaningful experiment. Hired-pawn
+        // live values may drift naturally, so do not log small fluctuations.
+        const bool changed = rankChanged ||
+                             (maxDelta >= (v.slot == Runtime::PARTY_MAIN ? 1.0f : 25.0f));
+        if (!newBody && (!changed ||
+            (prev.lastMs && DWORD(now - prev.lastMs) < 5000))) continue;
+        prev.body = v.body;
+        prev.vocation = v.vocation;
+        prev.lastMs = now;
+        memcpy(prev.incl, v.incl, sizeof(prev.incl));
+        memcpy(prev.rank, v.rank, sizeof(prev.rank));
+        int order[3] = {-1, -1, -1};
+        for (int j = 0; j < 9; ++j)
+            if (v.rank[j] >= Persona::RANK_THIRD)
+                order[Persona::RANK_FIRST - v.rank[j]] = j;
+        char line[768];
+        sprintf_s(line,
+                  "InclStack: [%s][%s] body 0x%08X source=%s reason=%s top=%s>%s>%s | Scather=%.0f Medicant=%.0f Mitigator=%.0f Challenger=%.0f Utilitarian=%.0f Guardian=%.0f Nexus=%.0f Pioneer=%.0f Acquisitor=%.0f",
+                  Runtime::PartyCombatSlotName(v.slot), VocationName(v.vocation),
+                  (unsigned)v.body,
+                  v.slot == Runtime::PARTY_MAIN ? "anchor" : "hired-live",
+                  newBody ? "discovered" : "changed",
+                  order[0] >= 0 ? InclName(order[0]) : "?",
+                  order[1] >= 0 ? InclName(order[1]) : "?",
+                  order[2] >= 0 ? InclName(order[2]) : "?",
+                  v.incl[I_SCATHER], v.incl[I_MEDICANT], v.incl[I_MITIGATOR],
+                  v.incl[I_CHALLENGER], v.incl[I_UTILITARIAN],
+                  v.incl[I_GUARDIAN], v.incl[I_NEXUS],
+                  v.incl[I_PIONEER], v.incl[I_ACQUISITOR]);
+        logFile << line << std::endl;
+    }
+    for (int i = 0; i < 3; ++i)
+        if (!seen[i]) s_stackLog[i] = StackLogState();
+}
+
+// Один раз на смену состава партии печатаем, кто есть кто. Это и есть ответ
+// на вопрос «кого мы вообще отслеживаем» — раньше его в логе не было вовсе.
+static void LogRolesIfChanged(const PawnView* views, int n)
+{
+    char sig[512] = {};
+    char line[1536] = {};
+    size_t used = 0;
+
+    for (int i = 0; i < n; ++i) {
+        const PawnView& v = views[i];
+
+        char part[256];
+        sprintf_s(part, "%s %s %s r%d v%.0f | ",
+                  Runtime::PartyCombatSlotName(v.slot),
+                  VocationName(v.vocation),
+                  Persona::Name(v.persona),
+                  v.personaRank, v.personaValue);
+        if (used + strlen(part) < sizeof(line) - 1) {
+            memcpy(line + used, part, strlen(part));
+            used += strlen(part);
+            line[used] = 0;
         }
 
-        Runtime::GuardianFixSetTarget(desired);
+        // Ручное добавление вместо strcat_s: в портируемой проверке под g++
+        // его нет, а сил на ещё один shim тратить нечего.
+        char chunk[64];
+        sprintf_s(chunk, "%d:%d:%.0f ", v.persona, v.personaRank, v.personaValue);
+        const size_t have = strlen(sig), add = strlen(chunk);
+        if (have + add < sizeof(sig) - 1)
+            memcpy(sig + have, chunk, add + 1);
+    }
+
+    if (!strcmp(sig, s_roleSig)) return;          // состав и роли не менялись
+    lstrcpynA(s_roleSig, sig, sizeof(s_roleSig));
+
+    if (!line[0]) return;
+    logFile << "Roles: " << line << std::endl;
+}
+
+// Ближайший враг к ПЕШКЕ и положение пешки относительно пары «Аризен—враг».
+//
+// ПОЧЕМУ ЭТО ЧИСЛО ДОБАВЛЕНО. В прежней строке `dist` означало Аризен→враг,
+// а не пешка→враг. Из-за этого по логу было нельзя понять, в контакте пешка
+// или стоит в арьергарде. `side` — знак скалярного произведения в плоскости
+// XZ: > 0 пешка на стороне врага (перед игроком), < 0 — за спиной.
+struct GuardianTelemetry {
+    uintptr_t body;
+    float     pawnEnemyDist;    // м
+    float     anchorEnemyDist;  // м
+    float     bearing;          // -1..1
+};
+
+static bool NearestThreatToPawn(const GuardianSitRep& s, float worldUnitsPerMeter, GuardianTelemetry& out)
+{
+    memset(&out, 0, sizeof(out));
+    out.pawnEnemyDist   = 1e9f;
+    out.anchorEnemyDist = 1e9f;
+    if (!s.pawnValid || !s.anchorValid) return false;
+
+    float best = 1e9f;
+    for (int i = 0; i < s.threatCount; ++i) {
+        const GuardianThreat& t = s.threats[i];
+        if (!t.body) continue;
+        const float d = Dist3(s.pawnX, s.pawnY, s.pawnZ, t.x, t.y, t.z);
+        if (d >= best) continue;
+        best = d;
+        out.body            = t.body;
+        const float scale = worldUnitsPerMeter > 0.0f ? worldUnitsPerMeter : 100.0f;
+        out.pawnEnemyDist   = d / scale;
+        out.anchorEnemyDist = Dist3(s.anchorX, s.anchorY, s.anchorZ, t.x, t.y, t.z) / scale;
+    }
+    if (!out.body) return false;
+
+    // Перед / за Аризеном относительно выбранного врага. Скалярное
+    // произведение в плоскости XZ (высоту не учитываем): > 0 пешка на
+    // стороне врага, < 0 — за спиной Аризена. Нормировка на единицу, чтобы
+    // число было одним и тем же на любой дистанции.
+    float tvx = 0.0f, tvz = 0.0f;
+    for (int i = 0; i < s.threatCount; ++i)
+        if (s.threats[i].body == out.body) { tvx = s.threats[i].x; tvz = s.threats[i].z; break; }
+
+    const float pvx = s.pawnX - s.anchorX, pvz = s.pawnZ - s.anchorZ;
+    const float evx = tvx - s.anchorX,     evz = tvz - s.anchorZ;
+    const float pn  = sqrtf(pvx * pvx + pvz * pvz);
+    const float en  = sqrtf(evx * evx + evz * evz);
+    if (pn > 1.0f && en > 1.0f)
+        out.bearing = (pvx * evx + pvz * evz) / (pn * en);
+    return true;
+}
+
+void GuardianDoctrineTick()
+{
+    GuardianSitRep s;
+    BuildGuardianSitRep(s);   // общий якорь (Аризен) и список угроз
+
+    // Карточки читаются ОДИН раз на тик и идут и в лог, и в доктрину, и в
+    // панель. Читать стек склонностей дважды (сначала для строки Roles,
+    // потом для доктрины) — лишняя работа каждые 150 мс без всякой пользы.
+    PawnView views[3];
+    int      nViews = 0;
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
+        PawnView v;
+        if (ReadPawnView(slot, v)) views[nViews++] = v;
+    }
+
+    LogPawnStackIfChanged(views, nViews);
+    LogRolesIfChanged(views, nViews);
+
+    // То, что умеет только главная пешка: рычаг склонности и эррата code 54.
+    // Считаем по ходу цикла, применяем после.
+    bool  mainSeen    = false;
+    bool  mainWant    = false;
+    int32_t mainFixDesired = -3;
+
+    for (int vi = 0; vi < nViews; ++vi) {
+        const PawnView& v = views[vi];
+        const int slot = v.slot;
+
+        GuardianSlotState* st = 0;
+        {
+            const int idx = slot - Runtime::PARTY_MAIN;
+            if (idx < 0 || idx >= 3) continue;
+            st = &s_slotState[idx];
+        }
+        // Сменилась пешка в слоте (уволили, наняли, пересоздали тело):
+        // гистерезис, цель и темп от прошлой нам больше не нужны.
+        if (st->viewValid && st->view.body != v.body) {
+            memset(&st->live, 0, sizeof(st->live));
+            memset(st->probe, 0, sizeof(st->probe));
+            st->lastTarget        = 0;
+            st->lastTargetSinceMs = 0;
+            st->tempoHeld         = false;
+            st->wakeLastMs        = 0;
+            st->wakeTarget        = 0;
+            st->wakeSinceMs       = 0;
+            st->doctrine          = GuardianDoctrine();   // гистерезис зоны сбросить
+        }
+        // Карточка пишется ДО проверки годности: панель обязана показать и
+        // страйдера без гвардиана — иначе непонятно, почему доктрина молчит.
+        st->view      = v;
+        st->viewValid = true;
+
+        if (!v.eligible) {
+            // Не гвардиан: доктрина к ней не applies. Снимок гасим — иначе
+            // панель показывала бы числа, посчитанные при другом стеке.
+            memset(&st->live, 0, sizeof(st->live));
+            memset(st->probe, 0, sizeof(st->probe));
+            continue;
+        }
+
+        // Привязать ЭТУ пешку: её склонности, вокация, координаты.
+        if (!BindGuardianActor(s, v.body, v.vocation,
+                               v.incl[I_GUARDIAN], v.incl[I_NEXUS])) {
+            memset(&st->live, 0, sizeof(st->live));
+            memset(st->probe, 0, sizeof(st->probe));
+            continue;   // тело или координаты недоступны — пробуем следующую
+        }
+
+        GuardianProbeResult(*st, slot, s, v.body);
+        GuardianReport r;
+        st->doctrine.Decide(s, r);
+
+        const VocationClass vc = VocationClassOf(s.pawnVocation);
+        const bool meleeOrHybrid = (vc == VCL_MELEE || vc == VCL_HYBRID);
+        const bool withinLeash = (r.pawnAnchorDist <=
+                                  (st->doctrine.leashDistance + st->doctrine.hysteresisExit));
+        const bool want = r.zoneEngaged && withinLeash && r.threatsInZone > 0;
+
+        if (want && r.targetThreatBody) {
+            // Направляем боевую цель планировщика и фокус взгляда на угрозу.
+            const bool targetWritten = Runtime::Mem::WrSafe((void*)(v.body + 0x2EB8), &r.targetThreatBody,
+                                                              sizeof(uintptr_t));
+            if (targetWritten)
+                GuardianProbeStart(*st, slot, s, v.body, r.targetThreatBody, 1);
+            Runtime::Mem::WrSafe((void*)(v.body + 0x14E0), &r.targetThreatBody,
+                                 sizeof(uintptr_t));
+            // Мощность по рангу: первичная — полный подгон, вторичная — мягче,
+            // третичная — без темпа (docs/PAWN_ROLE_STACK.md §5.5).
+            if (v.personaRank >= Persona::RANK_FIRST)
+                Runtime::Tempo::SetOverride(v.body, 1.25f, 1.15f, 2500);
+            else if (v.personaRank >= Persona::RANK_SECOND)
+                Runtime::Tempo::SetOverride(v.body, 1.15f, 1.10f, 2500);
+            st->tempoHeld = true;
+
+            if (st->lastTarget != r.targetThreatBody) {
+                st->lastTarget = r.targetThreatBody;
+                st->lastTargetSinceMs = MsNow();
+                char l[256];
+                sprintf_s(l, "GuardianDoctrine: [%s][%s][%s r%d v%.0f] PROACTIVE TARGET -> %s 0x%08X (%s) Arisen-enemy %.1fm (pawn-Arisen %.1fm)",
+                          Runtime::PartyCombatSlotName(slot),
+                          VocationName(v.vocation),
+                          Persona::Name(v.persona), v.personaRank, v.personaValue,
+                          r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
+                          (unsigned)r.targetThreatBody,
+                          r.targetThreatKind ? r.targetThreatKind : "?",
+                          r.nearestThreatDist, r.pawnAnchorDist);
+                logFile << l << std::endl;
+            }
+        } else if (!r.zoneEngaged || r.threatsInZone == 0 || !withinLeash) {
+            if (st->tempoHeld) Runtime::Tempo::ClearOverride(v.body);
+            st->tempoHeld = false;
+            st->lastTarget = 0;
+        }
+
+        // Будильник: НЕ срочная зона, а потенциальная угроза в 8..25 м
+        // от Аризена. Только пассивная пешка (Wait/Follow), одна запись и
+        // пауза. Ни темпа, ни команд FSM, ни изменения чужих инклинаций.
+        // Ближний перехват выше по приоритету и исполняется до этого блока.
+        {
+            const DWORD wakeNow = MsNow();
+            const bool manualOrder = OrderWatch::GetStats().orderRemainingMs != 0;
+            const bool rescue = Rescue::IsActive();
+            int32_t wakeCode = -1;
+            const bool passive = Runtime::PawnPriorityCodeFor(v.body, &wakeCode) &&
+                                 (wakeCode == 0 || wakeCode == 1);
+            // Наш пин не имеет TTL в движке. Возвращаем только собственную
+            // запись, только при пассивном планировщике и без чужого приказа.
+            if (st->wakeTarget && wakeNow - st->wakeSinceMs >= 3000) {
+                uintptr_t current = 0;
+                const bool readOk = RdPtr((void*)(v.body + 0x2EB8), &current);
+                // Только если всё ещё Follow/Wait и цель наша: не стираем
+                // решение игрового ИИ, ручной приказ или срочный перехват.
+                bool released = false;
+                if (!manualOrder && !rescue && !want && passive && readOk &&
+                    current == st->wakeTarget) {
+                    const uintptr_t empty = 0;
+                    released = WrSafe((void*)(v.body + 0x2EB8), &empty, sizeof(empty));
+                }
+                char result[200];
+                sprintf_s(result, "GuardianDoctrine: [%s] WAKE RESULT code %d target 0x%08X released %d",
+                          Runtime::PartyCombatSlotName(slot), wakeCode,
+                          (unsigned)current, released ? 1 : 0);
+                logFile << result << std::endl;
+                st->wakeTarget = 0;
+            }
+            if (!want && !manualOrder && !rescue && passive &&
+                r.pawnAnchorDist <= st->doctrine.leashDistance &&
+                (!st->wakeLastMs || wakeNow - st->wakeLastMs >= 8000)) {
+                // Не отбираем цель, которую уже выбрала игра или другой модуль.
+                uintptr_t current = 0;
+                if (RdPtr((void*)(v.body + 0x2EB8), &current) && !current) {
+                    const float scale = st->doctrine.worldUnitsPerMeter > 0.0f
+                                      ? st->doctrine.worldUnitsPerMeter : 100.0f;
+                    uintptr_t candidate = 0;
+                    float best = 25.0f;
+                    const char* kind = "?";
+                    if (s.anchorValid) for (int ti = 0; ti < s.threatCount; ++ti) {
+                        const GuardianThreat& t = s.threats[ti];
+                        if (!t.body) continue;
+                        const float d = Dist3(s.anchorX, s.anchorY, s.anchorZ,
+                                              t.x, t.y, t.z) / scale;
+                        if (!(d >= 8.0f && d < best)) continue;
+                        best = d;
+                        candidate = t.body;
+                        kind = t.kind ? t.kind : "?";
+                    }
+                    if (candidate && WrSafe((void*)(v.body + 0x2EB8),
+                                             &candidate, sizeof(candidate))) {
+                        st->wakeLastMs = wakeNow;
+                        st->wakeSinceMs = wakeNow;
+                        st->wakeTarget = candidate;
+                        GuardianProbeStart(*st, slot, s, v.body, candidate, 0);
+                        char msg[256];
+                        sprintf_s(msg, "GuardianDoctrine: [%s] WAKE target 0x%08X (%s) Arisen-enemy %.1fm pawn-Arisen %.1fm code %d cooldown 8s",
+                                  Runtime::PartyCombatSlotName(slot),
+                                  (unsigned)candidate, kind, best,
+                                  r.pawnAnchorDist, wakeCode);
+                        logFile << msg << std::endl;
+                    }
+                }
+            }
+        }
+
+        // --- телеметрия по этой пешке -------------------------------------
+        // Снимок обновляется ВСЕГДА, раз в секунду: его читает панель. В лог
+        // строка уходит только если телеметрия включена (guardianTelemetryMs).
+        const DWORD now = MsNow();
+        const DWORD teleMs = g_guardianTelemetryMs ? g_guardianTelemetryMs : 1000;
+        if (now - st->lastTelemetryMs >= teleMs) {
+            st->lastTelemetryMs = now;
+
+            GuardianTelemetry tm;
+            NearestThreatToPawn(s, st->doctrine.worldUnitsPerMeter, tm);
+
+            GuardianLiveCard& lc = st->live;
+            memset(&lc, 0, sizeof(lc));
+            lc.valid           = true;
+            lc.pawnAnchorDist  = r.pawnAnchorDist;
+            lc.pawnEnemyDist   = tm.pawnEnemyDist;
+            lc.anchorEnemyDist = tm.anchorEnemyDist;
+            lc.bearing         = tm.bearing;
+            lc.zoneEngaged     = r.zoneEngaged ? 1 : 0;
+            lc.threatsInZone   = r.threatsInZone;
+            lc.target          = st->lastTarget;
+            lc.code            = -1;
+
+            Runtime::ReadLiveAct(v.body, lc.act, sizeof(lc.act));
+
+            int32_t code = -1;
+            char goal[32] = {};
+            if (Runtime::PawnPriorityCodeFor(v.body, &code) && code >= 0)
+                Runtime::PawnGoalNameFor(v.body, code, goal, sizeof(goal));
+            lc.code = code;
+            lstrcpynA(lc.goal, goal, sizeof(lc.goal));
+
+            if (g_guardianTelemetryMs) {
+                char side[16] = "n/a";
+                if (tm.body) lstrcpynA(side, tm.bearing >= 0.0f ? "FRONT" : "BACK", sizeof(side));
+
+                char l[320];
+                sprintf_s(l, "GuardianDoctrine: [%s][%s][%s r%d] pawn-Arisen %.1fm pawn-enemy %.1fm Arisen-enemy %.1fm side %s | tgt 0x%08X | act %s | code %d \"%s\" | zone %d threats %d",
+                          Runtime::PartyCombatSlotName(slot),
+                          VocationName(v.vocation),
+                          Persona::Name(v.persona), v.personaRank,
+                          r.pawnAnchorDist, tm.pawnEnemyDist, tm.anchorEnemyDist,
+                          side, (unsigned)st->lastTarget,
+                          lc.act[0] ? lc.act : "?", lc.code, lc.goal[0] ? lc.goal : "?",
+                          r.zoneEngaged ? 1 : 0, r.threatsInZone);
+                logFile << l << std::endl;
+            }
+        }
+
+        // --- что остаётся только главной пешке -----------------------------
+        if (slot == Runtime::PARTY_MAIN) {
+            mainSeen = true;
+            mainWant = want && meleeOrHybrid;
+            mainFixDesired = -3;
+            if (mainWant) {
+                if (r.nearestThreatDist < g_guardianMeleeRadius)
+                    mainFixDesired = g_guardianDaggerBiasMelee;
+                else if (r.nearestThreatDist < g_guardianPreemptRadius)
+                    mainFixDesired = g_guardianDaggerBiasPreempt;
+            }
+        }
+    }
+
+    // 3. Динамический приоритет (code 54) — только главная пешка.
+    if (g_guardianFixEnabled) {
+        Runtime::GuardianFixSetTarget(mainSeen ? mainFixDesired : -3);
         Runtime::GuardianFixTick();
     }
 
-    // 4. Рычаг склонности — для главной пешки
-    if (g_guardianUseInclLever && foundGuardianSlot == Runtime::PARTY_MAIN) {
-        const bool want = r.zoneEngaged && withinLeash && meleeOrHybrid && r.threatsInZone > 0;
-        InclLeverApply(want);
-    } else if (foundGuardianSlot == Runtime::PARTY_MAIN) {
+    // 4. Рычаг склонности — только главная пешка. Чужой билд не трогаем
+    //    (HIRED_PAWNS_SCOPE.md): наёмный гвардиан получает пин и темп, но не
+    //    правку character record.
+    if (g_guardianUseInclLever) {
+        if (mainSeen) InclLeverApply(mainWant);
+        else          GuardianLeverRestore();
+    } else {
         GuardianLeverRestore();
+    }
+}
+
+// ============================================================================
+// Снимок для панели
+// ============================================================================
+// Никаких пересчётов: панель читает то, что уже посчитал тик. Если тик не
+// ходил (выгрузка, доктрина выключена), вернём valid = false, а панель
+// напишет «—» вместо выдуманных нулей.
+
+bool GuardianPawnCard(int slot, PawnRoleCard* roleOut, GuardianLiveCard* liveOut)
+{
+    const int idx = slot - Runtime::PARTY_MAIN;
+    if (idx < 0 || idx >= 3) return false;
+    const GuardianSlotState& st = s_slotState[idx];
+
+    if (roleOut) {
+        memset(roleOut, 0, sizeof(*roleOut));
+        roleOut->slot = slot;
+        roleOut->valid = st.viewValid;
+        if (st.viewValid) {
+            roleOut->vocation     = st.view.vocation;
+            roleOut->body         = st.view.body;
+            roleOut->guardianIncl = st.view.incl[I_GUARDIAN];
+            roleOut->nexusIncl    = st.view.incl[I_NEXUS];
+            roleOut->persona      = (int)st.view.persona;
+            roleOut->personaRank  = st.view.personaRank;
+            roleOut->personaValue = st.view.personaValue;
+            roleOut->eligible     = st.view.eligible;
+        }
+    }
+    if (liveOut) {
+        if (st.live.valid) *liveOut = st.live;
+        else               memset(liveOut, 0, sizeof(*liveOut));
+    }
+    return true;
+}
+
+const char* GuardianPersonaName(int persona)
+{
+    // Имена латиницей: у ImGui здесь шрифт по умолчанию (Basic Latin),
+    // кириллица в панели не отрисуется. В лог пишутся русские комментарии,
+    // а не эти строки.
+    switch (persona) {
+    case (int)Persona::PERSONA_GUARDIAN: return "Guardian";
+    case (int)Persona::PERSONA_NEXUS:    return "Nexus";
+    default:                             return "-";
     }
 }
 

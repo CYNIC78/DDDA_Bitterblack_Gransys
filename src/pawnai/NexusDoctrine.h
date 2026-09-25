@@ -28,7 +28,8 @@ struct Status {
     bool        criticalThreat;
 };
 
-Status GetStatus();
+Status GetStatus(); // compatibility: first active/assigned Nexus
+Status GetStatusFor(int slot); // independent per-pawn status (1..3)
 void   SetEnabled(bool on);
 
 } // namespace Nexus

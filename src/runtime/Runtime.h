@@ -186,11 +186,18 @@ const char* PartyCombatSlotName(int slot);
 // вызывающий обязан его отбрасывать, а не считать отдельным кодом.
 bool PawnPriorityCode(int32_t* codeOut);
 
+// То же самое, но для КОНКРЕТНОГО тела пешки. Нужно потому, что доктрины
+// работают с каждой пешкой партии, а по логу надо видеть, какую цель выбрал
+// планировщик именно файтера, а не главной. Кэш планировщика — на три тела.
+bool PawnPriorityCodeFor(uintptr_t body, int32_t* codeOut);
+
 // Имя цели по коду приоритета: слот ресурса цели в планировщике И ЕСТЬ
 // код (`code = (slot - 8) / 4`, доказано в PAWN_SPRINT_RECON §25).
 // Читает путь загруженного rAIGoalPlanning и возвращает его хвост
 // («AI\Goap\Cmc\DashFollow» -> «DashFollow»).
 bool PawnGoalName(int32_t code, char* out, int cap);
+// Имя цели для конкретного тела пешки (см. PawnPriorityCodeFor).
+bool PawnGoalNameFor(uintptr_t body, int32_t code, char* out, int cap);
 
 // Какие моторные интерфейсы (`cCmc*`) вшиты в живой блок плана этой цели.
 //

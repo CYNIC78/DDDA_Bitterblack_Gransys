@@ -13,7 +13,7 @@
  * ВЕРСИЯ 84.56: CasterWatch & Holy Focused Bolt (HFB) Live Tracker:
  * - Real-time tracking of Focused Bolt charges, releases, durations.
  * - Real-time tracking of spell chants, releases, interruptions.
- * - Elemental buff tracking (Holy Affinity/Boon -> HFB, Fire, Ice, Thunder, Dark).
+ * - Spell-cast element hints only: no verified per-weapon enchant; HFB not counted.
  * - Nuke gating transition logging (GATED vs UNLOCKED).
  */
 
