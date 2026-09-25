@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.20-bolt-truth"
+#define MOD_BUILD_TAG "85.21-return-label"

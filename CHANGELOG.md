@@ -24,6 +24,13 @@
 
 ## Текущий milestone
 
+**Build 85.21-return-label** — PS больше не выводит `RIFTED` из одного
+`cPlActCmcReturn`: пишет `CMC_RETURN outcome=unverified` один раз на
+переход. Последующий обычный акт того же тела даёт `RAISED after=CmcReturn`;
+при исчезновении тела исход остаётся неизвестен. Боевая логика не менялась.
+MSVC/игра pending.
+
+
 **Build 85.20-bolt-truth** — CasterWatch больше не объявляет Holy Focused
 Bolt по умолчанию: заряд/выстрел логируется как `Focused Bolt
 [element=unverified]`. Начальный элемент NONE, после истечения подсказки

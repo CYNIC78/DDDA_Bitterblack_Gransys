@@ -125,6 +125,7 @@ struct BodyTrack {
     int       downedKind;   // kKindNone / Knockdown / Neardeath
     DWORD     downedSinceMs;
     bool      everRevived;  // пешка: RAISED из neardeath хотя бы раз
+    bool      returnPending; // cPlActCmcReturn observed; outcome not established
     bool      raiseNow;     // Arisen stretch cPlReviveCMC
     bool      deadNow;      // Arisen stretch cPlActDead
 
@@ -182,7 +183,7 @@ static void SyncBodies(const uintptr_t* bodies, const int* slots, int n)
 //
 // Пешка:
 //   * -> CmcNeardeath|CmcDead|DmgDownDead     DOWNED (ждёт succor)
-//   neardeath -> CmcReturn                    RIFTED
+//   neardeath -> CmcReturn                    CMC_RETURN (outcome unverified)
 //   neardeath -> обычный акт                  RAISED (тело встало)
 //   * -> DmgDown|DmgDownDamage                KNOCKDOWN (не succor)
 //   knockdown -> StandUp/обычный              KNOCKDOWN-END
@@ -208,6 +209,17 @@ static void FsmTick(BodyTrack& T, const char* act, DWORD now)
     const bool isRift = !strcmp(act, kRiftAct);
     const bool isPlayerRaise = !strcmp(act, kRaiseAct);
     const bool isArisenDead = !isPawn && !strcmp(act, kArisenDeadAct);
+
+    // Return is an animation/transition, not proof of a pawn leaving for the Rift.
+    // Only a later ordinary action on this same live body proves recovery.
+    if (T.returnPending && !isRift) {
+        T.returnPending = false;
+        if (isPawn && !isNeardeath && !isKnockdown) {
+            T.everRevived = true;
+            logFile << "PS: " << SlotName(T.slot) << " RAISED act=" << act
+                    << " after=CmcReturn" << std::endl;
+        }
+    }
 
     if (isPlayerRaise) {
         if (isPawn)
@@ -252,17 +264,20 @@ static void FsmTick(BodyTrack& T, const char* act, DWORD now)
         return;
     }
     if (!T.downedNow) {
-        if (isRift && isPawn)
-            logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
-                    << std::endl;
+        if (isRift && isPawn && !T.returnPending) {
+            T.returnPending = true;
+            logFile << "PS: " << SlotName(T.slot) << " CMC_RETURN act=" << act
+                    << " outcome=unverified" << std::endl;
+        }
         return;
     }
 
     if (T.downedKind == kKindNeardeath) {
         if (isNeardeath) return;
         if (isRift) {
-            logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
-                    << " downed+" << (now - T.downedSinceMs) << "ms"
+            T.returnPending = true;
+            logFile << "PS: " << SlotName(T.slot) << " CMC_RETURN act=" << act
+                    << " outcome=unverified downed+" << (now - T.downedSinceMs) << "ms"
                     << std::endl;
             ClearDowned(T);
             return;
@@ -276,8 +291,9 @@ static void FsmTick(BodyTrack& T, const char* act, DWORD now)
 
     if (isKnockdown) return;
     if (isRift && isPawn) {
-        logFile << "PS: " << SlotName(T.slot) << " RIFTED act=" << act
-                << std::endl;
+        T.returnPending = true;
+        logFile << "PS: " << SlotName(T.slot) << " CMC_RETURN act=" << act
+                << " outcome=unverified" << std::endl;
         ClearDowned(T);
         return;
     }

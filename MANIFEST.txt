@@ -1,16 +1,13 @@
-DDDA AI Overhaul — source package 85.20-bolt-truth
+DDDA AI Overhaul — source package 85.21-return-label
 ========================================================================
-MOD_BUILD_TAG : 85.20-bolt-truth
-Дата сборки   : 2026-09-25 15:56 (Europe/Moscow)
+MOD_BUILD_TAG : 85.21-return-label
+Дата сборки   : 2026-09-25 18:45 (Europe/Moscow)
 Файлов        : 667
-Архив         : builds/85.20-bolt-truth.zip
+Архив         : builds/85.21-return-label.zip
 
 Состав:
-**Build 85.20-bolt-truth** — CasterWatch больше не объявляет Holy Focused
-Bolt по умолчанию: заряд/выстрел логируется как `Focused Bolt
-[element=unverified]`. Начальный элемент NONE, после истечения подсказки
-элемент снова NONE; каст Affinity и ручная подсказка не считаются доказательством
-зачарования посоха. Панель показывает только подсказку, не «HFB active».
-**Подтверждение HFB пока отключено**: в проекте нет проверенного датчика
-действующего Holy на оружии именно стрелявшей пешки. Счётчик выстрелов —
-всех Focused Bolt, не HFB. GOAP и доктрины не менялись. MSVC/игра pending.
+**Build 85.21-return-label** — PS больше не выводит `RIFTED` из одного
+`cPlActCmcReturn`: пишет `CMC_RETURN outcome=unverified` один раз на
+переход. Последующий обычный акт того же тела даёт `RAISED after=CmcReturn`;
+при исчезновении тела исход остаётся неизвестен. Боевая логика не менялась.
+MSVC/игра pending.

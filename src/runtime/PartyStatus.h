@@ -19,7 +19,7 @@
 //      это точечный обход, а не перебор.
 //   2. FSM падения/подъёма ЧИТАЕТСЯ С ТЕЛА, КОТОРОЕ УПАЛО (84.24/84.25).
 //      CrumbleDead = neardeath. Arisen DEAD снимает leftover downed.
-//      Пешка: CmcNeardeath/CmcDead → RAISED (обычный акт) / RIFTED (CmcReturn).
+//      Пешка: CmcNeardeath/CmcDead → RAISED (обычный акт) / CMC_RETURN (исход не подтверждён).
 //      Нокдаун DmgDown → DmgStandUp — не succor. cPlReviveCMC на пешке
 //      игнорируется (это акт Аризена). Аризен: RAISE=cPlReviveCMC, не жертва.
 //      downedRevivable — только пешка, и только после RAISED с neardeath.

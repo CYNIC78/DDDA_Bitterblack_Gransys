@@ -72,7 +72,7 @@ PS: MainPawn children (scan cStatus): cAICtrl@+0x2E64 cActionManager@+0x... ...
 ```text
 пешка:
   * -> CmcNeardeath|CmcDead|DmgDownDead     DOWNED   (ждёт succor)
-  neardeath -> CmcReturn                    RIFTED
+  neardeath -> CmcReturn                    CMC_RETURN (outcome=unverified)
   neardeath -> обычный акт                  RAISED   (тело встало)
   * -> DmgDown|DmgDownDamage                KNOCKDOWN (не succor)
   knockdown -> StandUp/обычный              KNOCKDOWN-END
@@ -106,7 +106,7 @@ possession-замер даст именованное поле (POSSESSION_RECON
    в логе `PS: MainPawn cStatus found ...` (или `scanning` ещё 1–2
    прохода) и дельты, если блок реагирует на захват. Пешка падает
    (HP=0) и её поднимает игрок: `DOWNED` → `RAISED` на пешке,
-   `RAISE act=cPlReviveCMC` на Аризене. Таймер без подъёма: `RIFTED`.
+   `RAISE act=cPlReviveCMC` на Аризене. `CMC_RETURN` не подтверждает уход в рифт; следующий обычный акт того же тела подтверждает `RAISED`. Если тело исчезло, исход по этому наблюдателю неизвестен.
 3. `snapshot to log` (кнопка Director) печатает FSM + `PS: SHEET`
    (запись + тело hex). `cStatus not-found` на детях тела — ожидаемо.
 4. **Possession (отдельная сессия, Грейтволл/Даймон):** драконид
