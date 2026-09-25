@@ -152,7 +152,21 @@ src/devtools/    исследование: SCAN/DUMP/HUNT, выключаетс�
 
 Действующие модули: `PresetManager` (пресеты), `AcquisitorManager` (бывший
 Sanitary Cordon; с Build 55 Guardian/Nexus из-под кордона выведены),
-`SmartUtilitarian`, `TacticalSwitch`, `GuardianDoctrine`.
+`SmartUtilitarian`, `TacticalSwitch`, `GuardianDoctrine`, `NexusDoctrine`.
+
+### Nexus 85.08: границы ответственности
+
+`NexusPolicy.h` — чистые решения (выбор угрозы, постоянный/временный якорь),
+без чтения игровой памяти. `NexusDoctrine.cpp` — runtime-адаптер: snapshot партии,
+CombatBus, валидация кандидатов и запись combat target. Вызывается отдельно
+в `PawnAI.cpp`, а не через подписку `PawnAI_BusOrchestrator`.
+Порядок: Guardian → Nexus → Rescue → OrderWatch. Активный Rescue блокирует
+пин Nexus, но назначение сохраняется; полного арбитража нет.
+Nexus не владеет общим tempo override и с 85.08 не пишет его или gaze.
+Выход из gameplay/master OFF сбрасывает назначение. Идентичность проверяется
+по слоту, телу и записи; это не поколенческий handle.
+Точные условия и неподтверждённые границы: [`NEXUS_DOCTRINE.md`](NEXUS_DOCTRINE.md).
+WandRange остаётся отдельным механизмом eligibility, не позиционирования.
 
 Модуль поведения обращается к миру только через `src/runtime/Runtime.h`
 (позиции, враги, Guardian-фикс). Прямые вызовы `DevTools::` запрещены.

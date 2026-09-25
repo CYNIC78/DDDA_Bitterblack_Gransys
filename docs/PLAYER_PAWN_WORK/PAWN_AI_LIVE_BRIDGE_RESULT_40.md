@@ -1,5 +1,9 @@
 # Build 40 — живые приоритеты пешки найдены
 
+> **Исторический замер Build 40.** Число 450 для Nexus — результат того опыта,
+> не рекомендуемый порог новой доктрины. Текущий контракт 85.08:
+> [NEXUS_DOCTRINE.md](../NEXUS_DOCTRINE.md).
+
 **Снимки:** Follow/Walk, Follow/Run, Combat/Dagger
 
 **Build:** `40-pawn-ai-live-bridge`

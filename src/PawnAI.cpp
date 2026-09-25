@@ -78,10 +78,12 @@ void UpdatePawnAI(){
 
     if(!g_enabled || !pBase || !*pBase) {
         PawnAI::WandRange::Restore("pawn AI off");
+        PawnAI::Nexus::Shutdown();
         return;
     }
     if(!IsInActiveGameplay()) {
         PawnAI::WandRange::Restore("not in gameplay");
+        PawnAI::Nexus::Shutdown();
         return;
     }
 
@@ -1150,8 +1152,8 @@ void Hooks::PawnAI(){
     PawnAI::g_guardianDaggerBiasMelee = config.getInt("pawnAI", "guardianDaggerBiasMelee", 2);
     PawnAI::g_guardianDaggerBiasPreempt = config.getInt("pawnAI", "guardianDaggerBiasPreempt", 0);
     g_orch.acquisitor.suppressFloor = config.getFloat("pawnAI", "acquisitorCombatFloor", 100.0f);
-    g_orch.acquisitor.boostAmount   = config.getFloat("pawnAI", "acquisitorLootBoost", 180.0f);
-    g_orch.acquisitor.boostWindowMs = (DWORD)config.getInt("pawnAI", "acquisitorBoostWindowMs", 8000);
+    g_orch.acquisitor.boostAmount   = config.getFloat("pawnAI", "acquisitorLootBoost", 650.0f);
+    g_orch.acquisitor.boostWindowMs = (DWORD)config.getInt("pawnAI", "acquisitorBoostWindowMs", 20000);
     g_orch.acquisitor.returnMs      = (DWORD)config.getInt("pawnAI", "acquisitorReturnMs", 4000);
     g_orch.Init();
     PawnAI::Haste::Init();

@@ -1,19 +1,9 @@
-DDDA AI Overhaul — source package 85.06-hot-reload-safe
+DDDA AI Overhaul — source package 85.11-loot-window
 ========================================================================
-MOD_BUILD_TAG : 85.06-hot-reload-safe
-Дата сборки   : 2026-09-21 18:17 (Europe/Moscow)
-Файлов        : 644
-Архив         : builds/85.06-hot-reload-safe.zip
+MOD_BUILD_TAG : 85.11-loot-window
+Дата сборки   : 2026-09-22 18:57 (Europe/Moscow)
+Файлов        : 654
+Архив         : builds/85.11-loot-window.zip
 
 Состав:
-**Build 85.00-combat-stats** — закрытие слабых мест аудита 2026-09-21 + боевые статы:
-- P0-2: AdmitDirectorMobilization теперь RegionOk+DTI перед продлением envelope (stale ptr fix)
-- PartyStatus: kPartyBodyBytes 0x5A40 -> 0x5A10 (overscan убран)
-- CombatBus: Publish копирует listeners под локом, вызывает вне лока (deadlock fix)
-- SAFE_MODULE: SEH падение логируется в logFile (кто упал видно)
-- Audio: runtime-ветка заморожена (gate), vcxproj включает no-op файл без хуков
-- bump_build.py: auto-bump тега + analyze_devtools_layers check (слои Build 69 защищены)
-- Combat stats (главное, §8): Tuning attackMult/defenseMult/magickAttackMult/magickDefenseMult 0.5..3.0 ClampCombat,
-  ApplyCombatStats в EnemyTuner с per-body roll 0.9..1.1 (вариация в паке, нет клонов), транзакция validate->write->readback->WATCH,
-  интеграция с Sanctuary (боевая защита * armorMult, восстановление боевой а не ванили). ddda_entities.ini + DefaultEntitiesIni.h обновлены.
-  Инструмент для оркестратора: поднять attackMult в class.small чтобы мелочь кусала, боссов оставить ваниль — прессинг игрока своевременно.
+**Build 85.11-loot-window** — накопительный числовой эксперимент Acquisitor: defaults +650/20000 мс вместо +180/8000, боевой cap100 и возврат4000 сохранены. Только главная пешка; алгоритм не менялся. Существующий INI требует ручной правки двух ключей. Production subscriber/GetDelta tests PASS, MSVC/игра pending. Контракт: docs/ACQUISITOR_MANAGER.md.

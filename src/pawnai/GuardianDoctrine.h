@@ -2,41 +2,12 @@
 #include "PawnAI_Common.h"
 #include "../CombatBus.h"
 
-/**
- * GuardianDoctrine — поведенческая доктрина инклинации Guardian (и, позже,
- * Nexus — тем же ядром, но с другим anchor).
- *
- * ЭТО УЛУЧШЕНИЕ ИНКЛИНАЦИИ, а НЕ отдельная фича «спаси игрока».
- * Отдельная временная система (Critical Response) строится позже ПОВЕРХ
- * этого ядра — она включается на всю партию, когда игрок в опасности.
- *
- * Build 56 (draft, observe-only). Реализует решение, принятое в архитектуре:
- * мы НЕ пишем второй AI поверх Capcom и НЕ трогаем сохранённые значения
- * склонностей. Доктрина читает характер пешки (Guardian) и исправляет
- * ПОВЕДЕНЧЕСКУЮ РЕАЛИЗАЦИЮ этой черты — выдаёт «семантический совет по
- * приоритету», который позднее применится через штатный priority-слой.
- *
- * Ключевой принцип (из архитектуры):
- *
- *   Threat Anchor    — вокруг кого выбираются опасные враги;
- *   Movement Anchor  — куда физически должна двигаться пешка.
- *
- *   Guardian: anchor = Arisen. Nexus: anchor = выбранная пешка.
- *   Вокация пешки решает КАК реагировать: мили-пешка перехватывает,
- *   дальняя держит позицию и ведёт огонь по угрозе в зоне, кастер —
- *   дальняя поддержка без сближения.
- *
- * ЧТО ДОКТРИНА НЕ ДЕЛАЕТ (никогда):
- *   - не пишет target pointer напрямую;
- *   - не включает cPlAct вручную;
- *   - не телепортирует и не заставляет атаковать недоступную цель;
- *   - не вмешивается в damage/down/carry execution;
- *   - не меняет save.
- *
- * СЕЙЧАС (Build 56 draft) модуль работает ТОЛЬКО в observe-only: он
- * считает решение и отдаёт отчёт, но не пишет в память игры. Первая
- * запись появится в Build 56 A/B — снятие одного доказанного Guardian-
- * штрафа (code 54 WpnDaggerAtk) через транзакционный priority-профиль.
+/** Guardian doctrine: production decision + runtime adapter.
+ * Decide() is read-only; GuardianDoctrineTick() writes combat target/gaze and
+ * requests a tempo override. observeOnly describes the report, NOT a global
+ * write gate. Nexus has its own module, not this class's old draft branch.
+ * 85.09/85.10 changes and remaining limits: docs/GUARDIAN_HARDENING.md.
+ * Navigation, shield skill selection and actual attacks remain engine-owned.
  */
 namespace PawnAI {
 
@@ -144,7 +115,7 @@ struct GuardianReport {
     bool        anchorResolved;   // известна ли позиция якоря
     bool        pawnResolved;     // известна ли позиция пешки
     int         threatsInZone;
-    float       nearestThreatDist; // 1e9f, если угроз нет
+    float       nearestThreatDist; // selected candidate distance; 1e9f if none
     float       pawnAnchorDist;    // 1e9f, если не известно
     bool        zoneEngaged;       // внутренний флаг захвата зоны (hysteresis)
     uintptr_t   targetThreatBody;  // тело ближайшей угрозы в зоне
@@ -189,9 +160,8 @@ private:
     void ResetState();
 };
 
-// Адаптер источника: заполняет SitRep тем, что уже подтверждено
-// (враги из WorldReport, вокация, инклинации, бой). Позиции anchor/pawn
-// пока НЕ резолвятся — помечаются invalid (это следующий шаг discovery).
+// Shared snapshot for UI/main pawn. Runtime Tick rebinds all actor fields
+// to the selected Guardian, including hired inclinations and validated position.
 void BuildGuardianSitRep(GuardianSitRep& s);
 
 // ============ Build 57.1: динамический Guardian-фикс ============

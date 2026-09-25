@@ -2,6 +2,27 @@
 
 ## Текущий milestone
 
+**Build 85.11:** `85.11-loot-window`, накопительный числовой эксперимент
+Acquisitor (+650, 20 с). Только главная пешка, MSVC/игра pending.
+[Миграция двух INI-ключей и тест](docs/ACQUISITOR_MANAGER.md).
+
+### Предыдущий source milestone — Guardian
+
+**Build 85.10:** `85.10-guardian-actor-context`, накопительный после 85.09
+`guardian-threat-order` и Nexus 85.08. Приёмка: [Guardian](docs/GUARDIAN_HARDENING.md).
+MSVC/игра pending; усиление логики без изменения радиусов, tempo и навыков.
+
+### Предыдущий source milestone
+
+**Build 85.08:** `85.08-nexus-sticky-partner` — экспериментальный source milestone.
+Nexus: постоянный напарник + временное аварийное прикрытие с возвратом.
+Предыдущий **85.07** изолирует исправление выбора угрозы. MSVC/игра не проверены.
+Контракт и приёмка: [`docs/NEXUS_DOCTRINE.md`](docs/NEXUS_DOCTRINE.md).
+Ближайшая задача: полевой прогон 85.08 → при регрессии 85.07 → исходный 85.06.
+Отход кастеров и дистанционный Nexus — исследование, не реализованная фича.
+
+## Исторический срез хаба (84.44; не текущий статус)
+
 **Build 84.44:** `genetic-scale` — генетический видовой масштаб стаи в `SpeciesCard` с защитой
 нативных альфа-вожаков Capcom и компенсацией частоты шага в `MonsterTempo`.
 Канон: `MOD_BUILD_TAG` = `84.44-genetic-scale`.
@@ -58,6 +79,7 @@ ddda_pawn_ai_profiles.ini generalized priority sidecar template
 
 | Документ | Роль |
 |---|---|
+| `docs/NEXUS_DOCTRINE.md` | исходниковый контракт Nexus 85.08; игровые проверки ожидаются |
 | `docs/ARCHITECTURE.md` | слои платформы и правила проектирования |
 | `docs/SOURCE_OF_TRUTH.md` | единственный runtime-контракт (84.23) |
 | `docs/SOURCE_OF_TRUTH.md` | подтверждённые runtime-контракты |

@@ -24,6 +24,18 @@
 
 ## Текущий milestone
 
+**Build 85.11-loot-window** — накопительный числовой эксперимент Acquisitor: defaults +650/20000 мс вместо +180/8000, боевой cap100 и возврат4000 сохранены. Только главная пешка; алгоритм не менялся. Существующий INI требует ручной правки двух ключей. Production subscriber/GetDelta tests PASS, MSVC/игра pending. Контракт: docs/ACQUISITOR_MANAGER.md.
+
+**Build 85.10-guardian-actor-context** — накопительный: 85.09 + собственные инклинации/вокация/валидная позиция выбранного Guardian. Ошибка чтения позиции не наследует MainPawn; недоступный кандидат не блокирует следующих. Finite/range validation. Production binder + Decide portable tests PASS, MSVC/игра pending. Радиусы, tempo и навыки не менялись. См. docs/GUARDIAN_HARDENING.md.
+
+**Build 85.09-guardian-threat-order** — накопительный после 85.08 + docs-01. Guardian: critical-first, ближайшая цель внутри уровня, стабильный tie-break; дистанция относится к выбранной цели. NaN/Inf/null targets пропускаются. Радиусы, tempo, выбор навыков не менялись; разрыв preempt 13.5→12 м сохранён для отдельного опыта. Production Decide portable tests PASS; MSVC/игра pending.
+
+**Документация 85.08-docs-01** — синхронизация Nexus: README/Hub, архитектура, SoT, release checklist, бэклог и исторические примечания. Runtime tag и код не менялись; прежние source ZIP сохранены. Документационный пакет распространяется отдельно.
+
+**Build 85.08-nexus-sticky-partner** — накопительный: постоянный напарник, временная аварийная охрана с возвратом, фильтр Guardian, melee-only исполнители. Nexus больше не пишет gaze/общий tempo override; target readback. Консервативный encounter grace 8s. Portable tests; MSVC и игра НЕ проверены. Контракт: docs/NEXUS_DOCTRINE.md.
+
+**Build 85.07-nexus-threat-order** — Nexus: ближайшая critical-угроза вместо последней в списке; стабильный tie-break. Portable policy tests. Source-only, MSVC/game verification pending.
+
 **Build 85.06-hot-reload-safe** — hot-reload safe: Clamp* NaN-safe, TickOneBody RegionOk,
 charParamOff re-validate, защита от полузаписанного ini. Краш на спринте после правки ini закрыт.
 
@@ -314,7 +326,7 @@ uEm2000») в SoT §8.5.1/§8.5.2 и переписан ошибочный бл�
 
 **Build 84.62** — `dual-guardian-nexus-synergy`. Синхронная работа Guardian (защита Аризена) + Nexus (защита Чародейки) для всей партии.
 
-**Build 84.61** — `nexus-doctrine-wingman`. Полноценная доктрина Nexus: выбор напарника-пешки (защита кастов мага / штурмовая двойка) + двухуровневый перехват.
+**Build 84.61** — `nexus-doctrine-wingman`. Исторически заявлена «полноценная доктрина»: выбор напарника и двухуровневый перехват. Уточнение аудита 85.08: роли использовали общий периметр, не отдельный контроль каста/совместного штурма. Текущий контракт: [`docs/NEXUS_DOCTRINE.md`](docs/NEXUS_DOCTRINE.md).
 
 **Build 84.60** — `hobgoblin-flail-tempo-tuner`. Калибровка ярости гоблинов и хобгоблинов + фикс ускорения сабельного раша (`SwMoveAttack`).
 
@@ -1406,7 +1418,7 @@ src/devtools/    — чисто исследовательское (SCAN/DUMP/HU
   оставлен в фоне, поймает при случае.
 - **Файтер/Варриор** — код меча/двуручника вскроется аудитом после смены
   вокации (нужен город).
-- **Nexus** — anchor = выбранная пешка; ждёт решения по scope наёмных пешек.
+- **Nexus (историческое состояние этого билда)** — anchor = выбранная пешка; тогда ожидалось решение по scope наёмных. С 84.61 доктрина реализована; текущая политика 85.08 — [`docs/NEXUS_DOCTRINE.md`](docs/NEXUS_DOCTRINE.md).
 
 ## Неподвижные принципы (напоминание)
 

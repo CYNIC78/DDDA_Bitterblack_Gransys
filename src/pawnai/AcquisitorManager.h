@@ -36,8 +36,8 @@ public:
     float lastAppliedDelta = 0.0f;
 
     float suppressFloor  = 100.0f;     // в бою Acquisitor не выше
-    float boostAmount    = 180.0f;     // пост-бойный подъём (пылесосит лут)
-    DWORD boostWindowMs  = 8000;       // сколько держим подъём после боя
+    float boostAmount    = 650.0f;     // пост-бойный подъём (пылесосит лут)
+    DWORD boostWindowMs  = 20000;       // сколько держим подъём после боя
     DWORD returnMs       = 4000;       // сколько длится плавный возврат «домой»
     static const DWORD kCombatTailMs = 1500; // держим «бой» после последнего отчёта
 

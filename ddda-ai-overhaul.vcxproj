@@ -191,6 +191,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\AcquisitorManager.h" />
     <ClInclude Include="src\pawnai\GuardianDoctrine.h" />
     <ClInclude Include="src\pawnai\NexusDoctrine.h" />
+    <ClInclude Include="src\pawnai\NexusPolicy.h" />
     <ClInclude Include="src\pawnai\OrderWatch.h" />
     <ClInclude Include="src\pawnai\PresetManager.h" />
     <ClInclude Include="src\pawnai\PawnAI_Common.h" />

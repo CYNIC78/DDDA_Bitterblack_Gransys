@@ -4,7 +4,7 @@
 
 | Файл | Назначение |
 |---|---|
-| [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) | **единственный runtime-контракт** (84.25) |
+| [`SOURCE_OF_TRUTH.md`](SOURCE_OF_TRUTH.md) | **реестр runtime-контрактов**; новый source-only статус отмечается отдельно |
 | [`HUNT.md`](HUNT.md) | охота за адресом: снапшот, не новый прибор |
 | [`FIELD_MAP.md`](FIELD_MAP.md) | компактные offsets |
 | [`VISION.md`](VISION.md) | замысел трёх слоёв |
@@ -20,6 +20,9 @@
 
 | Файл | Назначение |
 |---|---|
+| [`ACQUISITOR_MANAGER.md`](ACQUISITOR_MANAGER.md) | Acquisitor 85.11: +650 / 20 с, миграция INI, scope |
+| [`GUARDIAN_HARDENING.md`](GUARDIAN_HARDENING.md) | Guardian 85.09/85.10: исправления и полевой чеклист |
+| [`NEXUS_DOCTRINE.md`](NEXUS_DOCTRINE.md) | Nexus 85.08: политика исходников, ограничения и приёмка |
 | [`TEMPO_SYSTEM.md`](TEMPO_SYSTEM.md) | примитив темпа |
 | [`SPECIES_ROLLOUT.md`](SPECIES_ROLLOUT.md) | метод допуска вида |
 | [`POSSESSION_RECON.md`](POSSESSION_RECON.md) | охота Possession; канон слота — SoT §12 |

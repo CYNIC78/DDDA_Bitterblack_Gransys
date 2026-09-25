@@ -190,6 +190,7 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
     float exitR  = (protectionRadius + hysteresisExit) * scale;
     int   inZone = 0;
     float nearest = 1e9f;
+    float selectedDistance = 1e9f;
     uintptr_t nearestBody = 0;
     const char* nearestKind = nullptr;
     bool  isCritical = false;
@@ -197,6 +198,8 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
     for (int i = 0; i < s.threatCount; ++i) {
         const GuardianThreat& t = s.threats[i];
         float d = Dist3(s.anchorX, s.anchorY, s.anchorZ, t.x, t.y, t.z);
+        // Invalid entries must not become targets or hold the zone.
+        if (!t.body || !(d >= 0.0f) || d > 1e9f) continue;
         if (d < nearest) nearest = d;
 
         const bool inCriticalPerimeter = (d <= meleeR);
@@ -204,7 +207,11 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
 
         if (inCriticalPerimeter || inPreemptPerimeter) {
             ++inZone;
-            if (!nearestBody || inCriticalPerimeter || d < nearest) {
+            const bool better = !nearestBody ||
+                (inCriticalPerimeter != isCritical ? inCriticalPerimeter :
+                 (d < selectedDistance || (d == selectedDistance && t.body < nearestBody)));
+            if (better) {
+                selectedDistance = d;
                 nearestBody = t.body;
                 nearestKind = t.kind;
                 isCritical = inCriticalPerimeter;
@@ -235,7 +242,9 @@ void GuardianDoctrine::Decide(const GuardianSitRep& s, GuardianReport& out)
 
     out.threatsInZone = inZone;
     // Дистанции на экран — в МЕТРАХ (raw world-units / scale).
-    out.nearestThreatDist = nearest / scale;
+    // Hysteresis still uses nearest over all valid threats; telemetry uses
+    // the selected candidate only (no candidate => sentinel).
+    out.nearestThreatDist = nearestBody ? selectedDistance / scale : 1e9f;
     // pawn->Arisen нужна только для leash; если пешка не резолвлена — считаем
     // «не известно» (1e9), leash-совет просто не сработает.
     out.pawnAnchorDist = s.pawnValid
@@ -532,6 +541,31 @@ bool GuardianLeverIsActive() { return g_inclLeverActive; }
 // продуктового слоя.
 bool GuardianDoctrineOwnsRule() { return g_guardianFixEnabled; }
 
+// Bind only the selected actor. Never inherit MainPawn coordinates/weights.
+// Kept separate so the production adapter can be exercised with a memory stub.
+static bool BindGuardianActor(GuardianSitRep& s, uintptr_t body, int vocation,
+                              float guardian, float nexus)
+{
+    s.pawnValid = false;
+    s.pawnX = s.pawnY = s.pawnZ = 0.0f;
+    s.pawnVocation = vocation;
+    s.guardian = guardian;
+    s.nexus = nexus;
+    float x = 0, y = 0, z = 0;
+    if (!body || !(guardian >= 350.f) || !(guardian <= 1000.f) ||
+        !(nexus >= 0.f) || !(nexus <= 1000.f) || guardian < nexus)
+        return false;
+    if (!Rd((const void*)(body + 0x40), &x, 4) ||
+        !Rd((const void*)(body + 0x44), &y, 4) ||
+        !Rd((const void*)(body + 0x48), &z, 4)) return false;
+    // Reject NaN/Inf and corrupt coordinate magnitudes without platform intrinsics.
+    if (!(x >= -1e9f && x <= 1e9f) || !(y >= -1e9f && y <= 1e9f) ||
+        !(z >= -1e9f && z <= 1e9f)) return false;
+    s.pawnX = x; s.pawnY = y; s.pawnZ = z;
+    s.pawnValid = true;
+    return true;
+}
+
 void GuardianDoctrineTick()
 {
     static GuardianDoctrine d;
@@ -540,50 +574,32 @@ void GuardianDoctrineTick()
     int foundGuardianSlot = -1;
     uintptr_t guardianBody = 0;
     const char* guardianRoleName = "none";
-    int pawnVoc = VOC_UNKNOWN;
-
-    float mainIncl[I_COUNT];
-    ReadAllIncl(mainIncl, 0);
-    if (mainIncl[I_GUARDIAN] >= 350.0f && mainIncl[I_GUARDIAN] >= mainIncl[I_NEXUS]) {
-        foundGuardianSlot = Runtime::PARTY_MAIN;
-        guardianBody = Runtime::MainPawnBody();
-        guardianRoleName = "MainPawn";
-        if (pBase && *pBase) {
-            uintptr_t pawnRec = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET;
-            pawnVoc = ReadVocation(pawnRec);
-        }
-    }
-
-    if (foundGuardianSlot < 0) {
-        for (int slot = Runtime::PARTY_HIRED1; slot <= Runtime::PARTY_HIRED2; ++slot) {
-            uintptr_t b = 0;
-            int v = 0, lvl = 0;
-            if (!Runtime::PartyRecordInfo(slot - 1, &v, &lvl, &b) || !b) continue;
-            float hIncl[I_COUNT];
-            ReadAllIncl(hIncl, slot - 1);
-            if (hIncl[I_GUARDIAN] >= 350.0f && hIncl[I_GUARDIAN] >= hIncl[I_NEXUS]) {
-                foundGuardianSlot = slot;
-                guardianBody = b;
-                guardianRoleName = Runtime::PartyCombatSlotName(slot);
-                pawnVoc = v;
-                break;
-            }
-        }
-    }
-
-    if (foundGuardianSlot < 0 || !guardianBody) return;
-
     GuardianSitRep s;
-    BuildGuardianSitRep(s);
-    // Обновляем позицию и вокацию найденного Guardian
-    float gx = 0, gy = 0, gz = 0;
-    if (Rd((const void*)(guardianBody + 0x40), &gx, 4) &&
-        Rd((const void*)(guardianBody + 0x44), &gy, 4) &&
-        Rd((const void*)(guardianBody + 0x48), &gz, 4)) {
-        s.pawnX = gx; s.pawnY = gy; s.pawnZ = gz;
-        s.pawnValid = true;
+    BuildGuardianSitRep(s); // shared anchor/threats; actor fields rebound below
+
+    for (int slot = Runtime::PARTY_MAIN; slot <= Runtime::PARTY_HIRED2; ++slot) {
+        uintptr_t body = 0;
+        int vocation = VOC_UNKNOWN;
+        if (slot == Runtime::PARTY_MAIN) {
+            body = Runtime::MainPawnBody();
+            if (pBase && *pBase) {
+                uintptr_t record = (uintptr_t)(*pBase) + PLAYER_BASE + PAWN_OFFSET;
+                vocation = ReadVocation(record);
+            }
+        } else {
+            int level = 0;
+            if (!Runtime::PartyRecordInfo(slot - 1, &vocation, &level, &body)) continue;
+        }
+        float incl[I_COUNT];
+        ReadAllIncl(incl, slot - 1);
+        if (!BindGuardianActor(s, body, vocation, incl[I_GUARDIAN], incl[I_NEXUS]))
+            continue; // invalid/unavailable main must not block a valid hired pawn
+        foundGuardianSlot = slot;
+        guardianBody = body;
+        guardianRoleName = slot == Runtime::PARTY_MAIN ? "MainPawn" : Runtime::PartyCombatSlotName(slot);
+        break;
     }
-    s.pawnVocation = pawnVoc;
+    if (foundGuardianSlot < 0 || !guardianBody) return;
 
     GuardianReport r;
     d.Decide(s, r);

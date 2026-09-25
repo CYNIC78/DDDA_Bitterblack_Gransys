@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.06-hot-reload-safe"
+#define MOD_BUILD_TAG "85.11-loot-window"
