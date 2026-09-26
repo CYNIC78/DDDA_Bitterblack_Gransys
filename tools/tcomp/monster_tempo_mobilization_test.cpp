@@ -20,8 +20,23 @@ bool KindIsEnemy(const char* kind) { return kind && kind[0] == 'u'; }
 namespace Mem {
 bool Rd(const void*, void*, size_t) { return false; }
 bool WrSafe(void*, const void*, size_t) { return false; }
+// 2026-09-25: фикстура отстала от P0-2 фикса аудита 2026-09-21 дважды.
+//   1) без RegionOk она вообще не линковалась (undefined reference) —
+//      проверка примитива мобилизации молча не существовала;
+//   2) сам P0-2 фикс добавил в допуск два гейта: «тело читаемо» (RegionOk)
+//      и «вид совпал с exactKind» (NameOfLiveObject). Заглушки-пустышки
+//      отбивали бы допуск на первом же вызове, поэтому здесь тело считается
+//      читаемым, а его вид — волком, как и ждёт сам тест.
+bool RegionOk(uintptr_t, size_t) { return true; }
 bool NameOfLiveObject(uintptr_t, char* out, int cap)
-{ if (out && cap > 0) out[0] = 0; return false; }
+{
+    if (!out || cap <= 0) return false;
+    const char* k = "uEm0200";
+    int i = 0;
+    for (; k[i] && i < cap - 1; ++i) out[i] = k[i];
+    out[i] = 0;
+    return true;
+}
 } // namespace Mem
 } // namespace Runtime
 

@@ -25,6 +25,8 @@ namespace MonsterAI {
 
 static const int   kMaxViews       = 32;
 static const DWORD kTickMs         = 150;
+// 85.29: не чаще одной строки BLOCKED на одно и то же состояние.
+static const DWORD kFallenDiagRepeatMs = 3000;
 static const DWORD kWorldFreshMs   = 450; // three situation scans; stale fails closed
 static const DWORD kDecisionMs     = 500;
 static const DWORD kMinHoldMs      = 2500;
@@ -85,6 +87,10 @@ struct TacticalRuntime {
     char      targetAct[64];
     char      victimAct[64];
     char      responderKind[16];
+    // 85.29: почему встреча у тела не состоялась. Телеметрия, а не состояние
+    // боя: на решения не влияет, живёт для строки BLOCKED и для тестов.
+    MonsterAI::TacticalFallenDiag fallen;   // 11: встреча у тела
+    MonsterAI::TacticalFallenDiag finish;   // 12: добивание
 };
 static TacticalRuntime s_tactical;
 static bool             s_policyHardResetPending = false;
@@ -116,6 +122,27 @@ static uintptr_t   s_policyExcludedBody = 0;
 static uint64_t    s_policyEventTopology = 0;
 static uintptr_t   s_responderWolf[kMaxPolicyWolves] = {};
 static int         s_nResponderWolf = 0;
+// 85.23: сколько особей вообще получает приказ. 0 = все (как было), N = N
+// ближайших к очагу. Причина: приказ «выручай собрата» превращался в «вся
+// пачка разом», а это уже не тактика, а ганк. Ключ [monsterAI] responderMax.
+static int         s_policyResponderMax = 0;
+
+// 85.25: «услышал каст» — брать ближайшего монстра вместо отказа, когда рядом
+// их несколько. Хватов и прижимов не касается: там уникальность пары
+// доказывает, кого именно держат. См. SetNearestPairFallback в TacticalCues.h.
+static bool        s_chantNearest = true;
+
+// ---- 85.28: FALLEN GUARD -------------------------------------------------
+// Радиус подхода игрока к телу павшей пешки. Сам механизм живёт в движке
+// приказов (TacticalCues, ситуация FALLEN-GUARD): в 85.27 он был встроен в
+// выбор цели и не сработал — выбор цели в игре ничего не делает, его читает
+// только панель. Здесь остаётся только ключ и передача его в матчер.
+static float       s_fallenGuardRadius = 10.0f;  // 0 = выключено
+// 85.30: добивание лежащей пешки в сознании (ключ `pawnFinish`). Включено по
+// умолчанию — это прямое указание владельца по полю 85.29. Ключ
+// fallenGuardRadius к нему НЕ относится: у добивания нет радиуса от игрока,
+// работает близость монстров к пешке.
+static bool        s_pawnFinish = true;
 static int         s_gameplayWrites = 0;
 static char        s_policyStatus[128] = "actuator-off";
 // Release coalescing is deliberately separate from UI/status text. NONE/BIAS
@@ -303,8 +330,13 @@ static void TacticalEnter(const TacticalMatch& m, DWORD now,
             << " victim=0x" << std::hex << m.evidenceBody << std::dec
             << " victimAct=" << (m.evidenceAct ? m.evidenceAct : "?")
             << " distance=" << m.pairDistanceM << "m"
-            << " leaseMax=" << m.maxLeaseMs << "ms"
-            << std::endl;
+            << " leaseMax=" << m.maxLeaseMs << "ms";
+    // 85.25: если пар в радиусе было несколько — показываем, из скольких выбрали
+    // ближайшую. У строгих правил (хват, прижим) этого не бывает: там пара
+    // ровно одна, поэтому поле просто отсутствует.
+    if (m.pairsConsidered > 1)
+        logFile << " nearestOf=" << m.pairsConsidered;
+    logFile << std::endl;
 }
 
 static uint64_t TacticalPartialSignature(const TacticalScan& scan)
@@ -350,6 +382,127 @@ static uint64_t TacticalEventTopology(
 static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
                                const char** reasonOut);
 
+static DWORD    s_lastFallenLineMs = 0;
+static uint64_t s_lastFallenSignature = 0;
+static DWORD    s_lastFinishLineMs = 0;
+static uint64_t s_lastFinishSignature = 0;
+
+static void ReportOneBlocker(const MonsterAI::TacticalFallenDiag& d,
+                             const Runtime::PartyCombatSnapshot& fresh,
+                             const MonsterAI::TacticalPartyActor* party,
+                             int nParty, DWORD now, DWORD& lastMs,
+                             uint64_t& lastSignature);
+
+// 85.29: одна строка «почему встреча не состоялась».
+//
+// Печатается ТОЛЬКО когда тема реально есть: пешка лежит (по вердикту
+// наблюдателя или по акту) либо происходит что-то подозрительное — акт похож на
+// падение, но в наш список не попал, или тело есть, а акт не читается. Иначе в
+// лог полез бы мусор из каждого боя.
+static bool ActLooksLikeFall(const char* act)
+{
+    // Только для телеметрии: если игровой акт падения назван иначе, чем в наших
+    // списках, строка BLOCKED покажет его настоящее имя. На поведение не влияет.
+    if (!act || !act[0]) return false;
+    return strstr(act, "Down") != 0 || strstr(act, "Dead") != 0
+        || strstr(act, "Crumble") != 0 || strstr(act, "Cmc") != 0;
+}
+
+static void ReportFallenGuardBlocker(const MonsterAI::TacticalScan& scan,
+                                     const Runtime::PartyCombatSnapshot& fresh,
+                                     const MonsterAI::TacticalPartyActor* party,
+                                     int nParty, DWORD now)
+{
+    if (scan.matched) return;                        // событие состоялось
+    // 85.30: два механизма — две строки. Каждый объясняется своим каналом, и
+    // «молчит именно добивание» отличается от «молчит именно встреча».
+    ReportOneBlocker(scan.fallen, fresh, party, nParty, now, s_lastFallenLineMs,
+                     s_lastFallenSignature);
+    ReportOneBlocker(scan.finish, fresh, party, nParty, now, s_lastFinishLineMs,
+                     s_lastFinishSignature);
+}
+
+static void ReportOneBlocker(const MonsterAI::TacticalFallenDiag& d,
+                             const Runtime::PartyCombatSnapshot& fresh,
+                             const MonsterAI::TacticalPartyActor* party,
+                             int nParty, DWORD now, DWORD& lastMs,
+                             uint64_t& lastSignature)
+{
+    if (!d.reason) return;                           // замечаний нет
+    if (!strcmp(d.reason, "mechanism-off")) return;  // ключ 0 — об этом сказано в баннере
+
+    bool interesting = d.pawnDowned;
+    if (!interesting) {
+        for (int p = 0; p < nParty; ++p) {
+            if (party[p].downedValid || party[p].downedRevivable) {
+                interesting = true;
+                break;
+            }
+            if (ActLooksLikeFall(party[p].act)) { interesting = true; break; }
+        }
+    }
+    for (int i = 0; i < Runtime::PARTY_COMBAT_SLOTS && !interesting; ++i) {
+        const Runtime::PartyCombatMember& m = fresh.member[i];
+        if (m.recordValid && m.bodyValid && !m.actionValid) interesting = true;
+    }
+    if (!interesting) return;
+
+    uint64_t sig = 1469598103934665603ULL;
+    sig ^= (uint64_t)(uintptr_t)d.reason;
+    sig *= 1099511628211ULL;
+    sig ^= (uint64_t)d.pawnBody;
+    sig *= 1099511628211ULL;
+    sig ^= (uint64_t)(int)(d.approachM * 10.0f);
+    sig *= 1099511628211ULL;
+    sig ^= (uint64_t)d.monstersOfKind;
+    if (sig == lastSignature && now - lastMs < kFallenDiagRepeatMs) return;
+    lastSignature = sig;
+    lastMs = now;
+
+    logFile << "Monster Director: situation BLOCKED name="
+            << MonsterAI::TacticalSituationName(d.situation)
+            << " reason="
+            << d.reason
+            << " radius=" << s_fallenGuardRadius << "m"
+            // Отрицательное число = «нечего было измерять» (у добивания радиус
+            // игрока не участвует вовсе) — печатаем n/a, чтобы «-1m» не читалось
+            // как настоящая дистанция.
+            << " approach="
+            << (d.approachM >= 0.0f ? d.approachM : -1.0f) << "m"
+            << " nearestMob="
+            << (d.nearestKindM >= 0.0f ? d.nearestKindM : -1.0f) << "m"
+            << " monstersOfKind=" << d.monstersOfKind << "/" << d.monstersTotal
+            << " pawn="
+            << (d.pawnSlot >= 0 && d.pawnSlot < Runtime::PARTY_COMBAT_SLOTS
+                ? Runtime::PartyCombatSlotName(d.pawnSlot) : "none")
+            << " pawnAct=" << (d.pawnAct ? d.pawnAct : "?")
+            << " pawnDowned=" << (d.pawnDowned ? 1 : 0)
+            << " pawnPosValid=" << (d.pawnPosValid ? 1 : 0)
+            << " arisenPosValid=" << (d.arisenPosValid ? 1 : 0)
+            << std::hex << " pawnBody=0x" << d.pawnBody << std::dec
+            << " rawPos{pawn=" << (int)d.pawnX << "," << (int)d.pawnY << ","
+            << (int)d.pawnZ << " arisen=" << (int)d.arisenX << ","
+            << (int)d.arisenY << "," << (int)d.arisenZ << "}"
+            << " units=cm" << std::endl;
+
+    // Что видно про партию в этот такт. Когда причина «пешки не видно» или акт
+    // не совпал с нашим списком — это единственный способ узнать настоящее имя
+    // акта падения.
+    for (int i = 0; i < Runtime::PARTY_COMBAT_SLOTS; ++i) {
+        const Runtime::PartyCombatMember& m = fresh.member[i];
+        logFile << "Monster Director: situation BLOCKED-member slot="
+                << Runtime::PartyCombatSlotName(i)
+                << " rec=" << (m.recordValid ? 1 : 0)
+                << " body=" << (m.bodyValid ? 1 : 0)
+                << " pos=" << (m.positionValid ? 1 : 0)
+                << " action=" << (m.actionValid ? 1 : 0)
+                << " downed=" << (m.downedValid ? 1 : 0)
+                << " revivable=" << (m.downedRevivable ? 1 : 0)
+                << " act=" << (m.actionValid ? m.liveAct : "?")
+                << std::endl;
+    }
+}
+
 static void UpdateTacticalSituations(DWORD now)
 {
     Runtime::PartyCombatSnapshot fresh;
@@ -390,6 +543,13 @@ static void UpdateTacticalSituations(DWORD now)
         a.positionValid = m.positionValid;
         a.x = m.x; a.y = m.y; a.z = m.z;
         a.vocation = m.vocation;
+        // 85.29: вердикт наблюдателя PartyStatus. Имена актов падения уже один
+        // раз подвели (в списке кандидатов не было реального акта поля), поэтому
+        // состояние берём оттуда, где оно подтверждено живым логом.
+        a.downedValid = m.downedValid;
+        a.downedRevivable = m.downedRevivable;
+        // 85.30: вид падения — разные адресаты (добивать пешку / встречать игрока).
+        a.downedAwake = m.downedAwake;
     }
 
     TacticalMonsterActor monsters[kMaxViews];
@@ -407,8 +567,16 @@ static void UpdateTacticalSituations(DWORD now)
 
     TacticalScan scan;
     ScanTacticalSituations(party, nParty, monsters, nMonster, &scan);
+    s_tactical.fallen = scan.fallen;
+    s_tactical.finish = scan.finish;
     const bool anyEvidence = scan.targetCandidates > 0
                           || scan.evidenceCandidates > 0;
+
+    // 85.29: встреча у тела больше не молчит. Если лежащая пешка есть, а
+    // события нет — печатаем причину и числа, не чаще одной строки на
+    // изменение состояния. Дважды подряд механизм молчал в поле, и оба раза по
+    // логу нельзя было понять, чего именно не хватило.
+    ReportFallenGuardBlocker(scan, fresh, party, nParty, now);
 
     // Strict unique spatial admission is paid once. While the same exact pair
     // remains on the same table recipe, unrelated wolves and noisy coordinates
@@ -425,6 +593,7 @@ static void UpdateTacticalSituations(DWORD now)
             InspectTacticalContinuation(s_tactical.situation,
                                         s_tactical.targetBody,
                                         s_tactical.victimBody,
+                                        s_tactical.responderKind,
                                         party, nParty, monsters, nMonster,
                                         &continuation);
             if (continuation.targetActionMatched
@@ -1133,20 +1302,32 @@ static const char* PolicyResponderKind(int situation)
     return "uEm0200";
 }
 
+// Исполнители приказа. Возвращает их число (0 = никого).
+//
+// Проблема, которую решает отбор (85.23): порядок обхода s_view — это порядок
+// памяти, а не близость. Когда [monsterAI] responderMax ограничивает число
+// исполнителей, брать «первые попавшиеся» бессмысленно: смысл приказа
+// «выручай собрата» — он у кого-то перед глазами. Поэтому при известном очаге
+// (refPos: жертва события, иначе помеченная пешка) список сортируется по
+// расстоянию, и лимит режет хвост. Нет очага — порядок прежний, лимит всё
+// равно соблюдается, просто выбор произвольный.
 static int CollectEligibleResponders(uintptr_t* out, int cap,
                                      uintptr_t excludedBody, const char* kind,
+                                     const float* refPos, int want,
                                      const char** reasonOut)
 {
     const bool goblin = kind && !strcmp(kind, "uEm0100");
     const bool hob = kind && !strcmp(kind, "uEm0101");
     const bool saur = kind && !strcmp(kind, "uEm0400");
+    uintptr_t cand[kMaxViews];
+    float     candD[kMaxViews];
     int n = 0;
     for (int i = 0; i < s_nView; ++i) {
         const MonsterView& v = s_view[i];
         if (!v.body || v.dead || v.body == excludedBody) continue;
         if (!kind || strcmp(v.kind, kind) != 0) continue;
         for (int k = 0; k < n; ++k) {
-            if (out[k] == v.body) {
+            if (cand[k] == v.body) {
                 if (reasonOut)
                     *reasonOut = goblin ? "goblin-duplicate-body"
                                : hob ? "hob-duplicate-body"
@@ -1155,15 +1336,15 @@ static int CollectEligibleResponders(uintptr_t* out, int cap,
                 return -1;
             }
         }
-        if (n >= cap) {
-            if (reasonOut)
-                *reasonOut = goblin ? "goblin-too-large"
-                           : hob ? "hob-too-large"
-                           : saur ? "saurian-too-large"
-                           : "wolf-pack-too-large";
-            return -1;
+        cand[n] = v.body;
+        candD[n] = -1.0f;
+        if (refPos && v.positionValid) {
+            const float dx = v.x - refPos[0];
+            const float dy = v.y - refPos[1];
+            const float dz = v.z - refPos[2];
+            candD[n] = sqrtf(dx * dx + dy * dy + dz * dz);
         }
-        out[n++] = v.body;
+        ++n;
     }
     if (!n) {
         if (reasonOut)
@@ -1173,6 +1354,26 @@ static int CollectEligibleResponders(uintptr_t* out, int cap,
                        : "wolf-pack-lost";
         return 0;
     }
+    if (refPos) {
+        // Вставка: список короткий (<= kMaxViews). Тела без позиции уезжают
+        // в хвост — их честнее потерять, чем поставить вперёд ближних.
+        for (int i = 1; i < n; ++i) {
+            const uintptr_t b = cand[i];
+            const float     d = candD[i];
+            int j = i - 1;
+            while (j >= 0 && ((candD[j] < 0.0f && d >= 0.0f)
+                              || (d >= 0.0f && candD[j] > d))) {
+                cand[j + 1] = cand[j];
+                candD[j + 1] = candD[j];
+                --j;
+            }
+            cand[j + 1] = b;
+            candD[j + 1] = d;
+        }
+    }
+    if (n > cap) n = cap;                        // жёсткий предел таблицы Tempo
+    if (want > 0 && want < n) n = want;          // лимит владельца
+    for (int i = 0; i < n; ++i) out[i] = cand[i];
     if (reasonOut)
         *reasonOut = goblin ? "goblin-eligible"
                    : hob ? "hob-eligible"
@@ -1180,6 +1381,32 @@ static int CollectEligibleResponders(uintptr_t* out, int cap,
                    : "wolf-pack-eligible";
     return n;
 }
+
+// Очаг приказа: жертва события (монстр, и он есть в нашем обзоре), иначе
+// помеченная пешка. Нужен только для ранжирования исполнителей.
+static bool PolicyReferencePos(uintptr_t targetBody, uintptr_t victimBody,
+                               const Runtime::PartyCombatSnapshot& party,
+                               float* out)
+{
+    if (victimBody) {
+        for (int i = 0; i < s_nView; ++i) {
+            const MonsterView& v = s_view[i];
+            if (v.body != victimBody || !v.positionValid) continue;
+            out[0] = v.x; out[1] = v.y; out[2] = v.z;
+            return true;
+        }
+    }
+    if (targetBody) {
+        for (int i = 0; i < Runtime::PARTY_COMBAT_SLOTS; ++i) {
+            const Runtime::PartyCombatMember& m = party.member[i];
+            if (!m.bodyValid || m.body != targetBody || !m.positionValid) continue;
+            out[0] = m.x; out[1] = m.y; out[2] = m.z;
+            return true;
+        }
+    }
+    return false;
+}
+
 
 static bool SamePack(const uintptr_t* pack, int n,
                          const uintptr_t* owned, int nOwned)
@@ -1346,8 +1573,13 @@ static void ApplyPolicies()
     }
 
     uintptr_t responders[kMaxPolicyWolves] = {};
+    float incident[3] = {};
+    const float* refPos = PolicyReferencePos(targetBody, excludedBody,
+                                            *identitySnapshot, incident)
+                        ? incident : 0;
     const int nResponder = CollectEligibleResponders(
-        responders, kMaxPolicyWolves, excludedBody, responderKind, &reason);
+        responders, kMaxPolicyWolves, excludedBody, responderKind, refPos,
+        s_policyResponderMax, &reason);
     if (nResponder <= 0) {
         const char* none = !strcmp(responderKind, "uEm0100")
                          ? "goblin-no-free-responder"
@@ -1437,8 +1669,14 @@ static void ApplyPolicies()
     const int aggroResponse = response == TACTICAL_RESPONSE_ALERT
                             ? Runtime::Aggro::DIRECTOR_RESPONSE_ALERT
                             : Runtime::Aggro::DIRECTOR_RESPONSE_ALARM;
+    // Список исполнителей уходит в агро ТОЛЬКО когда лимит включён (85.23):
+    // при responderMax=0 поведение обязано остаться прежним (весь вид), иначе
+    // особь вне нашего обзора перестала бы получать приказ.
+    const uintptr_t* gang = s_policyResponderMax > 0 ? responders : 0;
+    const int nGang = s_policyResponderMax > 0 ? nResponder : 0;
     if (!Runtime::Aggro::DirectorFocusSet(targetSlot, targetBody, excludedBody,
-                                           aggroResponse, responderKind)) {
+                                           aggroResponse, responderKind,
+                                           gang, nGang)) {
         ReleasePolicy("aggro-focus-rejected", true);
         return;
     }
@@ -1479,6 +1717,22 @@ void Init()
 {
     s_enabled = config.getBool("monsterAI", "enabled", false);
     s_actuatorEnabled = config.getBool("monsterAI", "wolfActuator", false);
+    // 85.23: 0 = все подходящие (прежнее поведение), N = N ближайших к очагу.
+    s_policyResponderMax = config.getInt("monsterAI", "responderMax", 0);
+    if (s_policyResponderMax < 0) s_policyResponderMax = 0;
+    s_chantNearest = config.getBool("monsterAI", "chantNearest", true);
+    // 85.27: радиус встречи у тела павшей пешки. Ключа в ini может не быть —
+    // тогда он допишется сам со значением по умолчанию (как chantNearest).
+    // 0 = механизм выключен полностью.
+    s_fallenGuardRadius = config.getFloat("monsterAI", "fallenGuardRadius", 10.0f);
+    if (!(s_fallenGuardRadius == s_fallenGuardRadius) || s_fallenGuardRadius < 0.0f)
+        s_fallenGuardRadius = 10.0f;   // NaN/мусор из ini — не оставляем без защиты
+    MonsterAI::SetFallenGuardRadius(s_fallenGuardRadius);
+    s_pawnFinish = config.getBool("monsterAI", "pawnFinish", true);
+    MonsterAI::SetPawnFinishEnabled(s_pawnFinish);
+    MonsterAI::SetNearestPairFallback(s_chantNearest);
+    if (s_policyResponderMax > kMaxPolicyWolves)
+        s_policyResponderMax = kMaxPolicyWolves;
     s_gameplayWrites = 0;
     s_policyEngaged = false;
     Runtime::Tempo::HardResetAllDirectorMobilization();
@@ -1526,6 +1780,12 @@ void Init()
             << " switchMargin=20%; focusIntent=NONE/BIAS/FOCUS-WINDOW;"
             << " isolation=20%/100%; depth=highestHP/markHP-1;"
             << " tacticsActuator=" << (s_actuatorEnabled ? "ON" : "OFF")
+            << " chantNearest=" << (s_chantNearest ? 1 : 0)
+            << " pawnFinish=" << (s_pawnFinish ? 1 : 0)
+            << "(0=off; awake knocked-down pawn is TARGET, not the player)"
+            << " fallenGuardRadius=" << s_fallenGuardRadius
+            << "(0=off; FALLEN-GUARD situation -> Arisen meet)"
+            << " responderMax=" << s_policyResponderMax << "(0=all)"
             << " occupied-on-field+rifted-skip+same-kind+unique-spatial-admission;"
             << " observerOnly=" << (s_actuatorEnabled ? 0 : 1)
             << " writes=0" << std::endl;

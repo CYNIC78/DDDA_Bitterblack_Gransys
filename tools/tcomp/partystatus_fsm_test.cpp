@@ -1,7 +1,8 @@
 // 84.24 pawn-body FSM: падение/подъём читаются с тела пешки.
+// 85.21: уход в Rift больше не утверждается по одному cPlActCmcReturn.
 //
 // Главная пешка 0xB000:
-//   Walk -> Neardeath -> Neardeath -> Walk(RAISED) -> Neardeath -> Return(RIFTED)
+//   Walk -> Neardeath -> Neardeath -> Walk(RAISED) -> Neardeath -> Return(CMC_RETURN unverified)
 //   Walk -> DmgDown -> DmgStandUp (KNOCKDOWN, не succor)
 //   Neardeath + cPlReviveCMC на пешке = игнор (остаётся DOWNED)
 // Аризен 0xA000:
@@ -112,7 +113,7 @@ int main()
     StepMain("cPlActWalk", false, false);
     // 6. Второй neardeath: already RAISED once → revivable.
     StepMain("cPlActCmcNeardeath", true, true);
-    // 7. CmcReturn = RIFTED, не подъём.
+    // 7. CmcReturn = исход НЕИЗВЕСТЕН (85.21): пишем CMC_RETURN, не RIFTED.
     StepMain("cPlActCmcReturn", false, false);
     // 8-9. Нокдаун ≠ succor.
     StepMain("cPlActWalk", false, false);
@@ -139,8 +140,16 @@ int main()
 
     assert(CountSubstring(log, " (read-only status + downed/revive observer)") == 4);
     assert(CountSubstring(log, "PS: MainPawn DOWNED act=cPlActCmcNeardeath") == 2);
-    assert(CountSubstring(log, "PS: MainPawn RAISED act=cPlActWalk") == 2);
-    assert(CountSubstring(log, "PS: MainPawn RIFTED act=cPlActCmcReturn") == 1);
+    // 85.21: обычный акт ПОСЛЕ CmcReturn тоже даёт RAISED (уже не первый),
+    // поэтому шагов 3: шаг 5, шаг 8 и шаг после CMC_RETURN.
+    assert(CountSubstring(log, "PS: MainPawn RAISED act=cPlActWalk") == 3);
+    assert(CountSubstring(log,
+        "PS: MainPawn RAISED act=cPlActWalk after=CmcReturn") == 1);
+    // 85.21: CMC_RETURN печатается ровно один раз на переход и не
+    // утверждает исход; слова RIFTED в логе PS больше нет.
+    assert(CountSubstring(log,
+        "PS: MainPawn CMC_RETURN act=cPlActCmcReturn outcome=unverified") == 1);
+    assert(log.find("RIFTED") == std::string::npos);
     assert(CountSubstring(log, "PS: MainPawn KNOCKDOWN act=cPlActDmgDown") == 1);
     assert(CountSubstring(log, "PS: MainPawn KNOCKDOWN-END act=cPlActDmgStandUp") == 1);
     assert(CountSubstring(log, "PS: MainPawn DOWNED act=cPlActDmgCrumbleDead") == 1);
@@ -156,7 +165,8 @@ int main()
     assert(log.find("found @") == std::string::npos);
     assert(Runtime::g_findChildCalls >= 0);
 
-    fprintf(stderr, "PartyStatus 84.25 FSM fixture passed "
-                    "(CrumbleDead DOWNED; Arisen DEAD clears knockdown).\n");
+    fprintf(stderr, "PartyStatus 84.25/85.21 FSM fixture passed "
+                    "(CrumbleDead DOWNED; Arisen DEAD clears knockdown; "
+                    "CmcReturn = CMC_RETURN unverified, не RIFTED).\n");
     return 0;
 }

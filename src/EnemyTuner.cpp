@@ -351,6 +351,11 @@ static float     s_holdValue = 0.0f;
 // множим: итог = ванильное * наш_коэффициент.
 struct Touched {
     uintptr_t body;
+    // 85.26: какому ВИДУ принадлежит эта запись. Адрес тела — не личность:
+    // игра переиспользует освободившиеся слоты под другой вид (в поле 85.25
+    // видели, как гоблин занял слот волка и унаследовал его ванильные статы).
+    // Ноль = вид неизвестен (старая запись), тогда ничего не сбрасываем.
+    uint16_t species;
     float scale;
     int   reverts;
     int   applies;
@@ -409,6 +414,18 @@ static SpeciesCombatBase* RememberSpeciesBase(uint16_t emId, float atk,float def
     return s;
 }
 
+
+// 85.24: сброс на выгрузке мира. См. EnemyTuner.h.
+void OnWorldUnload()
+{
+    const int was = s_nTouched;
+    s_nTouched = 0;
+    memset(s_touched, 0, sizeof(s_touched));
+    // Ручное удержание (кнопка FORCE) держит указатель на тело — тоже чужое.
+    s_holdBody = 0;
+    logFile << "EnemyTuner: world-unload reset, forgot " << was
+            << " bodies (species base table kept=" << s_nSpeciesBase << ")" << std::endl;
+}
 
 static void ForgetMissing()
 {
@@ -1439,7 +1456,31 @@ static void TickOneBody(uintptr_t body, const char* kind)
     if (!t.enabled) return;
 
     Touched* rec0 = FindTouched(body);
-    if (!rec0) rec0 = RememberTouched(body, 1.0f);
+    if (!rec0) {
+        rec0 = RememberTouched(body, 1.0f);
+    } else if (rec0->species && rec0->species != emId) {
+        // 85.26: ЭТОТ АДРЕС ЗАНЯЛ ДРУГОЙ ВИД. Так бывает постоянно: тело умерло,
+        // память освободилась и её отдали новому монстру — в поле 85.25 гоблин
+        // встал в слот волка. Все накопленные значения записи принадлежат
+        // прошлому жильцу (его ванильные статы, размер, поводок, кэш смещения),
+        // и новый вид получал их в наследство: атака не своя, защита не своя.
+        // Насколько это опасно, зависит от пары видов: гоблин в слоте волка
+        // отделался бы мелочью, а вот если бы слот крупного зверя заняла мелочь
+        // (или наоборот), статы разошлись бы в разы.
+        //
+        // Поэтому: вид сменился — запись не подходит, обнуляем её целиком и
+        // читаем ваниль заново, как при первой встрече. Цена — одно лишнее
+        // чтение базы на редкий случай, польза — статы всегда от своего вида.
+        const uint16_t was = rec0->species;
+        memset(rec0, 0, sizeof(*rec0));
+        rec0->body = body;
+        char ls[160];
+        sprintf_s(ls, "0x%08X slot reuse: kind uEm%04u -> uEm%04u, body record reset",
+                  (unsigned)body, (unsigned)was, (unsigned)emId);
+        logFile << "EnemyTuner: " << ls << std::endl;
+        lstrcpynA(s_status, ls, sizeof(s_status));
+    }
+    rec0->species = emId;
 
     // --- боевые статы: урон/броня с per-body roll (audit §8) ----------
     // Должен идти ДО Sanctuary, чтобы Sanctuary видел curDefC/curMDefC

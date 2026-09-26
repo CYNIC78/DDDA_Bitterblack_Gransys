@@ -166,6 +166,9 @@ struct Converge {
 void Init();
 void Shutdown();
 
+// 85.24: мир выгружен. Забыть все тела и снять аренду. См. AggroWatch.cpp.
+void OnWorldUnload();
+
 // Зовётся из общего продуктового тика под своим SEH.
 void Tick();
 
@@ -215,6 +218,11 @@ const char* ResolveMemberBodyStatus(int member, uintptr_t* bodyOut);
 // the exact fixed-slot body; Aggro re-resolves it here and before every write.
 // member < 0 releases. The optional exact restrained body receives no Aggro
 // mutation. Manual research PIN stays uEm0200-only.
+//
+// 85.23: необязательный список исполнителей (responders/nResponders). Если он
+// задан, пин/подавление получают ТОЛЬКО эти тела; остальные того же вида не
+// трогаются вообще (остаются при своих нативных целях). Пусто = весь вид, как
+// было. Список задаёт Director, когда включён лимит [monsterAI] responderMax.
 enum DirectorResponse {
     DIRECTOR_RESPONSE_NONE = 0,
     DIRECTOR_RESPONSE_ALERT = 1,
@@ -223,7 +231,9 @@ enum DirectorResponse {
 bool     DirectorFocusSet(int member, uintptr_t expectedBody,
                           uintptr_t excludedEnemyBody = 0,
                           int response = DIRECTOR_RESPONSE_ALARM,
-                          const char* exactKind = "uEm0200");
+                          const char* exactKind = "uEm0200",
+                          const uintptr_t* responders = 0,
+                          int nResponders = 0);
 int      DirectorFocusMember();
 int      DirectorResponseLevel();
 uint32_t DirectorWriteCount();

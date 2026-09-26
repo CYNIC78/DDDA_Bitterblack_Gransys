@@ -11,6 +11,9 @@
 
 namespace Runtime {
 
+// 85.24: сколько держим ворота записи закрытыми после возвращения мира.
+static const DWORD kWorldSettleMs = 2500;
+
 // --- профилировка тика (см. RuntimeInternal.h) ------------------------------
 static uint32_t g_scanLastUs = 0;
 static uint32_t g_scanAvgUs  = 0;
@@ -1002,6 +1005,10 @@ void WorldScan_Tick()
         // (раньше RestoreAll логировал «world unload» каждые 150 мс — спам).
         if (g_wasInWorld) {
             if (g_research.onWorldUnload) g_research.onWorldUnload("world unload");
+            // 85.24: продуктовый сброс. Живёт отдельно от research-хука, потому
+            // что обязан работать и при выключенном DevTools.
+            if (g_worldUnloadHooks.onWorldUnload)
+                g_worldUnloadHooks.onWorldUnload("world unload");
             PartyPriorityProfileRestoreAll("world unload");
             // Эррата тоже обязана вернуть ваниль: указатели после выгрузки
             // недействительны, а незакрытая правка — это долг.
@@ -1043,6 +1050,11 @@ void WorldScan_Tick()
                     << " actors=0 world.ts=0 tempo=drop aggro=release"
                     << std::endl;
         }
+        // 85.24: ВОРОТА ЗАПИСИ. Перезагрузка сейва длится дольше одного тика,
+        // поэтому окно не одноразовое, а продлевается, пока мира нет. Плюс
+        // 2.5 с сверху на «мир вернулся, но движок ещё достраивает тела».
+        // Так закрыты все записи — и тех модулей, о которых мы не подумали.
+        Mem::BlockWritesFor(kWorldSettleMs);
         g_wasInWorld = false;
         return;
     }

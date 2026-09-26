@@ -22,11 +22,32 @@ enum TacticalSituationId {
     TACTICAL_SITUATION_HOB_HORN_ALERT = 7,
     TACTICAL_SITUATION_WOLF_HOWL_ALERT = 8,
     TACTICAL_SITUATION_SAURIAN_HOWL_ALERT = 9,
-    TACTICAL_SITUATION_PLAYER_CHANT_HARASS = 10
+    TACTICAL_SITUATION_PLAYER_CHANT_HARASS = 10,
+    // 85.28: «встреча у тела павшей пешки». Единственная ситуация, чей триггер
+    // — не действие, а СОСТОЯНИЕ (пешка лежит) плюс расстояние от игрока до
+    // тела. Правило матчится отдельной ветвью (MatchFallenGuard): цель — всегда
+    // Аризен, признак — лежащая рядом пешка, исполнители — монстры этого вида
+    // у тела. Ярости не даёт: это готовность, а не бешенство.
+    TACTICAL_SITUATION_FALLEN_GUARD = 11,
+    // 85.30: «добивание лежащей пешки». Триггер — тоже состояние, но ДРУГОЕ:
+    // пешка лежит, НО В СОЗНАНИИ (сбита с ног). Замысел владельца: не дать ей
+    // встать и выключить из боя, поэтому ЦЕЛЬ здесь — САМА ПЕШКА, а не игрок.
+    // Ветвь матчера — MatchPawnFinish.
+    TACTICAL_SITUATION_PAWN_FINISH = 12
 };
 
-// ALERT and ALARM keep distinct Aggro bundles and evidence leases. Both are
-// emergency Director orders and therefore request normalized urgency 1.0.
+// ALERT and ALARM keep distinct Aggro bundles and evidence leases.
+//
+// Urgency is the tempo knob ONLY: it says how far the envelope travels from the
+// body's stable roll toward its rage endpoint (level = urgency), and it is what
+// the Director logs. The Aggro bundle strength comes from the response tier
+// above, NOT from urgency — so magnitude can be tuned per event without
+// touching aggro behavior.
+//
+// Градиент (2026-09-25): вплотную увиденное — 1.0 (полная ярость); услышанный
+// зов с 10-14 м — 0.65 (подтянулись, но не в бешенстве); чужой каст — 0.55.
+// Прежняя редакция держала 1.0 у всех событий, из-за чего один рог разгонял
+// всю округу до потолка.
 enum TacticalResponseLevel {
     TACTICAL_RESPONSE_NONE = 0,
     TACTICAL_RESPONSE_ALERT = 1,
@@ -40,6 +61,16 @@ struct TacticalPartyActor {
     bool      positionValid;
     float     x, y, z;
     int       vocation;
+    // 85.29: вердикт наблюдателя PartyStatus («пешка лежит»), подтверждённый
+    // живым полем строками `PS: Hired2 DOWNED act=...`. Новые поля идут В
+    // ХВОСТ структуры: у неё есть аггрегатные инициализаторы, и вставка в
+    // середину молча переставила бы смысл флагов (эти грабли уже были при
+    // добавлении четвёртого флага в таблицу правил).
+    bool      downedValid;
+    bool      downedRevivable;
+    // 85.30: лежит, но В СОЗНАНИИ (сбита с ног) — адресат другой: такую
+    // добивают монстры, а не встречают игрока, который придёт её поднимать.
+    bool      downedAwake;
 };
 
 struct TacticalMonsterActor {
@@ -66,10 +97,35 @@ struct TacticalMatch {
     uint32_t  maxLeaseMs;
     bool      excludeEvidenceBody;
     const char* responderKind;
+    // 85.25: сколько пар было в радиусе, когда событие допущено. Для событий
+    // с запасным выбором «ближайший» это >1 — видно прямо в логе.
+    int       pairsConsidered;
 };
 
 // Diagnostics are transition-logged by Monster Director. Counts expose why a
 // rule did not admit without producing frame-by-frame telemetry.
+// 85.29: почему встреча у тела не состоялась.
+//
+// Механизм молчал в поле ДВАЖДЫ, и оба раза по логу нельзя было понять, какое
+// из условий не сошлось: неудачный матч не оставляет следов. Теперь матчер
+// заполняет причину и числа, а Директор печатает их одной строкой.
+struct TacticalFallenDiag {
+    int         situation;     // какую ситуацию объясняем (11 или 12)
+    const char* reason;        // 0 = замечаний нет
+    int         pawnSlot;
+    uintptr_t   pawnBody;
+    const char* pawnAct;
+    bool        pawnDowned;
+    bool        pawnPosValid;
+    bool        arisenPosValid;
+    float       approachM;     // Аризен -> тело, метры (даже если далеко)
+    float       nearestKindM;  // ближайший монстр нужного вида -> тело, метры
+    int         monstersOfKind;
+    int         monstersTotal;
+    float       pawnX, pawnY, pawnZ;
+    float       arisenX, arisenY, arisenZ;
+};
+
 struct TacticalScan {
     bool      matched;
     int       situation;
@@ -86,6 +142,11 @@ struct TacticalScan {
     const char* firstEvidenceAct;
     float     nearestDistanceM;
     TacticalMatch match;
+    // 85.29/85.30: у КАЖДОГО механизма свой канал диагностики — иначе отказ
+    // одного затирал бы отказ другого, и проверка «молчит именно добивание»
+    // превращалась бы в «кто-то из двоих объяснился».
+    TacticalFallenDiag fallen;   // 11: встреча у тела (цель — игрок)
+    TacticalFallenDiag finish;   // 12: добивание (цель — лежащая пешка)
 };
 
 // Continuation never admits a new pair. It only proves that the two exact
@@ -101,8 +162,15 @@ struct TacticalContinuation {
     float distanceM;
 };
 
+// ВАЖНО (85.23): вид жертвы передаётся ЯВНО (expectedKind). Раньше правило
+// искалось по одному id ситуации, а у PLAYER-CHANT-HARASS таких правил четыре —
+// по одному на вид. Поиск всегда возвращал первое (гоблинское), жертва-волк не
+// совпадала по виду, и событие мигало: допуск -> victim-species-changed ->
+// повторный допуск, 28 циклов за бой. Ожидаемый вид берётся из ДОПУЩЕННОГО
+// правила (Director хранит его в s_tactical.responderKind).
+// expectedKind == 0 сохраняет прежнее поведение (правило по id).
 void InspectTacticalContinuation(int situation, uintptr_t targetBody,
-                                 uintptr_t evidenceBody,
+                                 uintptr_t evidenceBody, const char* expectedKind,
                                  const TacticalPartyActor* party, int partyCount,
                                  const TacticalMonsterActor* monsters, int monsterCount,
                                  TacticalContinuation* out);
@@ -110,6 +178,32 @@ void InspectTacticalContinuation(int situation, uintptr_t targetBody,
 void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
                             const TacticalMonsterActor* monsters, int monsterCount,
                             TacticalScan* out);
+
+// 85.25: запасной выбор «ближайший» для семейства «услышал каст».
+//
+// ЗАЧЕМ. Правило требует РОВНО ОДНУ пару «кастующий ↔ монстр» в радиусе.
+// В поле это оказалось невыполнимым: рядом всегда больше одного монстра, и
+// событие отказывало в 86 случаях из 100 (36 отказов против 4 срабатываний,
+// поле 2026-09-25, кап 5). Все отказы — reason=pairs-ambiguous при 6–8 монстрах
+// в 12 м. Требование уникальности осмысленно там, где она ДОКАЗЫВАЕТ контакт
+// (хват, прижим, подъём жертвы). У «услышал каст» доказывать нечего: важно
+// лишь, что монстр этого вида рядом, — поэтому берём ближайшего вместо отказа.
+//
+// Действует только на правила, помеченные nearestPairFallback (четыре правила
+// PLAYER-CHANT-HARASS). Хваты и прижимы не тронуты.
+void SetNearestPairFallback(bool on);
+
+// 85.28: радиус встречи у тела павшей пешки, метры. Расстояние считается от
+// АРИЗЕНА до тела (а не от монстра): включается, когда игрок подходит к телу
+// настолько, что монстры успевают развернуться и прийти в точку — спринт в
+// DDDA очень быстрый, поэтому 10 по умолчанию, а не 3.
+// 0 = механизм выключен (матчер молчит). Ставится Директором из ini.
+void SetFallenGuardRadius(float meters);
+
+// 85.30: выключатель добивания лежащей пешки (ключ `pawnFinish`). Живёт рядом с
+// resetом радиуса по той же причине: ключ читает Директор, состояние остаётся
+// локальным для файла.
+void SetPawnFinishEnabled(bool on);
 const char* TacticalSituationName(int situation);
 const char* TacticalResponseName(int response);
 const char* TacticalSituationPolicyReason(int situation);

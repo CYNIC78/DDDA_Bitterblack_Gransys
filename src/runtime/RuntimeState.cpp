@@ -74,4 +74,11 @@ void SetResearchHooks(const ResearchHooks& hooks)
     g_research = hooks;
 }
 
+WorldUnloadHooks g_worldUnloadHooks = {};
+
+void SetWorldUnloadHooks(const WorldUnloadHooks& hooks)
+{
+    g_worldUnloadHooks = hooks;
+}
+
 } // namespace Runtime

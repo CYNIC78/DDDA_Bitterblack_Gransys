@@ -24,6 +24,8 @@
 #include "monsterai/MonsterDirector.h"
 #include "monsterai/PackObserve.h"
 #include "runtime/AggroWatch.h"
+#include "runtime/MemProbe.h"
+#include "runtime/RuntimeInternal.h"
 #include "runtime/PartyStatus.h"
 #include "runtime/LogMem.h"
 #include "pawnai/PawnHaste.h"
@@ -56,6 +58,30 @@ bool PawnAIBaseInclinations(float out[I_COUNT])
     return true;
 }
 
+// 85.24: продуктовый отклик на выгрузку мира. Зовётся из Runtime через
+// указатель — см. WorldUnloadHooks.
+//
+// Почему именно здесь. Runtime умеет заметить, что мир исчез (WorldScan видит
+// пропажу тел), но не должен знать по именам модули уровня пешек и тюнера.
+// А PawnAI их уже знает и координирует. Поэтому детектор — в Runtime,
+// а забывание — здесь.
+//
+// Что забываем и почему. На перезагрузке сейва движок сносит тела и выдаёт
+// новые ПО ТЕМ ЖЕ адресам. Любая таблица, где лежит адрес тела, после этого
+// указывает на ЧУЖОЙ объект. Запись туда — механизм вылета 2026-09-25
+// (0xc0000005, модуль unknown: прыжок по испорченному указателю).
+static void ProductWorldUnload(const char* reason)
+{
+    (void)reason;
+    __try { EnemyTuner::OnWorldUnload(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    __try { Runtime::Aggro::OnWorldUnload(); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+    // Патчи дальности каста держат адреса полей кастера — тоже чужие.
+    __try { PawnAI::WandRange::Restore("world unload"); }
+    __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
 void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
@@ -70,7 +96,38 @@ void UpdatePawnAI(){
             __try { MonsterAI::OnWorldUnload(); }
             __except(EXCEPTION_EXECUTE_HANDLER) {}
         }
+        // 85.24: вошли в живой мир — короткое окно покоя. Мир уже «есть» по
+        // проверке уровня и HP, но движок в это время ещё достраивает тела.
+        // Раньше в это окно писали; теперь ворота закрыты и открываются сами.
+        if (!s_wasGameplay && gp) {
+            Runtime::Mem::BlockWritesFor(1500);
+        }
         s_wasGameplay = gp;
+
+        // 85.25: СМЕНА ТЕЛА ВОССТАВШЕГО = переход мира.
+        //
+        // Зачем отдельная проверка. Поле 85.24 показало дыру: гибель персонажа
+        // и загрузка сейва с экрана смерти НЕ ловились детектором выгрузки мира.
+        // Он смотрит на уровень и максимальное HP — а на экране смерти они живы,
+        // поэтому проверка честно отвечает «мы в мире», пока движок пересобирает
+        // окружение. В логе это видно прямо: выгрузок две, а загрузок три.
+        //
+        // Тело Восставшего — сигнал, который врёт не может: после перезагрузки
+        // сейва это ДРУГОЕ тело. По нему делаем то же, что по выгрузке мира.
+        if (gp) {
+            static uintptr_t s_lastArisenBody = 0;
+            uintptr_t arisen = Runtime::ArisenBody();
+            if (arisen && s_lastArisenBody && arisen != s_lastArisenBody) {
+                logFile << "World: ARISEN BODY CHANGED 0x" << std::hex
+                        << s_lastArisenBody << " -> 0x" << arisen << std::dec
+                        << "  (смерть/загрузка сейва: сброс таблиц + ворота 2.5 с)"
+                        << std::endl;
+                __try { ProductWorldUnload("arisen-body-changed"); }
+                __except (EXCEPTION_EXECUTE_HANDLER) {}
+                Runtime::Mem::BlockWritesFor(2500);
+            }
+            if (arisen) s_lastArisenBody = arisen;
+        }
     }
     // Read-only night instrument. Must run even if pawn AI / Director are off.
     __try { MonsterAI::PackObserveTick(); }
@@ -166,11 +223,45 @@ static volatile bool g_pawnTickStop = false;
 static HANDLE g_pawnTickEvent = nullptr;  // для безопасного шатдауна без WaitForSingleObject в DllMain
 
 static DWORD WINAPI PawnTickThread(LPVOID){
+    // 85.25: пусть обработчик сбоев знает этот поток — в строке сбоя будет
+    // видно, наш он или чужой. Иначе пришлось бы гадать по косвенным.
+    LogMem::SetWorkerThreadId(GetCurrentThreadId());
     while(!g_pawnTickStop){
         // Ждём с таймаутом вместо Sleep — так можно разбудить поток
         // из Shutdown без ожидания 150 мс.
         WaitForSingleObject(g_pawnTickEvent, 150);
+        // 85.24: сколько длится такт. Раньше длительность считалась только у
+        // скана (g_scanMaxUs) и никуда не печаталась, поэтому фриз в поле было
+        // нечем объяснить. Теперь виден прямо в логе.
+        const DWORD tickBegin = GetTickCount();
+        FILETIME ftCreate, ftExit, ftKernel0, ftUser0, ftKernel1, ftUser1;
+        GetThreadTimes(GetCurrentThread(), &ftCreate, &ftExit, &ftKernel0, &ftUser0);
         UpdatePawnAI();
+        GetThreadTimes(GetCurrentThread(), &ftCreate, &ftExit, &ftKernel1, &ftUser1);
+        const DWORD tickMs = GetTickCount() - tickBegin;
+        if (tickMs >= 40) {
+            const uint32_t scanUs = Runtime::ScanGetStats().maxUs;
+            // 85.25: время НА СТЕНЕ против времени НА ПРОЦЕССОРЕ. Поле 85.24
+            // показало такты по 300-420 мс и ни одного в середине диапазона —
+            // и сразу встал вопрос: это мы столько считаем или нас вытеснили?
+            // GetTickCount этого не различает, GetThreadTimes различает.
+            const uint64_t k0 = ((uint64_t)ftKernel0.dwHighDateTime << 32)
+                              | ftKernel0.dwLowDateTime;
+            const uint64_t u0 = ((uint64_t)ftUser0.dwHighDateTime << 32)
+                              | ftUser0.dwLowDateTime;
+            const uint64_t k1 = ((uint64_t)ftKernel1.dwHighDateTime << 32)
+                              | ftKernel1.dwLowDateTime;
+            const uint64_t u1 = ((uint64_t)ftUser1.dwHighDateTime << 32)
+                              | ftUser1.dwLowDateTime;
+            const uint32_t cpuUs = (uint32_t)(((k1 - k0) + (u1 - u0)) / 10);
+            logFile << "PAWN-TICK SLOW: " << tickMs << " ms wall"
+                    << " cpuUs=" << cpuUs
+                    << (cpuUs * 1000 < tickMs * 700 ? " (вытеснены, не считали)"
+                                                    : " (наша работа)")
+                    << " scanMaxUs=" << scanUs
+                    << " writesBlocked=" << Runtime::Mem::BlockedWrites()
+                    << std::endl;
+        }
         LogMem::PeriodicFlush(1500);
     }
     return 0;
@@ -1206,6 +1297,12 @@ void Hooks::PawnAI(){
     logFile << "  stride=" << INCL_STRIDE << " mStudy@0x" << std::hex << MSTUDYFLAG_OFFSET << std::dec << " known=" << known << std::endl;
     g_pawnTickStop = false;
     g_pawnTickEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+    // 85.24: подключаем продуктовый сброс к детектору выгрузки мира.
+    {
+        Runtime::WorldUnloadHooks hooks = {};
+        hooks.onWorldUnload = ProductWorldUnload;
+        Runtime::SetWorldUnloadHooks(hooks);
+    }
     g_pawnTickThread = CreateThread(nullptr, 0, PawnTickThread, nullptr, 0, nullptr);
     InGameUIAdd(RenderPawnAIUI);
 }

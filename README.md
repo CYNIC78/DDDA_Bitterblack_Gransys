@@ -6,12 +6,13 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 ---
 
-## 🎯 Текущий Milestone: Build 85.11 (`85.11-loot-window`)
+## 🎯 Текущий Milestone: Build 85.21 (`85.21-return-label`)
 
-**85.11** — эксперимент Acquisitor главной пешки: boost +650 на 20 с вместо
-+180 на 8 с. Подавление/возврат прежние; существующий INI обновляется вручную.
-[Настройка, ограничения и тест](docs/ACQUISITOR_MANAGER.md). MSVC/игра pending.
-Все изменения Guardian 85.09/85.10 и Nexus 85.08 включены.
+**85.21** — PS больше не выводит `RIFTED` из одного `cPlActCmcReturn`: пишет
+`CMC_RETURN outcome=unverified` один раз на переход, затем `RAISED after=CmcReturn`
+на следующем обычном акте того же тела. Боевая логика не менялась.
+[Контракт прибора](docs/PARTY_STATUS_OBSERVE.md). MSVC/игра pending.
+Все изменения 85.10–85.20 включены.
 
 **85.10** — source-only: исправлен контекст выбранного Guardian, включая наёмного;
 **85.09** — исправлен выбор угрозы и дистанция в логе. Радиусы, tempo, навыки
@@ -316,7 +317,8 @@ bash    tools/syntax_check.sh                    # g++ modules + ASCII UI
 | [`docs/PAWN_SPRINT_RECON.md`](docs/PAWN_SPRINT_RECON.md) | трек спринта/уклонения: коды целей, приоритетные строки, компенсация темпа |
 | [`docs/WAND_RANGE.md`](docs/WAND_RANGE.md) | **эррата посоха пешки**: 15 м eligibility, не игрок |
 | [`docs/ANATOMY_EM0100.md`](docs/ANATOMY_EM0100.md) | анатомия гоблина — справочник для модеров |
-| [`docs/README.md`](docs/README.md) | индекс документации |
+| [`PROJECT_HUB.md`](PROJECT_HUB.md) | **индекс документации и статус проекта** |
+| [`docs/PARKED.md`](docs/PARKED.md) | что выключено намеренно и почему |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | архитектура платформы |
 | [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §13 | открытые пробелы |
 | [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) | подтверждённые контракты |

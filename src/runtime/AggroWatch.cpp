@@ -123,6 +123,11 @@ static int      s_pinFocus = MEMBER_NONE; // 83.0: член под ручным 
 // тело своей record-slot цели; перед каждой записью мы заново разрешаем тот же
 // слот через PartyRecordInfo и требуем точное равенство.
 static int       s_directorFocus = MEMBER_NONE;
+// 85.23: список тел, которым разрешён пин в этом приказе. Пусто = все подходящие
+// (поведение до 85.23). Заполняется Director'ом только при включённом лимите.
+static const int kDirectorResponderMax = 16;
+static uintptr_t s_directorResponders[kDirectorResponderMax] = {};
+static int       s_nDirectorResponders = 0;
 static uintptr_t s_directorExpectedBody = 0;
 static uintptr_t s_directorExcludedBody = 0;
 static int       s_directorResponse = DIRECTOR_RESPONSE_NONE;
@@ -595,6 +600,15 @@ static void CardWatchRow(Row& R, const PartyRef* party, int nParty, DWORD now)
 // Manual PIN stays exact uEm0200. Director may pin exact uEm0100 / uEm0101
 // on grab-alert and hob PackMark. Live 84.26: hob card heads are goblin-family
 // (f8 low-bit + fC=4), not wolf flag==1. Unknown heads stay fail-closed.
+// Тело в списке исполнителей? Пустой список = ограничения нет (весь вид).
+static bool InDirectorResponderSet(uintptr_t body)
+{
+    if (!s_nDirectorResponders) return true;
+    for (int i = 0; i < s_nDirectorResponders; ++i)
+        if (s_directorResponders[i] == body) return true;
+    return false;
+}
+
 static bool IsPinnableKind(const char* kind, bool director)
 {
     if (!kind) return false;
@@ -1553,6 +1567,7 @@ static void PinShapeDump(Row& R, const PartyRef* party, int nParty, DWORD now)
 static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
                    int targetMember, bool suppress, bool fakehit, bool director)
 {
+    if (director && !InDirectorResponderSet(R.body)) return;
     uintptr_t mBody = 0;
     for (int p = 0; p < nParty; ++p) {
         if (party[p].member != targetMember) continue;
@@ -1620,6 +1635,7 @@ static void PinSummary(int nWolves, int nLeft, DWORD now, int targetMember, int 
         if (director && s_directorKind[0]
             && strcmp(s_row[i].kind, s_directorKind) != 0) continue;
         if (director && s_row[i].body == s_directorExcludedBody) continue;
+        if (director && !InDirectorResponderSet(s_row[i].body)) continue;
         if (s_row[i].targetMember == targetMember) ++held;
     }
     logFile << "Aggro: " << (director ? "DIRECTOR" : "PIN") << " "
@@ -1707,6 +1723,47 @@ void Init()
             << std::endl;
 }
 
+void OnWorldUnload()
+{
+    const int rowsWas = s_nRow;
+    const int pinWas  = (s_directorFocus >= 0) ? 1 : 0;
+    // Аренда директора снимается молча: следующая строка лога про аренду
+    // будет честной новой, а не продолжением старой.
+    s_directorFocus = MEMBER_NONE;
+    s_directorExpectedBody = 0;
+    s_directorExcludedBody = 0;
+    s_directorResponse = DIRECTOR_RESPONSE_NONE;
+    s_nDirectorResponders = 0;
+    s_directorIdentityBlockLogged = false;
+    s_fhSignalLease = 0;
+    // Ручной пин/фокус — тоже указатели на тела прошлого мира.
+    s_pinMember = MEMBER_NONE;
+    s_pinFocus  = MEMBER_NONE;
+    s_pinSuppress = false;
+    s_pinFakehit  = false;
+    s_nPinLog = 0;
+    s_pinLastLog = 0;
+    s_pinLastAnomaly = 0;
+    // Строки и «схождение» держат адреса тел — забываем целиком.
+    s_nRow = 0;
+    memset(s_row, 0, sizeof(s_row));
+    memset(s_conv, 0, sizeof(s_conv));
+    memset(s_convLogged, 0, sizeof(s_convLogged));
+    memset(s_holdTicks, 0, sizeof(s_holdTicks));
+    // CARDWATCH: два тела наблюдения.
+    s_nCard = 0;
+    s_cardBody[0] = s_cardBody[1] = 0;
+    // CARDRECON: своя таблица тел, тоже из прошлого мира.
+    s_nReconTrack = 0;
+    memset(s_reconTrack, 0, sizeof(s_reconTrack));
+    s_lastIdentityMask = -1;
+    logFile << "Aggro: world-unload reset: rows=" << rowsWas
+            << " forgotten, lease=" << (pinWas ? "released" : "none")
+            << " (session counters kept: writes=" << s_pinWrites
+            << " supp=" << s_pinSuppWrites
+            << " fakehit=" << s_pinFakehitWrites << ")" << std::endl;
+}
+
 void Shutdown()
 {
     // One bounded footer keeps the automatic mutation evidence available
@@ -1753,7 +1810,8 @@ bool ObserverDemanded() { return s_directorObserver; }
 
 bool DirectorFocusSet(int member, uintptr_t expectedBody,
                       uintptr_t excludedEnemyBody, int response,
-                      const char* exactKind)
+                      const char* exactKind, const uintptr_t* responders,
+                      int nResponders)
 {
     if (member < 0) {
         if (s_directorFocus >= 0)
@@ -1768,6 +1826,7 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
         s_directorResponse = DIRECTOR_RESPONSE_NONE;
         lstrcpynA(s_directorKind, "uEm0200", sizeof(s_directorKind));
         s_directorIdentityBlockLogged = false;
+        s_nDirectorResponders = 0;
         return true;
     }
     if (member > MEMBER_HIRED2 || !expectedBody
@@ -1830,6 +1889,15 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     s_directorExcludedBody = excludedEnemyBody;
     s_directorResponse = response;
     s_fhSignalLease = 0;   // 84.19: новая аренда — сигнал ещё не дан
+    // 85.23: список обновляем молча — он может меняться на ходу (особь ушла
+    // из обзора), и печатать это каждые 150 мс нельзя.
+    s_nDirectorResponders = 0;
+    if (responders && nResponders > 0) {
+        for (int i = 0; i < nResponders && s_nDirectorResponders < kDirectorResponderMax; ++i) {
+            if (!responders[i]) continue;
+            s_directorResponders[s_nDirectorResponders++] = responders[i];
+        }
+    }
     lstrcpynA(s_directorKind, exactKind, sizeof(s_directorKind));
     s_directorIdentityBlockLogged = false;
     return true;
@@ -2292,6 +2360,9 @@ void Tick()
                         continue;
                     if (directorActive && s_row[i].body == s_directorExcludedBody)
                         continue;
+                    // Лимит приказа (85.23): вне списка — не наш, не трогаем.
+                    if (directorActive && !InDirectorResponderSet(s_row[i].body))
+                        continue;
                     ++nW;
                     if (directorActive
                         && CombatOccupiesOther(s_row[i], party, nParty, activeMember)) {
@@ -2314,6 +2385,8 @@ void Tick()
                         if (!IsPinnableKind(R.kind, directorActive)) continue;
                         if (directorActive && s_directorKind[0]
                             && strcmp(R.kind, s_directorKind) != 0) continue;
+                        if (directorActive && !InDirectorResponderSet(R.body))
+                            continue;
                         float wp[3] = {};
                         if (!ReadBodyPos(R.body, wp)) continue;
                         const float dx = wp[0] - mp[0];

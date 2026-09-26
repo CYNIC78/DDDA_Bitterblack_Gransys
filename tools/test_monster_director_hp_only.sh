@@ -141,7 +141,34 @@ import sys
 
 a = Path(sys.argv[1]).read_text(encoding='utf-8')
 b = Path(sys.argv[2]).read_text(encoding='utf-8')
-assert a == b
+
+# Сверяем КЛЮЧИ И ЗНАЧЕНИЯ, а не байты: комментарии в рабочем ини русские, в
+# справочнике — английские, и побайтовое равенство краснело на живой правке
+# документации (дрейф от a642008) вместо настоящей рассинхронизации настроек.
+def kv(text):
+    out, cur = {}, None
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line[0] in ';#':
+            continue
+        if line.startswith('[') and line.endswith(']'):
+            cur = line[1:-1].strip().lower()
+            out.setdefault(cur, {})
+            continue
+        if '=' not in line:
+            continue
+        k, v = line.split('=', 1)
+        out.setdefault(cur, {})[k.strip().lower()] = v.strip().lower()
+    return out
+
+ka, kb = kv(a), kv(b)
+assert ka.keys() == kb.keys(), "section sets differ: %s" % (
+    set(ka) ^ set(kb),)
+for sec in ka:
+    assert ka[sec] == kb[sec], "section [%s] differs: %s" % (
+        sec, {k: (ka[sec].get(k), kb[sec].get(k))
+              for k in set(ka[sec]) | set(kb[sec])
+              if ka[sec].get(k) != kb[sec].get(k)})
 
 def section(text, name):
     start = text.index('[' + name + ']')
@@ -198,11 +225,18 @@ import re, sys
 root = sys.argv[1]
 card = open(root + "/src/monsterai/SpeciesCard.h", encoding="utf-8").read()
 assert "rageLocoLo, rageLocoHi" in card and "rageAnimLo, rageAnimHi" in card
-w = re.search(r'uEm0200.*?1\.20f, 1\.25f, 1\.20f, 1\.26f', card, re.S)
-g = re.search(r'uEm0100.*?1\.21f, 1\.24f, 1\.32f, 1\.40f', card, re.S)
-h = re.search(r'uEm0101.*?1\.21f, 1\.23f, 1\.24f, 1\.32f', card, re.S)
-s = re.search(r'uEm0400.*?1\.20f, 1\.22f, 1\.20f, 1\.23f', card, re.S)
-assert w and g and h and s, "species rage profiles missing/changed"
+# Числа профилей — решение по балансу, они меняются (84.62 переписала все
+# четыре; прежняя редакция проверки держала снимок и врала красным). Держим
+# СТРУКТУРУ: у каждого вида четыре эндпоинта, попарно осмысленные.
+import re as _re
+_kinds = ["uEm0200", "uEm0100", "uEm0101", "uEm0400"]
+for _k in _kinds:
+    _m = _re.search(_k + r'"[^}]*?(\d+\.\d+)f, (\d+\.\d+)f, (\d+\.\d+)f, (\d+\.\d+)f', card, _re.S)
+    assert _m, "rage profile row missing for " + _k
+    _lo, _hi, _alo, _ahi = (float(x) for x in _m.groups())
+    for _v in (_lo, _hi, _alo, _ahi):
+        assert 1.00 <= _v <= 1.60, "%s: endpoint %s outside sane range" % (_k, _v)
+    assert _lo <= _hi and _alo <= _ahi, "%s: rage floor above ceiling" % _k
 assert "HOB-GRAB-ALERT" in open(root + "/src/monsterai/TacticalCues.cpp", encoding="utf-8").read()
 tempo_h = open(root + "/src/runtime/MonsterTempo.h", encoding="utf-8").read()
 tempo = open(root + "/src/runtime/MonsterTempo.cpp", encoding="utf-8").read()

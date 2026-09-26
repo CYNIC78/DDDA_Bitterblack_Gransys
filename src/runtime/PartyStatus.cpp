@@ -515,6 +515,9 @@ void FillMemberStatus(uintptr_t body, int slot, PartyCombatMember& M)
     const DWORD now = GetTickCount();
     const bool fresh = T->haveAct && (now - T->lastActMs < kFreshMs);
     M.downedValid = fresh && T->downedNow;
+    // 85.30: вид падения важен наружу: сбитая с ног пешка (в сознании) —
+    // отдельный адресат, её добивают, а не встречают игрока у её тела.
+    M.downedAwake = M.downedValid && T->downedKind == kKindKnockdown;
     // succor-revivable только у пешки, и только если neardeath уже
     // заканчивался RAISED на этом теле. Аризен пешками не поднимается.
     M.downedRevivable = M.downedValid

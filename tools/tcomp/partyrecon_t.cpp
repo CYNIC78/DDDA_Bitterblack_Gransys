@@ -1,16 +1,12 @@
 // Syntax-check Runtime::PartyRecon, including Build 001 combat snapshot.
 #include "director_stdafx.h"
+// Локально держим только то, чего нет в shim/windows.h: PAGE_*/MEM_PRIVATE
+// шим уже объявляет, а дубли роняли сборку под -Werror (redefinition).
 #define __except(x) catch(...)
 #define EXCEPTION_EXECUTE_HANDLER 1
-#define PAGE_READONLY 0x02
-#define PAGE_READWRITE 0x04
-#define PAGE_WRITECOPY 0x08
-#define PAGE_EXECUTE_READ 0x20
-#define PAGE_EXECUTE_READWRITE 0x40
-#define PAGE_GUARD 0x100
-#define MEM_PRIVATE 0x20000
 #define VK_OEM_PLUS 0xBB
-inline LONG InterlockedExchange(volatile LONG* p, LONG v) { LONG o = *p; *p = v; return o; }
-inline LONG InterlockedCompareExchange(volatile LONG* p, LONG v, LONG c)
-{ LONG o = *p; if (o == c) *p = v; return o; }
+// InterlockedExchange/InterlockedCompareExchange больше не дублируем: они
+// объявлены в shim/windows.h (там же, откуда их берут остальные фикстуры).
+// Локальные копии давали redefinition и роняли syntax-gate на шаге 11 из 22,
+// молча пропуская 11 следующих проверок (см. docs/PARKED.md, снято 85.23).
 #include "../../src/runtime/PartyRecon.cpp"

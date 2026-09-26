@@ -57,6 +57,53 @@ static const char* const kPlayerCasterActs[] = {
     "cPlActWpnDaggerCstmMadouBase"
 };
 
+// 85.29 ГЛАВНЫЕ ГРАБЛИ ЭТОГО МЕХАНИЗМА.
+//
+// Мир DDDA измеряется В САНТИМЕТРАХ: 1 м = 100 единиц. Все расстояния этого
+// файла, проверенные полем, делят разницу координат на 100 (см. DistanceM) — и
+// именно поэтому они сходятся с игрой: хват 0.49 м, рог 7.17 м, прижим 1.08 м.
+// Партия читается тем же масштабом: GuardianDoctrine печатает `pawn-Arisen 7.9m`
+// как raw/100. Ручное вычитание БЕЗ деления даёт ошибку в 100 раз: «10 м»
+// превращаются в 10 см, а «15 м» — в 1500 м. Ровно на этом встреча у тела
+// молчала в поле дважды, проходя при этом фикстуру: в фикстуре числа придуманы
+// мной — в метрах, то есть в неверных единицах, и такая фикстура соглашается с
+// любой ошибкой масштаба.
+static const float kWorldUnitsPerMeter = 100.0f;
+
+// 85.28: акты ЛЕЖАЩЕЙ пешки.
+//
+// ВНИМАНИЕ, ГРАБЛИ, на которые я уже наступил. Список имён в
+// PartyRecon::CombatDownedActionHint — это КАНДИДАТЫ («их смысл намеренно не
+// подтверждён»), и РЕАЛЬНОГО акта поля в нём НЕТ: в логах 85.24–85.27 падение
+// пешки всегда выглядит как `PS: Hired2 DOWNED act=cPlActDmgCrumbleDead`, а
+// такого имени в списке кандидатов не было. Правило, собранное по списку
+// кандидатов, молчит в поле и при этом выглядит рабочим в тесте с выдуманным
+// актом. Поэтому здесь ПЕРВЫМИ идут акты, подтверждённые живым полем.
+//
+// Акт Аризена cPlReviveCMC сюда НЕ входит: это действие поднимающего, а не
+// признак падения.
+// 85.30: ДВА РАЗНЫХ СОСТОЯНИЯ, два разных списка.
+//
+//   kPawnOutActs       — лежит БЕЗ СОЗНАНИЯ, ждёт подъёма. Сюда же переходные
+//                        акты цикла, чтобы событие не мигало между кадрами.
+//   kPawnKnockdownActs — лежит, НО В СОЗНАНИИ (сбита с ног). По полю 85.29
+//                        (три срабатывания: одно настоящее падение и два
+//                        сбивания с ног) это разные события для директора.
+static const char* kPawnOutActs[] = {
+    // подтверждено полем (строки `PS: <пешка> DOWNED act=...`):
+    "cPlActDmgCrumbleDead", "cPlActCmcNeardeath", "cPlActCmcDead",
+    // переходные акты того же цикла (падение -> подъём):
+    "cPlActCmcReturn",
+    // список наблюдателя (не подтверждён полем, но безвреден как расширение):
+    "cPlActDead", "cPlActDmgDownDead"
+};
+static const char* kPawnKnockdownActs[] = {
+    // подтверждено полем (`PS: <пешка> KNOCKDOWN act=cPlActDmgDown`):
+    "cPlActDmgDown",
+    // список наблюдателя:
+    "cPlActDmgDownDamage"
+};
+
 struct TacticalRule {
     int       situation;
     const char* name;
@@ -78,7 +125,29 @@ struct TacticalRule {
     bool      excludeEvidenceBody;
     bool      arisenOnly;
     bool      casterVocationOnly;
+    // 85.28: ветвь «встреча у тела павшей пешки». Признак правила не действие
+    // цели, а СОСТОЯНИЕ другого члена партии: пешка лежит рядом с Аризеном.
+    // Поэтому такое правило не может выражаться через targetActs цели и идёт
+    // отдельной ветвью матчера (MatchFallenGuard). Стоит ПЕРЕД
+    // nearestPairFallback: хвост существующих строк дополнен ещё одним false.
+    bool      fallenPawnCue;
+    // 85.25: см. SetNearestPairFallback в заголовке. Поле стоит ПОСЛЕДНИМ,
+    // поэтому существующие строки таблицы остаются валидными без правок —
+    // значение по умолчанию false, и включается оно только там, где нужно.
+    bool      nearestPairFallback;
 };
+
+// 85.25: включается ключом [monsterAI] chantNearest; по умолчанию выключено
+// ЗДЕСЬ и включается Директором при инициализации — так решение остаётся
+// настраиваемым в поле без пересборки.
+static bool s_nearestPairFallback = false;
+
+// 85.28: см. SetFallenGuardRadius в заголовке.
+static float s_fallenGuardRadius = 10.0f;
+// 85.30: добивание лежащей пешки в сознании. Включено по умолчанию: это прямое
+// указание владельца по полю 85.29. Ключ `pawnFinish = 0` выключает без сборки.
+static bool  s_pawnFinishEnabled = true;
+
 
 static bool IsCasterVocation(int v)
 {
@@ -106,7 +175,7 @@ static const TacticalRule kRules[] = {
         2.00f,
         4000,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_PACK_LIFT_RESCUE,
@@ -126,7 +195,7 @@ static const TacticalRule kRules[] = {
         2.50f,
         2500,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_PACK_GRAB_ALERT,
@@ -143,7 +212,7 @@ static const TacticalRule kRules[] = {
         2.00f,
         750,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_GOBLIN_GRAB_ALERT,
@@ -160,7 +229,7 @@ static const TacticalRule kRules[] = {
         2.00f,
         4000,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_HOB_GRAB_ALERT,
@@ -177,7 +246,7 @@ static const TacticalRule kRules[] = {
         2.00f,
         4000,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_GOB_HORN_ALERT,
@@ -185,7 +254,7 @@ static const TacticalRule kRules[] = {
         "tactical-gob-horn-alert",
         85,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.65f,
         "uEm0100",
         0, 0,
         kGoblinHornCallerActs,
@@ -194,7 +263,7 @@ static const TacticalRule kRules[] = {
         12.00f,
         4500,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_HOB_HORN_ALERT,
@@ -202,7 +271,7 @@ static const TacticalRule kRules[] = {
         "tactical-hob-horn-alert",
         84,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.65f,
         "uEm0101",
         0, 0,
         kGoblinHornCallerActs,
@@ -211,7 +280,7 @@ static const TacticalRule kRules[] = {
         12.00f,
         4500,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_WOLF_HOWL_ALERT,
@@ -219,7 +288,7 @@ static const TacticalRule kRules[] = {
         "tactical-wolf-howl-alert",
         80,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.65f,
         "uEm0200",
         0, 0,
         kWolfHowlCallerActs,
@@ -228,7 +297,7 @@ static const TacticalRule kRules[] = {
         14.00f,
         3500,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_SAURIAN_HOWL_ALERT,
@@ -236,7 +305,7 @@ static const TacticalRule kRules[] = {
         "tactical-saurian-howl-alert",
         78,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.65f,
         "uEm0400",
         0, 0,
         kSaurianHowlCallerActs,
@@ -245,7 +314,7 @@ static const TacticalRule kRules[] = {
         10.00f,
         4000,
         true,
-        false, false
+        false, false, false, false
     },
     {
         TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
@@ -253,7 +322,7 @@ static const TacticalRule kRules[] = {
         "tactical-player-chant-harass",
         75,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.55f,
         "uEm0100",
         kPlayerCasterActs,
         (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
@@ -262,7 +331,7 @@ static const TacticalRule kRules[] = {
         12.00f,
         3500,
         false,
-        true, true
+        true, true, false, true
     },
     {
         TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
@@ -270,7 +339,7 @@ static const TacticalRule kRules[] = {
         "tactical-player-chant-harass",
         75,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.55f,
         "uEm0200",
         kPlayerCasterActs,
         (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
@@ -279,7 +348,7 @@ static const TacticalRule kRules[] = {
         14.00f,
         3500,
         false,
-        true, true
+        true, true, false, true
     },
     {
         TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
@@ -287,7 +356,7 @@ static const TacticalRule kRules[] = {
         "tactical-player-chant-harass",
         74,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.55f,
         "uEm0101",
         kPlayerCasterActs,
         (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
@@ -296,7 +365,7 @@ static const TacticalRule kRules[] = {
         12.00f,
         3500,
         false,
-        true, true
+        true, true, false, true
     },
     {
         TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
@@ -304,7 +373,7 @@ static const TacticalRule kRules[] = {
         "tactical-player-chant-harass",
         73,
         TACTICAL_RESPONSE_ALERT,
-        1.0f,
+        0.55f,
         "uEm0400",
         kPlayerCasterActs,
         (int)(sizeof(kPlayerCasterActs) / sizeof(kPlayerCasterActs[0])),
@@ -313,8 +382,165 @@ static const TacticalRule kRules[] = {
         10.00f,
         3500,
         false,
-        true, true
-    }
+        true, true, false, true
+    },
+    // ---- 85.28: ВСТРЕЧА У ТЕЛА ПАВШЕЙ ПЕШКИ ---------------------------------
+    // Замысел владельца: монстры, стоящие у тела павшей пешки, ДОЛЖНЫ
+    // развернуться на игрока, который идёт её поднимать, — «готовятся встретить
+    // игрока, пытающегося воскресить пешку и восстановить баланс сил».
+    //
+    // Почему событие, а не перестановка выбора цели. В 85.27 механизм был
+    // встроен в выбор цели (PackMark). Поле показало две вещи: во-первых, та
+    // ветка не исполняется без волков (бой был гоблинский, ноль строк решений),
+    // во-вторых — и это главное — ВЫБОР ЦЕЛИ В ИГРЕ НИЧЕГО НЕ ДЕЛАЕТ: его читает
+    // только панель F12. Реально разворачивает монстров Aggro::DirectorFocusSet,
+    // и зовёт его лишь ветка тактических приказов. Поэтому встреча оформлена
+    // ОДНИМ ИЗ СОБЫТИЙ: так она получает вывод в агро, аренду, отбор
+    // отвечающих и освобождение по таймауту — тем же путём, что рог и хват.
+    //
+    // Ярости почти не даём (0.70 против 1.0 у «вплотную увиденного»): это
+    // готовность и подход, а не бешенство. Тир ответа ALERT, не ALARM.
+    //
+    // maxPairDistanceM здесь — расстояние от МОНСТРА до ТЕЛА (кого считать
+    // «толпой у тела»); радиус подхода игрока задаётся ключом ini и живёт в
+    // s_fallenGuardRadius.
+    {
+        TACTICAL_SITUATION_FALLEN_GUARD,
+        "FALLEN-GUARD",
+        "tactical-fallen-guard",
+        60,
+        TACTICAL_RESPONSE_ALERT,
+        0.70f,
+        "uEm0100",
+        kPawnOutActs,
+        (int)(sizeof(kPawnOutActs) / sizeof(kPawnOutActs[0])),
+        0, 0,
+        false,
+        15.00f,
+        4000,
+        false,
+        true, false, true, false
+    },
+    {
+        TACTICAL_SITUATION_FALLEN_GUARD,
+        "FALLEN-GUARD",
+        "tactical-fallen-guard",
+        59,
+        TACTICAL_RESPONSE_ALERT,
+        0.70f,
+        "uEm0101",
+        kPawnOutActs,
+        (int)(sizeof(kPawnOutActs) / sizeof(kPawnOutActs[0])),
+        0, 0,
+        false,
+        15.00f,
+        4000,
+        false,
+        true, false, true, false
+    },
+    {
+        TACTICAL_SITUATION_FALLEN_GUARD,
+        "FALLEN-GUARD",
+        "tactical-fallen-guard",
+        58,
+        TACTICAL_RESPONSE_ALERT,
+        0.70f,
+        "uEm0200",
+        kPawnOutActs,
+        (int)(sizeof(kPawnOutActs) / sizeof(kPawnOutActs[0])),
+        0, 0,
+        false,
+        15.00f,
+        4000,
+        false,
+        true, false, true, false
+    },
+    {
+        TACTICAL_SITUATION_FALLEN_GUARD,
+        "FALLEN-GUARD",
+        "tactical-fallen-guard",
+        57,
+        TACTICAL_RESPONSE_ALERT,
+        0.70f,
+        "uEm0400",
+        kPawnOutActs,
+        (int)(sizeof(kPawnOutActs) / sizeof(kPawnOutActs[0])),
+        0, 0,
+        false,
+        15.00f,
+        4000,
+        false,
+        true, false, true, false
+    },
+    {
+        TACTICAL_SITUATION_PAWN_FINISH,
+        "PAWN-FINISH",
+        "tactical-pawn-finish",
+        70,
+        TACTICAL_RESPONSE_ALERT,
+        0.85f,
+        "uEm0100",
+        kPawnKnockdownActs,
+        (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
+        0, 0,
+        false,
+        10.00f,
+        4000,
+        false,
+        false, false, false, false
+    },
+    {
+        TACTICAL_SITUATION_PAWN_FINISH,
+        "PAWN-FINISH",
+        "tactical-pawn-finish",
+        69,
+        TACTICAL_RESPONSE_ALERT,
+        0.85f,
+        "uEm0101",
+        kPawnKnockdownActs,
+        (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
+        0, 0,
+        false,
+        10.00f,
+        4000,
+        false,
+        false, false, false, false
+    },
+    {
+        TACTICAL_SITUATION_PAWN_FINISH,
+        "PAWN-FINISH",
+        "tactical-pawn-finish",
+        68,
+        TACTICAL_RESPONSE_ALERT,
+        0.85f,
+        "uEm0200",
+        kPawnKnockdownActs,
+        (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
+        0, 0,
+        false,
+        10.00f,
+        4000,
+        false,
+        false, false, false, false
+    },
+    {
+        TACTICAL_SITUATION_PAWN_FINISH,
+        "PAWN-FINISH",
+        "tactical-pawn-finish",
+        67,
+        TACTICAL_RESPONSE_ALERT,
+        0.85f,
+        "uEm0400",
+        kPawnKnockdownActs,
+        (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
+        0, 0,
+        false,
+        10.00f,
+        4000,
+        false,
+        false, false, false, false
+    },
+
 };
 
 static bool ExactAction(const char* act, const char* const* accepted, int count)
@@ -393,8 +619,328 @@ const char* TacticalResponseName(int response)
     return "NONE";
 }
 
+// 85.28: расстояние между двумя ЧЛЕНАМИ ПАРТИИ. Существующий DistanceM
+// считает пару «партия <-> монстр», а встрече нужен «Аризен <-> тело пешки».
+static bool PartyDistanceM(const TacticalPartyActor& a,
+                           const TacticalPartyActor& b, float* outM)
+{
+    if (!a.positionValid || !b.positionValid) return false;
+    const float dx = a.x - b.x, dy = a.y - b.y, dz = a.z - b.z;
+    // 85.29: делим на масштаб мира (сантиметры). Без деления радиус 10 «метров»
+    // работал как 10 сантиметров и не срабатывал никогда.
+    if (outM) *outM = sqrtf(dx * dx + dy * dy + dz * dz) / kWorldUnitsPerMeter;
+    return true;
+}
+
+// 85.28: ветвь «встреча у тела павшей пешки».
+//
+// ЦЕЛЬ всегда Аризен (это его встретят), ПРИЗНАК — лежащая рядом пешка,
+// ИСПОЛНИТЕЛИ — монстры вида у ТЕЛА. Существующие ветви матчера так не умеют:
+// у них признак — действие самой цели (каст, хват), а тут признак — состояние
+// ДРУГОГО члена партии плюс расстояние. Поэтому отдельная функция в том же
+// файле: она возвращает TacticalMatch с тем же контрактом, и дальше событие
+// идёт общим путём — допуск, аренда, вывод в агро, освобождение по таймауту.
+// 85.29: пешка «лежит»? Два источника, в порядке надёжности.
+//
+// Первый — вердикт наблюдателя PartyStatus, подтверждённый живым полем
+// (строки `PS: Hired2 DOWNED act=...`). Он не зависит от имён актов, а имена
+// уже один раз подвели: список кандидатов в PartyRecon не содержал реального
+// акта поля.
+// Второй — запасной: имена актов из kFallenPawnActs.
+// Ни один из них не отличает падение от «сбит с ног» (KNOCKDOWN) — и не
+// должен: для толпы у тела и то и другое значит «пешка на земле».
+static bool PawnIsOut(const TacticalPartyActor& a, const TacticalRule& rule)
+{
+    // Вердикт наблюдателя: лежит без сознания (neardeath) — ждёт подъёма.
+    if (a.downedValid && !a.downedAwake) return true;
+    return ExactAction(a.act, rule.targetActs, rule.targetActCount);
+}
+
+static bool PawnOnGroundAwake(const TacticalPartyActor& a, const TacticalRule& rule)
+{
+    // Вердикт наблюдателя: лежит, но в сознании (сбита с ног) — то, что
+    // владелец назвал «пешка на земле, но не без сознания».
+    if (a.downedAwake) return true;
+    return ExactAction(a.act, rule.targetActs, rule.targetActCount);
+}
+
+// 85.31: пешку НЕСУТ на руках. Поле 85.29 показало, что в этом состоянии тело
+// отдаёт координаты (0,0,0), и наш лог печатал по ним «подход 340 м» — то есть
+// выдуманное число вместо честного «позиции нет». Нести можно только того, кто
+// лежит, поэтому для встречи это не «на подходе», а «пешки на земле нет».
+static bool ActIsCarry(const char* act)
+{
+    return act && strstr(act, "Lift") != 0;
+}
+
+// Позиция (0,0,0) — не место в мире, а «координат нет»: живые тела в поле
+// отдают настоящие числа (тысячи и десятки тысяч сантиметров).
+static bool PositionIsUnusable(float x, float y, float z)
+{
+    return x == 0.0f && y == 0.0f && z == 0.0f;
+}
+
+static void ClearFallenDiag(TacticalFallenDiag& d, int situation)
+{
+    d.situation = situation;
+    d.reason = 0;
+    d.pawnSlot = -1;   // «не найдена»: 0 значил бы Аризена
+    d.approachM = -1.0f;
+    d.nearestKindM = -1.0f;
+}
+
+static void MatchFallenGuard(const TacticalRule& rule,
+                             const TacticalPartyActor* party, int partyCount,
+                             const TacticalMonsterActor* monsters, int monsterCount,
+                             TacticalScan* diag)
+{
+    TacticalFallenDiag& d = diag->fallen;
+    ClearFallenDiag(d, rule.situation);
+    d.monstersTotal = monsterCount;
+    // 85.31: вид считаем СРАЗУ, до всех отказов. Раньше счёт шёл после проверки
+    // подхода, и в логе появлялось «monstersOfKind=0» в бою, где монстры этого
+    // вида были — читалось как «их нет», а значило «мы не считали».
+    for (int m = 0; m < monsterCount; ++m)
+        if (monsters[m].body && ExactKind(monsters[m].kind, rule.monsterKind))
+            ++d.monstersOfKind;
+    if (s_fallenGuardRadius <= 0.0001f) {   // ключ 0 = механизм выключен
+        d.reason = "mechanism-off";
+        return;
+    }
+
+    // Цель — Аризен. Без его позиции встреча бессмысленна: расстояние считать
+    // нечем, а угадывать нельзя.
+    const TacticalPartyActor* arisen = 0;
+    for (int p = 0; p < partyCount; ++p) {
+        if (party[p].slot != 0 || !party[p].body) continue;
+        arisen = &party[p];
+        break;
+    }
+    const bool arisenPosValid = arisen && arisen->positionValid;
+    if (arisen) {
+        d.arisenPosValid = arisenPosValid;
+        d.arisenX = arisen->x; d.arisenY = arisen->y; d.arisenZ = arisen->z;
+    }
+
+    // Признак: лежащая пешка. Если их несколько — ближайшая к игроку.
+    const TacticalPartyActor* pawn = 0;
+    float pawnDist = -1.0f;
+    bool pawnSeenWithoutPos = false;
+    bool carried = false;
+    for (int p = 0; p < partyCount; ++p) {
+        const TacticalPartyActor& cand = party[p];
+        if (cand.slot == 0 || !cand.body) continue;
+        if (!PawnIsOut(cand, rule)) continue;
+        if (ActIsCarry(cand.act)) {   // 85.31: пешку несут — на земле её нет
+            if (!d.pawnBody) {
+                d.pawnSlot = cand.slot;
+                d.pawnBody = cand.body;
+                d.pawnAct = cand.act;
+                d.pawnDowned = true;
+            }
+            carried = true;
+            continue;
+        }
+        if (!d.pawnBody) {
+            d.pawnSlot = cand.slot;
+            d.pawnBody = cand.body;
+            d.pawnAct = cand.act;
+            d.pawnDowned = true;
+        }
+        float dist = -1.0f;
+        if (!arisenPosValid || !PartyDistanceM(*arisen, cand, &dist)) {
+            pawnSeenWithoutPos = true;
+            continue;
+        }
+        if (pawnDist < 0.0f || dist < pawnDist) { pawn = &cand; pawnDist = dist; }
+    }
+    if (!pawn && carried) { d.reason = "pawn-carried"; return; }
+    if (!pawn && pawnSeenWithoutPos) {
+        d.reason = arisenPosValid ? "pawn-position-unavailable"
+                                  : "arisen-position-unavailable";
+        return;
+    }
+    if (!pawn) { d.reason = "no-pawn-down"; return; }
+
+    d.pawnPosValid = true;
+    d.pawnX = pawn->x; d.pawnY = pawn->y; d.pawnZ = pawn->z;
+    if (PositionIsUnusable(pawn->x, pawn->y, pawn->z)) {
+        d.pawnPosValid = false;
+        d.reason = "pawn-position-unavailable";
+        return;
+    }
+    d.approachM = pawnDist;   // главное число: подход ИГРОКА к телу, метры
+    if (pawnDist > s_fallenGuardRadius) {
+        d.reason = "approach-too-far";
+        return;
+    }
+    if (diag->targetCandidates == 0) {
+        diag->targetCandidates = 1;
+        diag->firstTargetSlot = arisen->slot;
+        diag->firstTargetBody = arisen->body;
+        diag->firstTargetAct = arisen->act;
+    }
+
+    // Исполнители: монстры этого вида у ТЕЛА (не у игрока — у тела стоит толпа).
+    //
+    // 85.29: расстояние здесь считается тем же масштабом мира. Раньше тут
+    // вычитались координаты монстра (сантиметры) и пешки (тоже сантиметры) без
+    // деления — значит «15 м» означали 1500 м, и подходящий исполнитель не
+    // находился НИКОГДА, даже когда гоблины стояли на теле.
+    const TacticalMonsterActor* nearest = 0;
+    float nearestD = -1.0f;
+    for (int m = 0; m < monsterCount; ++m) {
+        const TacticalMonsterActor& evidence = monsters[m];
+        if (!evidence.body) continue;
+        if (!ExactKind(evidence.kind, rule.monsterKind)) continue;
+        if (!EvidenceAction(evidence.act, rule)) continue;
+        if (!evidence.positionValid) { ++diag->positionRejected; continue; }
+        const float dx = pawn->x - evidence.x;
+        const float dy = pawn->y - evidence.y;
+        const float dz = pawn->z - evidence.z;
+        const float dd = sqrtf(dx * dx + dy * dy + dz * dz) / kWorldUnitsPerMeter;
+        if (d.nearestKindM < 0.0f || dd < d.nearestKindM) d.nearestKindM = dd;
+        if (dd > rule.maxPairDistanceM) continue;
+        ++diag->evidenceCandidates;
+        ++diag->pairCandidates;
+        if (!diag->firstEvidenceBody) {
+            diag->firstEvidenceBody = evidence.body;
+            diag->firstEvidenceAct = evidence.act;
+        }
+        if (nearestD < 0.0f || dd < nearestD) { nearest = &evidence; nearestD = dd; }
+    }
+    if (!nearest) { d.reason = "no-mob-at-body"; return; }
+
+    diag->match.situation = rule.situation;
+    diag->match.name = rule.name;
+    diag->match.policyReason = rule.policyReason;
+    diag->match.priority = rule.priority;
+    diag->match.response = rule.response;
+    diag->match.urgency = rule.urgency;
+    diag->match.targetSlot = arisen->slot;
+    diag->match.targetBody = arisen->body;
+    diag->match.evidenceBody = nearest->body;
+    // targetAct — акт Аризена (в логе это holderAct): он бежит, стоит, жмёт E,
+    // и по нему видно, что игрок действительно рядом, а не телепортировался.
+    diag->match.targetAct = arisen->act;
+    diag->match.evidenceAct = nearest->act;
+    // distance в логе — это ПОДХОД ИГРОКА к телу: главное число механизма.
+    diag->match.pairDistanceM = pawnDist;
+    diag->match.maxLeaseMs = rule.maxLeaseMs;
+    diag->match.excludeEvidenceBody = rule.excludeEvidenceBody;
+    diag->match.responderKind = rule.monsterKind;
+    diag->match.pairsConsidered = diag->pairCandidates;
+}
+
+// 85.30: ДОБИВАНИЕ ЛЕЖАЩЕЙ ПЕШКИ (в сознании).
+//
+// Отличие от встречи у тела — в АДРЕСАТЕ. Там целью был игрок, пришедший
+// поднимать товарища; здесь цель — САМА ЛЕЖАЩАЯ ПЕШКА. Владелец, поле 85.29:
+// «пешка на земле, но не без сознания = таргет для окружающих монстров! Не на
+// игрока надо ломиться, а добивать лежащую пешку, чтобы выключить её из боя, не
+// дать ей подняться».
+//
+// Поэтому радиус от игрока здесь НЕ участвует вовсе: работает близость
+// ОКРУЖАЮЩИХ монстров к пешке (maxPairDistanceM). Радиус ключа
+// fallenGuardRadius относится только к встрече у тела.
+static void MatchPawnFinish(const TacticalRule& rule,
+                            const TacticalPartyActor* party, int partyCount,
+                            const TacticalMonsterActor* monsters, int monsterCount,
+                            TacticalScan* diag)
+{
+    TacticalFallenDiag& d = diag->finish;
+    ClearFallenDiag(d, rule.situation);
+    if (!s_pawnFinishEnabled) {   // ключ 0 = механизм выключен
+        d.reason = "mechanism-off";
+        return;
+    }
+    d.monstersTotal = monsterCount;
+    for (int m = 0; m < monsterCount; ++m)
+        if (monsters[m].body && ExactKind(monsters[m].kind, rule.monsterKind))
+            ++d.monstersOfKind;
+
+    // Пешка, которую добивают: лежит в сознании, ближайший монстр этого вида —
+    // самый близкий. Если таких пешек несколько, берём ту, к которой монстры
+    // стоят плотнее всего: это и есть «окружающие».
+    const TacticalPartyActor* victimPawn = 0;
+    const TacticalMonsterActor* nearest = 0;
+    float bestMobDist = -1.0f;
+    bool sawGroundPawn = false;
+    for (int p = 0; p < partyCount; ++p) {
+        const TacticalPartyActor& cand = party[p];
+        if (cand.slot == 0 || !cand.body) continue;          // Аризен не цель
+        if (!PawnOnGroundAwake(cand, rule)) continue;
+        sawGroundPawn = true;
+        if (!d.pawnBody) {
+            d.pawnSlot = cand.slot;
+            d.pawnBody = cand.body;
+            d.pawnAct = cand.act;
+            d.pawnDowned = true;
+        }
+        if (!cand.positionValid) continue;
+        d.pawnPosValid = true;
+        d.pawnX = cand.x; d.pawnY = cand.y; d.pawnZ = cand.z;
+        if (PositionIsUnusable(cand.x, cand.y, cand.z)) {
+            d.pawnPosValid = false;
+            continue;   // позиции нет — считать нечего, и выдумывать нельзя
+        }
+        for (int m = 0; m < monsterCount; ++m) {
+            const TacticalMonsterActor& mob = monsters[m];
+            if (!mob.body) continue;
+            if (!ExactKind(mob.kind, rule.monsterKind)) continue;
+            if (!EvidenceAction(mob.act, rule)) continue;
+            if (!mob.positionValid) { ++diag->positionRejected; continue; }
+            const float dx = cand.x - mob.x, dy = cand.y - mob.y, dz = cand.z - mob.z;
+            const float dist = sqrtf(dx * dx + dy * dy + dz * dz)
+                             / kWorldUnitsPerMeter;
+            if (d.nearestKindM < 0.0f || dist < d.nearestKindM)
+                d.nearestKindM = dist;
+            if (dist > rule.maxPairDistanceM) continue;
+            if (bestMobDist < 0.0f || dist < bestMobDist) {
+                bestMobDist = dist;
+                victimPawn = &cand;
+                nearest = &mob;
+            }
+        }
+    }
+    if (!sawGroundPawn) { d.reason = "no-pawn-on-ground-awake"; return; }
+    // Вид монстра считаем только по правилу с наибольшим числом подходящих —
+    // иначе отказ «своего» вида затирал бы отказ вида, который в бою есть.
+    if (!victimPawn || !nearest) {
+        d.reason = d.pawnPosValid ? "no-mob-at-pawn" : "pawn-position-unavailable";
+        return;
+    }
+
+    diag->targetCandidates = 1;
+    diag->firstTargetSlot = victimPawn->slot;
+    diag->firstTargetBody = victimPawn->body;
+    diag->firstTargetAct = victimPawn->act;
+    ++diag->evidenceCandidates;
+    ++diag->pairCandidates;
+    diag->firstEvidenceBody = nearest->body;
+    diag->firstEvidenceAct = nearest->act;
+    d.nearestKindM = bestMobDist;
+
+    diag->match.situation = rule.situation;
+    diag->match.name = rule.name;
+    diag->match.policyReason = rule.policyReason;
+    diag->match.priority = rule.priority;
+    diag->match.response = rule.response;
+    diag->match.urgency = rule.urgency;
+    diag->match.targetSlot = victimPawn->slot;      // ЦЕЛЬ — ПЕШКА, не игрок
+    diag->match.targetBody = victimPawn->body;
+    diag->match.evidenceBody = nearest->body;
+    diag->match.targetAct = victimPawn->act;
+    diag->match.evidenceAct = nearest->act;
+    diag->match.pairDistanceM = bestMobDist;        // монстр -> пешка, метры
+    diag->match.maxLeaseMs = rule.maxLeaseMs;
+    diag->match.excludeEvidenceBody = rule.excludeEvidenceBody;
+    diag->match.responderKind = rule.monsterKind;
+    diag->match.pairsConsidered = diag->pairCandidates;
+}
+
 void InspectTacticalContinuation(int situation, uintptr_t targetBody,
-                                 uintptr_t evidenceBody,
+                                 uintptr_t evidenceBody, const char* expectedKind,
                                  const TacticalPartyActor* party, int partyCount,
                                  const TacticalMonsterActor* monsters, int monsterCount,
                                  TacticalContinuation* out)
@@ -411,6 +957,25 @@ void InspectTacticalContinuation(int situation, uintptr_t targetBody,
     for (int i = 0; i < partyCount; ++i) {
         if (party[i].body != targetBody) continue;
         out->targetBodyPresent = true;
+        if (rule->situation == TACTICAL_SITUATION_PAWN_FINISH) {
+            // 85.30: цель — САМА ПЕШКА. Рецепт держится, пока она лежит в
+            // сознании: встала — цель ушла; ушла в neardeath — задача
+            // выполнена (лежащую без сознания не добиваем).
+            out->targetActionMatched = PawnOnGroundAwake(party[i], *rule);
+            if (out->targetActionMatched) target = &party[i];
+            break;
+        }
+        if (rule->fallenPawnCue) {
+            // 85.28: у встречи цель — Аризен, а рецепт — «пешка всё ещё лежит
+            // рядом». Собственный акт Аризена тут ни при чём (он бежит, потом
+            // жмёт E, потом дерётся), и требовать от него совпадения с
+            // kFallenPawnActs нельзя: событие снималось бы в тот же такт.
+            if (party[i].slot == 0) {
+                out->targetActionMatched = true;
+                target = &party[i];
+            }
+            break;
+        }
         if (rule->arisenOnly && party[i].slot != 0) continue;
         if (rule->casterVocationOnly && !IsCasterVocation(party[i].vocation)) continue;
         if (rule->targetActCount <= 0
@@ -420,10 +985,32 @@ void InspectTacticalContinuation(int situation, uintptr_t targetBody,
         }
         break;
     }
+
+    // 85.28: пешка поднялась или игрок отошёл — событие кончилось. Проверяем
+    // ровно то же условие, что и при допуске: иначе встреча висела бы вечно.
+    if (rule->fallenPawnCue && target) {
+        bool pawnStillDown = false;
+        for (int i = 0; i < partyCount && !pawnStillDown; ++i) {
+            const TacticalPartyActor& cand = party[i];
+            if (cand.slot == 0 || !cand.body) continue;
+            // 85.29: тот же предикат, что и при допуске. Иначе событие падало бы
+            // на первом же такте после входа: допуск по вердикту наблюдателя, а
+            // освобождение по имени акта, которого в списке нет.
+            if (!PawnIsOut(cand, *rule)) continue;
+            float d = -1.0f;
+            if (!PartyDistanceM(*target, cand, &d)) continue;
+            if (d <= s_fallenGuardRadius) pawnStillDown = true;
+        }
+        if (!pawnStillDown) out->targetActionMatched = false;
+    }
+    // Вид допущенного правила приоритетнее «первого правила с таким id»:
+    // у PLAYER-CHANT-HARASS видов четыре, и поиск по id всегда давал гоблина.
+    const char* wantKind = (expectedKind && expectedKind[0]) ? expectedKind
+                                                            : rule->monsterKind;
     for (int i = 0; i < monsterCount; ++i) {
         if (monsters[i].body != evidenceBody) continue;
         out->evidenceBodyPresent = true;
-        out->evidenceKindMatched = ExactKind(monsters[i].kind, rule->monsterKind);
+        out->evidenceKindMatched = ExactKind(monsters[i].kind, wantKind);
         out->evidenceActionMatched = out->evidenceKindMatched
                                   && EvidenceAction(monsters[i].act, *rule);
         evidence = &monsters[i];
@@ -445,6 +1032,20 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
     TacticalScan bestMatchScan;
     InitScan(&bestDiagnostic);
     InitScan(&bestMatchScan);
+    // 85.29: диагностика встречи не участвует в отборе лучшего правила — она
+    // нужна даже тогда, когда правило проиграло и в лог ничего не попало.
+    TacticalFallenDiag fallenCarry;
+    memset(&fallenCarry, 0, sizeof(fallenCarry));
+    fallenCarry.approachM = -1.0f;
+    fallenCarry.nearestKindM = -1.0f;
+    fallenCarry.pawnSlot = -1;
+    bool fallenHave = false;
+    TacticalFallenDiag finishCarry;
+    memset(&finishCarry, 0, sizeof(finishCarry));
+    finishCarry.approachM = -1.0f;
+    finishCarry.nearestKindM = -1.0f;
+    finishCarry.pawnSlot = -1;
+    bool finishHave = false;
     int bestDiagnosticPriority = -1;
     int bestMatchPriority = -1;
 
@@ -458,7 +1059,15 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
 
         const bool proactiveCaller = (rule.targetActCount <= 0);
 
-        if (proactiveCaller) {
+        if (rule.situation == TACTICAL_SITUATION_PAWN_FINISH) {
+            // Ветвь выбирается по НОМЕРУ ситуации, а не новым флагом в строке
+            // таблицы: добавление поля в структуру уже один раз молча
+            // переставило смысл флагов в тринадцати строках. Номер ситуации —
+            // такое же штатное поле, и его видно прямо в строке.
+            MatchPawnFinish(rule, party, partyCount, monsters, monsterCount, &diag);
+        } else if (rule.fallenPawnCue) {
+            MatchFallenGuard(rule, party, partyCount, monsters, monsterCount, &diag);
+        } else if (proactiveCaller) {
             for (int m = 0; m < monsterCount; ++m) {
                 const TacticalMonsterActor& evidence = monsters[m];
                 if (!evidence.body || !ExactKind(evidence.kind, rule.monsterKind)
@@ -588,7 +1197,14 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
                     const bool evidenceIdentityAllowed =
                         !rule.requireGloballyUniqueEvidence
                         || diag.evidenceCandidates == 1;
-                    if (diag.targetCandidates == 1 && evidenceIdentityAllowed) {
+                    // 85.25: раньше здесь заполнялась ПОСЛЕДНЯЯ подходящая пара
+                    // (перезапись в цикле). Теперь — ближайшая: это осмысленно и
+                    // для строгих правил (там пара ровно одна), и обязательно для
+                    // запасного выбора, где именно ближайший и должен побеждать.
+                    const bool nearer = (diag.match.situation
+                                            == TACTICAL_SITUATION_NONE)
+                                     || (distance < diag.match.pairDistanceM);
+                    if (diag.targetCandidates == 1 && evidenceIdentityAllowed && nearer) {
                         diag.match.situation = rule.situation;
                         diag.match.name = rule.name;
                         diag.match.policyReason = rule.policyReason;
@@ -609,6 +1225,30 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
             }
         }
 
+        // 85.29/85.30: причина нужна одна, а правил у каждого механизма
+        // четыре (по видам монстров). Держим диагностику того правила, которое
+        // дошло дальше всех: состоявшееся событие важнее отказа, а отказ вида,
+        // который в бою РЕАЛЬНО есть, важнее отказа вида, которого нет вовсе.
+        if (rule.fallenPawnCue
+            || rule.situation == TACTICAL_SITUATION_PAWN_FINISH) {
+            const bool isFinish =
+                rule.situation == TACTICAL_SITUATION_PAWN_FINISH;
+            const TacticalFallenDiag& f = isFinish ? diag.finish : diag.fallen;
+            TacticalFallenDiag& carry = isFinish ? finishCarry : fallenCarry;
+            bool& have = isFinish ? finishHave : fallenHave;
+            // Приоритет: состоявшееся событие (reason == 0) важнее отказа, а
+            // из отказов важнее тот вид, который в бою РЕАЛЬНО есть.
+            const bool thisClean = (f.reason == 0);
+            const bool carryClean = have && carry.reason == 0;
+            const bool better = (thisClean && !carryClean)
+                             || (!thisClean && !carryClean
+                                 && f.monstersOfKind > carry.monstersOfKind);
+            if (!have || better) {
+                carry = f;
+                have = true;
+            }
+        }
+
         // A holder action alone is not a diagnostic. Wolf GrabStart must not
         // hide the goblin row when no uEm0200 is present (log 23 PARTIAL).
         if (diag.targetCandidates > 0 && diag.evidenceCandidates > 0
@@ -619,12 +1259,31 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
 
         const bool evidenceIdentityAllowed =
             !rule.requireGloballyUniqueEvidence || diag.evidenceCandidates == 1;
-        const bool uniqueCorrelatedPair = diag.targetCandidates == 1
-                                       && evidenceIdentityAllowed
-                                       && diag.pairCandidates == 1
-                                       && diag.match.situation
-                                          != TACTICAL_SITUATION_NONE;
-        if (uniqueCorrelatedPair && rule.priority > bestMatchPriority) {
+        // 85.25: строгое «ровно одна пара» остаётся законом для хватов и
+        // прижимов — там уникальность ДОКАЗЫВАЕТ, кого именно держат. Для
+        // семейства «услышал каст» (nearestPairFallback) пара может быть и не
+        // одна: берём ближайшую, потому что доказывать тут нечего.
+        const bool pairsAdmissible =
+            (diag.pairCandidates == 1)
+            // 85.28: у встречи «несколько монстров у тела» — норма, а не
+            // неоднозначность: уникальность пары доказывала бы контакт, а здесь
+            // доказывать нечего. Стоит отдельным условием, а не через
+            // nearestPairFallback: тот висит на ключе chantNearest, и выключение
+            // каста не должно ломать встречу.
+            || (rule.fallenPawnCue && diag.pairCandidates > 1)
+            // 85.30: у добивания «окружающие монстры» — это и есть суть: их
+            // всегда больше одного.
+            || (rule.situation == TACTICAL_SITUATION_PAWN_FINISH
+                && diag.pairCandidates > 1)
+            || (rule.nearestPairFallback && s_nearestPairFallback
+                && diag.pairCandidates > 1);
+        const bool correlatedPair = diag.targetCandidates == 1
+                                 && evidenceIdentityAllowed
+                                 && pairsAdmissible
+                                 && diag.match.situation
+                                    != TACTICAL_SITUATION_NONE;
+        if (correlatedPair && rule.priority > bestMatchPriority) {
+            diag.match.pairsConsidered = diag.pairCandidates;
             bestMatchScan = diag;
             bestMatchPriority = rule.priority;
         }
@@ -637,6 +1296,22 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
         *out = bestDiagnostic;
         out->matched = false;
     }
+    out->fallen = fallenCarry;
+    out->finish = finishCarry;
+}
+
+// 85.25: сеттер живёт в пространстве MonsterAI, а состояние — в анонимном:
+// так ключ виден из Директора, а выключатель остаётся локальным для файла.
+void SetNearestPairFallback(bool on) { s_nearestPairFallback = on; }
+
+// 85.28: сеттер живёт рядом с chant-овским по той же причине — ключ читает
+// Директор, состояние остаётся локальным для файла.
+void SetPawnFinishEnabled(bool on) { s_pawnFinishEnabled = on; }
+
+void SetFallenGuardRadius(float meters)
+{
+    if (!(meters == meters) || meters < 0.0f) meters = 10.0f;   // NaN из ini
+    s_fallenGuardRadius = meters;
 }
 
 } // namespace MonsterAI

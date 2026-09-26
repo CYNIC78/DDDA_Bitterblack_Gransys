@@ -154,7 +154,16 @@ struct PartyCombatMember {
 
     uint64_t  statusMask;
     bool      statusValid;
-    bool      downedValid;
+    bool      downedValid;       // лежит ЛЮБЫМ из двух способов (см. ниже)
+    // 85.30: РАЗЛИЧАТЬ ДВА ПАДЕНИЯ — это разные события для директора.
+    //   downedAwake    — лежит, но В СОЗНАНИИ (сбита с ног). Наблюдатель
+    //                    PartyStatus: cPlActDmgDown / cPlActDmgDownDamage,
+    //                    в логе `PS: <пешка> KNOCKDOWN act=...`.
+    //   downedValid && !downedAwake — лежит БЕЗ СОЗНАНИЯ (neardeath, ждёт
+    //                    подъёма), в логе `PS: <пешка> DOWNED act=...`.
+    // Для директора это разные адресаты: в сознании — добивать саму пешку,
+    // без сознания — встречать того, кто придёт её поднимать.
+    bool      downedAwake;
     bool      downedRevivable;
     bool      downedHint;        // raw action hint; neutral in scoring
 };

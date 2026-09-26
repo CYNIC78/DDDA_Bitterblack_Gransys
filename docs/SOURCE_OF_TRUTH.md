@@ -61,13 +61,16 @@ Transient heap addresses и VA vtable одного запуска **не кан�
 
 ### 0.1 Milestone / хаб
 
+> **Снимок на 84.21.** Часть строк уже закрыта — помечено `→ ЗАКРЫТО 2026-09-25`.
+> Таблица оставлена как запись аудита, а не как текущий статус.
+
 | Документ | Утверждает | Код 84.21 | Вердикт |
 |---|---|---|---|
 | этот файл (до аудита) | Build 74.0 / раскладка 73.27 | `MOD_BUILD_TAG "84.21-species-rage"` | **DEPRECATED header** |
-| `PROJECT_HUB.md` | Build 84.18 `card-recon`; ветка `work/player-main-pawn-recon` | HEAD `5cc8ea5` «goblins rush system»; ветка `main` | **DEPRECATED milestone** |
-| `CHANGELOG.md` «Текущий milestone» | 84.18 | 84.21 | **DEPRECATED** |
+| `PROJECT_HUB.md` | Build 84.18 `card-recon`; ветка `work/player-main-pawn-recon` | HEAD `5cc8ea5` «goblins rush system»; ветка `main` | **DEPRECATED milestone** → ЗАКРЫТО 2026-09-25: статус синхронизирован, ветки в репо нет (отмечено в хабе) |
+| `CHANGELOG.md` «Текущий milestone» | 84.18 | 84.21 | **DEPRECATED** → ЗАКРЫТО (секция ведётся при каждом билде) |
 | `docs/ROADMAP.md` | Stable 47 / Active 63 | перенесён в `docs/archive/` | **ARCHIVED** |
-| `docs/README.md` | ссылки на `GUARDIAN_VOCATION_MATRIX.md`, `GUARDIAN_LEASH_MATRIX.md`, `REFACTOR_TASK.md` | файлов в дереве нет | **битые ссылки** |
+| `docs/README.md` | ссылки на `GUARDIAN_VOCATION_MATRIX.md`, `GUARDIAN_LEASH_MATRIX.md`, `REFACTOR_TASK.md` | файлов в дереве нет | **битые ссылки** → ЗАКРЫТО 2026-09-25: файл слит в `PROJECT_HUB.md`, удалённые доки восстановлены в `docs/archive/` |
 
 ### 0.2 CombatBus / картина мира
 
@@ -453,10 +456,13 @@ Exact `strcmp` DTI. Prefix / subtype **не** наследуют профиль.
 uEm0200  size=29888  observe tempoRage aggroWrite
          rageLoco 1.20..1.25   rageAnim 1.20..1.26
 uEm0100  size=29632  observe tempoRage aggroWrite
-         rageLoco 1.21..1.24   rageAnim 1.32..1.40
+         rageLoco 1.15..1.20   rageAnim 1.15..1.24
+         // (сверено с SpeciesCard.h 2026-09-25; числа 1.21..1.24 / 1.32..1.40
+         //  верны для 84.21..84.61, снижены в 84.62)
 uEm0101  size=29632  observe tempoRage aggroWrite
-         rageLoco 1.21..1.23   rageAnim 1.24..1.32
+         rageLoco 1.15..1.20   rageAnim 1.10..1.18
          // hob: grab=goblin, PackMark=wolf; slower than small goblin
+         // (было 1.21..1.23 / 1.24..1.32 — снижено в 84.62)
 uEm0400  size=29568  observe tempoRage aggroWrite
          rageLoco 1.20..1.22   rageAnim 1.20..1.23
          // saurian: PackMark only, NO grab; live f8&1 + fC 4/2
@@ -468,6 +474,34 @@ Tempo не зависит от `monsterai`; волк имеет встроенн
 Admission reject, если `!(rageLoco > stableLoco && rageAnim > stableAnim)`
 (`director-mobilization-baseline-outside-profile`) → Director hard-reset
 частичной policy.
+
+> **Связка с ini (найдено 2026-09-25).** `stable*` — это НЕ константы карточки,
+> а живой диапазон из `[monsterTempo]`: с пакетным ini `factorMin..Max = 1.05..1.20`
+> и `animFactorMin..Max = 1.05..1.15`. То есть контракт карточки («rage выше
+> потолка стабильного профиля») сейчас выполняется только у волка и ящера.
+> У гоблина и хобгоблина `rageLoco = 1.15..1.20` лёг **на** этот потолок, и тела,
+> чей стабильный фактор ушёл вверх (компенсация частоты шага, `FactorFor`, тела со
+> `scale < 1.0`), отбиваются допуском молча — они не мобилизуются вовсе.
+> Оценка: порядка 10 % гоблинов и 5 % хобгоблинов. Сигнал — `policy=...baseline-outside-profile`
+> в строке Monster Director и в панели F12. Не закрыто: см. `PROJECT_HUB` §10.
+> Закрыть можно либо подняв `rageLoco` гоблина/хоба, либо опустив `factorMax` ниже 1.15.
+>
+> **Решение владельца (2026-09-25): масштаб < 1.0 не использовать.** Масштаб —
+> ручка опасности: он множит скорость, длину шага и радиус атаки, поэтому мелкая
+> особь безвредна механически, а крупная опаснее при том же уроне и защите.
+> **Внимание:** пока `[monsterAI] enabled` и `wolfActuator` = `off` (см. `TEMPO_SYSTEM.md` §0),
+> мобилизация не запускается вообще, и полоса отказов ниже — **латентная**: она
+> оживёт в тот день, когда режиссёра включат. Поэтому пол в карточках стоит
+> поднять ДО включения, а не после.
+> Для хардкорного мода задохликов делать незачем — и это снимает причину отказов
+> допуска у гоблина и хоба, потому что компенсация частоты шага срабатывает
+> только при `height < 1.0`. **Место правки — полы `scaleMin` в карточках видов,
+> а НЕ `ddda_entities.ini`:** там `scaleMin/Max = 1.0` означает не «масштаб
+> выключен», а «размер берёт карточка» (`EnemyTuner.cpp` ~:1483 — при обоих 1.0
+> берётся corridor из карточки; ранний выход только если и карточка 1.0/1.0).
+> Полезное правило допуска (слабее, чем требует комментарий карточки):
+> `rageLocoLo ≥ factorMin` и `rageLocoHi ≥ factorMax` — этого достаточно, пока
+> стабильный темп равен чистому роллу. Правка кода не сделана, ждёт слова владельца.
 
 Roll детерминирован от адреса тела (murmur3). Повторный Admit refresh/maximize
 одной envelope; endpoint не двигается. Decay 1400 мс. TTL приказа 600 мс

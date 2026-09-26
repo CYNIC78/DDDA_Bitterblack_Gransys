@@ -755,7 +755,7 @@ GuardianDoctrine: [MainPawn] PROACTIVE TARGET -> PREEMPT-INTERCEPT 0x11496780 (u
   соседях 750/750/700 → вне стека), правка ini не требуется;
 * персо́на при равенстве Guardian/Nexus — **Guardian**.
 
-Полный дизайн: [`docs/PAWN_ROLE_STACK.md`](../../PAWN_ROLE_STACK.md).
+Полный дизайн: [`docs/PAWN_ROLE_STACK.md`](../PAWN_ROLE_STACK.md).
 
 **Следствие для этого документа:** §10.2 остаётся диагнозом бага, но
 «исправление» там было неполным — правится не выбор носителя, а сама модель:

@@ -62,9 +62,38 @@ bool RegionOk(uintptr_t addr, size_t bytes)
 bool RdPtr(const void* p, uintptr_t* out)
 { return Rd(p, out, sizeof(uintptr_t)); }
 
+// Ворота записи (85.24). См. MemProbe.h — там подробно, зачем.
+//
+// deadlins, а не флаг: закрытые ворота обязаны открыться сами, даже если
+// игра больше никогда не сообщит «я в мире». Иначе один неудачный переход
+// молча выключил бы весь мод до перезапуска.
+static DWORD    g_writeGateUntil = 0;
+static uint32_t g_blockedWrites  = 0;
+static uint32_t g_blockedWindows = 0;
+
+void BlockWritesFor(DWORD ms)
+{
+    if (!ms) return;
+    const DWORD now = GetTickCount();
+    const DWORD until = now + ms;
+    // Повторное закрытие не должно удлинять окно бесконечно: берём максимум.
+    if (until > g_writeGateUntil) g_writeGateUntil = until;
+    ++g_blockedWindows;
+}
+
+bool WritesOpen()
+{
+    if (!g_writeGateUntil) return true;
+    return (int32_t)(GetTickCount() - g_writeGateUntil) >= 0;
+}
+
+uint32_t BlockedWrites()  { return g_blockedWrites; }
+uint32_t BlockedWindows() { return g_blockedWindows; }
+
 bool WrSafe(void* p, const void* value, size_t n)
 {
     if (!p || !value || !n) return false;
+    if (!WritesOpen()) { ++g_blockedWrites; return false; }
     __try { memcpy(p, value, n); return true; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }

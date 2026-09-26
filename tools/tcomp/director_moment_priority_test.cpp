@@ -32,6 +32,8 @@ static uintptr_t g_focusBody = 0;
 static uintptr_t g_focusExcludedBody = 0;
 static int g_focusResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
 static char g_focusKind[16] = "uEm0200";
+// 85.23: список исполнителей, переданный в Aggro (пусто = весь вид).
+static std::vector<uintptr_t> g_focusSetBodies;
 
 namespace Runtime {
 bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
@@ -201,8 +203,13 @@ const char* ResolveMemberBodyStatus(int member, uintptr_t* out)
 
 bool DirectorFocusSet(int member, uintptr_t expectedBody,
                       uintptr_t excludedEnemyBody, int response,
-                      const char* exactKind)
+                      const char* exactKind, const uintptr_t* responders,
+                      int nResponders)
 {
+    g_focusSetBodies.clear();
+    if (responders && nResponders > 0)
+        for (int i = 0; i < nResponders; ++i)
+            g_focusSetBodies.push_back(responders[i]);
     if (member < 0) {
         g_focusMember = -1;
         g_focusBody = 0;
@@ -807,6 +814,92 @@ static void TestBuild012UrgencyDataDefinedMatcher()
     assert(!scan.matched && scan.targetCandidates == 2);
     party[1].act = "cPlActWait";
 
+    // ---- 85.25: «услышал каст» берёт БЛИЖАЙШЕГО, а не отказывает ----------
+    //
+    // ЗАЧЕМ. Правило требовало РОВНО ОДНУ пару «кастующий <-> монстр» в
+    // радиусе, и в поле это оказалось невыполнимым: рядом всегда больше одного
+    // монстра (36 отказов против 4 срабатываний, все отказы pairs-ambiguous).
+    // Теперь для семейства каста допускается много пар, побеждает ближайшая.
+    // Для хватов и прижимов правило прежнее — там уникальность ДОКАЗЫВАЕТ,
+    // кого именно держат, и ослаблять её нельзя.
+    {
+        const char* savedPartyActs[2] = { party[0].act, party[1].act };
+        const int   savedVocation = party[0].vocation;
+        const int   savedSlot     = party[0].slot;
+        const char* savedMonActs[3] = { monsters[0].act, monsters[1].act, monsters[2].act };
+        const char* savedKinds[3]    = { monsters[0].kind, monsters[1].kind, monsters[2].kind };
+        float savedMonX[3], savedMonY[3], savedMonZ[3];
+        for (int i = 0; i < 3; ++i) {
+            savedMonX[i] = monsters[i].x;
+            savedMonY[i] = monsters[i].y;
+            savedMonZ[i] = monsters[i].z;
+        }
+
+        MonsterAI::SetNearestPairFallback(false);
+        // Правило каста arisenOnly: нужен слот ВОССТАВШЕГО (PARTY_ARISEN=0),
+        // а не главной пешки, и кастующая вокация (9 = Sorcerer).
+        party[0].slot = Runtime::PARTY_ARISEN;
+        party[0].vocation = 9;
+        party[0].act = "cPlActWpnWandBase";
+        party[0].positionValid = true;
+        party[0].x = 0.0f; party[0].y = 0.0f; party[0].z = 0.0f;
+        party[1].act = "cPlActWait";
+        // Три гоблина на разной дистанции: 100, 300 и 200 условных единиц (1 м = 100).
+        for (int i = 0; i < 3; ++i) {
+            monsters[i].kind = "uEm0100";
+            monsters[i].act  = "cEm0100ActWalk";
+            monsters[i].positionValid = true;
+            monsters[i].x = 0.0f; monsters[i].y = 0.0f;
+            monsters[i].z = (i == 0) ? 100.0f : (i == 1) ? 300.0f : 200.0f;
+        }
+
+        // (1) Ключ выключен — старое строгое поведение: три пары значат отказ.
+        ScanTacticalSituations(party, 2, monsters, 3, &scan);
+        assert(!scan.matched);
+        assert(scan.situation == TACTICAL_SITUATION_PLAYER_CHANT_HARASS);
+        assert(scan.pairCandidates == 3);
+
+        // (2) Ключ включён — событие допускается и жертвой становится БЛИЖАЙШИЙ.
+        MonsterAI::SetNearestPairFallback(true);
+        ScanTacticalSituations(party, 2, monsters, 3, &scan);
+        assert(scan.matched);
+        assert(scan.situation == TACTICAL_SITUATION_PLAYER_CHANT_HARASS);
+        assert(scan.match.evidenceBody == monsters[0].body);
+        assert(scan.match.pairsConsidered == 3);
+        assert(std::fabs(scan.match.pairDistanceM - 1.0f) < 0.01f);
+
+        // (3) Хваты и прижимы остаются строгими: у них флага нет, и две пары
+        //     по-прежнему означают отказ даже при включённом ключе.
+        party[0].act = "cPlActHagaijime4Feet";
+        for (int i = 0; i < 3; ++i) {
+            monsters[i].kind = "uEm0200";
+            monsters[i].act  = "cEm0200ActWait";
+            // Радиус прижима всего 2 м, поэтому ставим всех трёх ВНУТРЬ него:
+            // именно так выглядит толпа вокруг держащего в бою.
+            monsters[i].z = 0.0f;
+            monsters[i].x = 50.0f + (float)i * 50.0f;   // 0.5 / 1.0 / 1.5 м
+        }
+        ScanTacticalSituations(party, 2, monsters, 3, &scan);
+        assert(!scan.matched);
+        assert(scan.situation == TACTICAL_SITUATION_PACK_GROUND_PIN_ALARM);
+        assert(scan.pairCandidates == 3);
+
+        // Возвращаем арену В ТОЧНОСТИ как была: следующие проверки считают
+        // расстояния по этим координатам, и любая невосстановленная ось
+        // сломает их молча.
+        MonsterAI::SetNearestPairFallback(false);
+        party[0].vocation = savedVocation;
+        party[0].slot     = savedSlot;
+        for (int i = 0; i < 2; ++i) party[i].act = savedPartyActs[i];
+        for (int i = 0; i < 3; ++i) {
+            monsters[i].act  = savedMonActs[i];
+            monsters[i].kind = savedKinds[i];
+            monsters[i].x = savedMonX[i];
+            monsters[i].y = savedMonY[i];
+            monsters[i].z = savedMonZ[i];
+        }
+    }
+
     // Species admission is exact and reliable spatial identity is mandatory.
     monsters[0].kind = "uEm0200Variant";
     ScanTacticalSituations(party, 2, monsters, 3, &scan);
@@ -1398,6 +1491,532 @@ static void TestOnFieldRiftedMainPawn()
     assert(s_tactical.targetSlot == Runtime::PARTY_ARISEN);
 }
 
+
+// 85.23 регресс: у PLAYER-CHANT-HARASS ЧЕТЫРЕ правила — по одному на вид жертвы.
+// Продолжение ситуации обязано проверять вид ДОПУЩЕННОГО правила, а не первого
+// с тем же id. До фикса жертва-волк не совпадала с гоблинским правилом, событие
+// рвалось («victim-species-changed») и переадмитилось каждые 150 мс — 28 циклов
+// за бой в поле 2026-09-25.
+static void TestChantContinuationUsesAdmittedSpecies()
+{
+    MonsterAI::TacticalPartyActor party[1] = {};
+    party[0].slot = 0;                       // Arisen: правило arisenOnly
+    party[0].body = 0xAA00;
+    party[0].act = "cPlActWpnWandBase";      // из kPlayerCasterActs
+    party[0].vocation = 3;                   // Mage: требование casterVocationOnly
+    party[0].positionValid = true;
+    party[0].x = 0.0f; party[0].y = 0.0f; party[0].z = 0.0f;
+
+    MonsterAI::TacticalMonsterActor mob[1] = {};
+    mob[0].body = 0xBB00;                    // волк рядом с кастующим
+    mob[0].kind = "uEm0200";
+    mob[0].act = "cEm0200Step";
+    mob[0].positionValid = true;
+    mob[0].x = 10.0f; mob[0].y = 0.0f; mob[0].z = 0.0f;
+
+    // 1) Новый путь: вид правила передаётся явно -> событие держится.
+    MonsterAI::TacticalContinuation fixed;
+    MonsterAI::InspectTacticalContinuation(
+        MonsterAI::TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+                                0xAA00, 0xBB00, "uEm0200",
+                                party, 1, mob, 1, &fixed);
+    assert(fixed.targetBodyPresent);
+    assert(fixed.targetActionMatched);
+    assert(fixed.evidenceBodyPresent);
+    assert(fixed.evidenceKindMatched);
+    assert(fixed.evidenceActionMatched);
+    assert(fixed.distanceValid);
+
+    // 2) Старый вызов (вид не передан): правило ищется по id, первым идёт
+    //    гоблинское — волк ему не соответствует. Это и была причина дыры;
+    //    держим как контракт, чтобы «упрощение» обратно не проскочило.
+    MonsterAI::TacticalContinuation legacy;
+    MonsterAI::InspectTacticalContinuation(
+        MonsterAI::TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
+                                0xAA00, 0xBB00, 0,
+                                party, 1, mob, 1, &legacy);
+    assert(legacy.evidenceKindMatched == false);
+}
+
+
+// 85.23: лимит исполнителей [monsterAI] responderMax. Приказ не должен
+// превращаться в «вся пачка разом»; при лимите берём БЛИЖАЙШИХ к очагу, а не
+// первые попавшиеся из обхода памяти (порядок s_view — это порядок памяти).
+static void TestResponderCapPicksNearest()
+{
+    MonsterAI::Shutdown();                 // чистая доска для обзора
+    for (int i = 0; i < 5; ++i) {
+        MonsterAI::MonsterView& v = MonsterAI::s_view[i];
+        memset(&v, 0, sizeof(v));
+        v.body = 0x9000u + (uintptr_t)i;
+        strcpy(v.kind, "uEm0100");
+        v.positionValid = true;
+        // ОБРАТНЫЙ порядок: в обзоре список идёт от дальнего к ближнему, так
+        // что совпадение с порядком памяти не замаскирует отсутствие сортировки.
+        v.x = (float)(5 - i) * 10.0f;      // 50, 40, 30, 20, 10 м
+        v.dead = false;
+    }
+    MonsterAI::s_nView = 5;
+
+    uintptr_t out[16] = {};
+    const char* why = 0;
+    const float ref[3] = { 0.0f, 0.0f, 0.0f };
+
+    int n = MonsterAI::CollectEligibleResponders(out, 16, 0, "uEm0100",
+                                                 ref, 2, &why);
+    assert(n == 2);
+    assert(out[0] == 0x9004u);             // 10 м — ближний, он в обзоре последний
+    assert(out[1] == 0x9003u);             // 20 м — второй
+
+    // 0 = все (прежнее поведение), но ранжирование остаётся: ближний первым.
+    n = MonsterAI::CollectEligibleResponders(out, 16, 0, "uEm0100",
+                                             ref, 0, &why);
+    assert(n == 5);
+    assert(out[0] == 0x9004u);
+    assert(out[4] == 0x9000u);             // 50 м — последний
+
+    // Исключённое тело (жертва) не попадает в список никогда.
+    n = MonsterAI::CollectEligibleResponders(out, 16, 0x9004u, "uEm0100",
+                                             ref, 0, &why);
+    assert(n == 4);
+    assert(out[0] == 0x9003u);
+
+    MonsterAI::s_nView = 0;
+}
+
+
+// 85.23 сквозной регресс полевого сценария 2026-09-25: жертва — ВОЛК.
+// PLAYER-CHANT-HARASS обязан пережить продолжение ситуации, а не рваться
+// каждые 150 мс на victim-species-changed (в поле — 28 циклов за бой).
+static void TestChantLifecycleHoldsForWolfVictim()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1200.0f, 1200.0f, true);      // Arisen
+    SetMember(1, 1000.0f, 1000.0f, true);
+    SetMember(2, 1000.0f, 1000.0f, true);
+    SetMember(3, 1000.0f, 1000.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+
+    g_snapshot.member[0].vocation = 3;                          // Mage
+    strcpy(g_snapshot.member[0].liveAct, "cPlActWpnWandBase");  // kPlayerCasterActs
+
+    SetWolves(1);
+    s_view[0].x = 1000.0f;    // 10 м от Аризена (x=0), внутри радиуса 14 м
+
+    UpdateTacticalSituations(400000);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_PLAYER_CHANT_HARASS);
+    assert(strcmp(s_tactical.responderKind, "uEm0200") == 0);
+
+    // Продолжение: та же пара через 150 мс. До фикса здесь был
+    // release(victim-species-changed) — правило искалось по id, первым шло
+    // гоблинское, волк ему не соответствовал.
+    //
+    // Ловим именно МИГАНИЕ, а не «активно ли»: сорванное событие успевает
+    // переадмититься в том же кадре, и флаг active остаётся поднятым. Признак
+    // подмены — sinceMs: он сбрасывается при релизе и переставляется при
+    // повторном допуске. Держится аренда => sinceMs не двигается.
+    UpdateTacticalSituations(400150);
+    assert(s_tactical.active);
+    assert(s_tactical.sinceMs == 400000);
+
+    // Ещё тик: «держится не только на первом кадре».
+    UpdateTacticalSituations(400300);
+    assert(s_tactical.active);
+    assert(s_tactical.sinceMs == 400000);
+}
+
+// 85.28/85.29: FALLEN-GUARD — встреча игрока у тела павшей пешки.
+//
+// ЧТО ЗДЕСЬ ГЛАВНОЕ. Событие должно не «поменять цифру на панели», а выйти
+// РЕАЛЬНЫМ ПРИКАЗОМ: агрессия на Аризена и аренда темпа исполнителям. Именно
+// на этом провалилась версия 85.27, где механизм сидел в выборе цели — его
+// читает только панель F12, а монстров разворачивает Aggro::DirectorFocusSet.
+// Поэтому ключевые проверки здесь — g_focusMember и g_overrides.
+//
+// ВТОРАЯ ГЛАВНАЯ ВЕЩЬ — ЕДИНИЦЫ. Мир DDDA в САНТИМЕТРАХ (100 единиц = 1 м), и
+// именно на этом механизм молчал в поле: 85.28 считал координаты метрами, из-за
+// чего радиус «10 м» работал как 10 см, а «монстры у тела (15 м)» — как 1500 м.
+// Фикстура этого не ловила, потому что числа в ней были придуманы мной — в
+// метрах. Теперь координаты здесь ТАКИЕ ЖЕ, как в игре, и проверяются не только
+// факты, но и сами метры: снятие деления на масштаб ломает тест.
+static void TestFallenGuardSituation()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f,  900.0f,  true);
+    SetMember(2, 950.0f,  950.0f,  true);
+    SetMember(3, 700.0f,  700.0f,  true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetGoblins(3);   // сессия 85.27 была чисто гоблинская — проверяем на гоблинах
+
+    // Аризен стоит на x=200000 см, тело павшей пешки — в 500 см от него (5.0 м).
+    g_snapshot.member[Runtime::PARTY_ARISEN].x = 200000.0f;
+    g_snapshot.member[Runtime::PARTY_ARISEN].z = 0.0f;
+    g_snapshot.member[Runtime::PARTY_HIRED2].x = 200500.0f;
+    g_snapshot.member[Runtime::PARTY_HIRED2].z = 0.0f;
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgCrumbleDead");
+    strcpy(g_snapshot.member[Runtime::PARTY_ARISEN].liveAct, "cPlActRun");
+    // Гоблины у тела: 5.0 / 1.5 / 3.8 м от лежащей. Ближайший — ВТОРОЙ в списке,
+    // поэтому «взять первого» тест не пройдёт.
+    s_view[0].x = 200500.0f + 500.0f;  s_view[0].z = 0.0f;
+    s_view[1].x = 200500.0f + 150.0f;  s_view[1].z = 0.0f;
+    s_view[2].x = 200500.0f + 380.0f;  s_view[2].z = 0.0f;
+
+    Decide(400000);
+    UpdateTacticalSituations(400000);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_FALLEN_GUARD);
+    assert(s_tactical.targetSlot == Runtime::PARTY_ARISEN);
+    assert(s_tactical.victimBody == s_view[1].body);
+    assert(!strcmp(TacticalSituationName(s_tactical.situation), "FALLEN-GUARD"));
+    // Дистанция в событии — ПОДХОД ИГРОКА к телу, в МЕТРАХ (500 см = 5.0 м).
+    assert(std::fabs(s_tactical.pairDistanceM - 5.0f) < 0.001f);
+    assert(!s_tactical.fallen.reason);   // при состоявшемся событии причин нет
+
+    // Пока галка актуатора снята, событие только наблюдается: ни записи, ни
+    // аренды, ни агрессии. Прибор обязан оставаться прибором.
+    ApplyPolicies();
+    assert(!PolicyEngaged());
+    assert(g_overrides.empty());
+    assert(g_focusMember == -1);
+    assert(GameplayWriteCount() == 0);
+
+    // ГЛАВНОЕ: с включённым актуатором приказ уходит НАСТОЯЩИЙ — агрессия на
+    // Аризена плюс аренда темпа исполнителям. Ровно то, чего не случилось в 85.27.
+    SetActuatorEnabled(true);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(g_focusMember == Runtime::PARTY_ARISEN);
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
+    assert(!strcmp(g_focusKind, "uEm0100"));
+    assert(!g_overrides.empty());
+
+    // Пешка ВСТАЛА — охранять некого, событие обязано кончиться в тот же скан.
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActRun");
+    UpdateTacticalSituations(400150);
+    assert(!s_tactical.active);
+
+    // Игрок УШЁЛ: пешка снова лежит, но Аризен уже за радиусом (2500 см = 25 м).
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgCrumbleDead");
+    g_snapshot.member[Runtime::PARTY_ARISEN].x = 203000.0f;
+    UpdateTacticalSituations(400300);
+    assert(!s_tactical.active);
+    // И лог получает причину с числом: 25.0 м при радиусе 10 м.
+    assert(s_tactical.fallen.reason
+           && !strcmp(s_tactical.fallen.reason, "approach-too-far"));
+    assert(std::fabs(s_tactical.fallen.approachM - 25.0f) < 0.001f);
+
+    // Подошёл снова (300 см = 3 м) — событие допускается заново (без «залипания»).
+    g_snapshot.member[Runtime::PARTY_ARISEN].x = 200800.0f;
+    UpdateTacticalSituations(400450);
+    assert(s_tactical.active);
+
+    // 85.29: ВЕРДИКТ НАБЛЮДАТЕЛЯ вместо имени акта. Пешка падает актом, которого
+    // в наших списках нет (имена актов уже один раз подвели), но PartyStatus
+    // подтвердил падение — событие обязано состояться.
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActZzzUnknownFall");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedRevivable = true;
+    UpdateTacticalSituations(400600);
+    assert(s_tactical.active);
+    assert(s_tactical.targetSlot == Runtime::PARTY_ARISEN);
+    // И обратная сторона: вердикт снят, а имя акта нам по-прежнему неизвестно —
+    // событие обязано кончиться. Допуск и освобождение проверяют ОДНО условие.
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = false;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedRevivable = false;
+    UpdateTacticalSituations(400700);
+    assert(!s_tactical.active);
+
+    // ── 85.30: ПЕШКА НА ЗЕМЛЕ, НО В СОЗНАНИИ ────────────────────────────────
+    // Владелец, поле 85.29: «пешка на земле, но не без сознания = таргет для
+    // окружающих монстров! Не на игрока надо ломиться, а добивать лежащую
+    // пешку, чтобы выключить её из боя, не дать ей подняться».
+    // Значит: цель — САМА ПЕШКА (не Аризен), и встреча у тела тут не включается.
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgDown");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = true;
+    UpdateTacticalSituations(400800);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_PAWN_FINISH);
+    assert(s_tactical.targetSlot == Runtime::PARTY_HIRED2);      // ЦЕЛЬ — ПЕШКА
+    assert(s_tactical.targetSlot != Runtime::PARTY_ARISEN);
+    assert(!strcmp(TacticalSituationName(s_tactical.situation), "PAWN-FINISH"));
+
+    // И приказ тоже настоящий, и тоже НА ПЕШКУ.
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(g_focusMember == Runtime::PARTY_HIRED2);
+    assert(g_focusBody == g_snapshot.member[Runtime::PARTY_HIRED2].body);
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
+    assert(!strcmp(g_focusKind, "uEm0100"));
+
+    // Пешка ВСТАЛА — добивать некого, событие кончается в тот же скан.
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActRun");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = false;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = false;
+    UpdateTacticalSituations(400900);
+    assert(!s_tactical.active);
+
+    // А теперь она ушла БЕЗ СОЗНАНИЯ (neardeath): добивание снимается, задача
+    // выполнена, и включается встреча у тела — цель снова ИГРОК.
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgCrumbleDead");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = false;
+    UpdateTacticalSituations(401000);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_FALLEN_GUARD);
+    assert(s_tactical.targetSlot == Runtime::PARTY_ARISEN);
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = false;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = false;
+
+    // Ключ 0 = механизм выключен: события не будет вовсе. Ставим ПОСЛЕ
+    // FreshDirector: инициализация читает ключ из ini (в фикстуре — умолчание
+    // 10) и перезаписывает всё, что выставлено до неё. Это правильное
+    // поведение продукта: ключ в ini — источник правды, а не догадка теста.
+    FreshDirector();
+    MonsterAI::SetFallenGuardRadius(0.0f);
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f,  900.0f,  true);
+    SetMember(2, 950.0f,  950.0f,  true);
+    SetMember(3, 700.0f,  700.0f,  true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetGoblins(3);
+    g_snapshot.member[Runtime::PARTY_ARISEN].x = 200000.0f;
+    g_snapshot.member[Runtime::PARTY_HIRED2].x = 200500.0f;
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgCrumbleDead");
+    UpdateTacticalSituations(500000);
+    assert(!s_tactical.active);
+
+    // Ключ добивания `pawnFinish = 0` выключает его так же, как радиус
+    // выключает встречу: механизм, который нельзя погасить без сборки, в поле
+    // проверять неудобно.
+    FreshDirector();
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f,  900.0f,  true);
+    SetMember(2, 950.0f,  950.0f,  true);
+    SetMember(3, 700.0f,  700.0f,  true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetGoblins(3);
+    for (int i = 0; i < 3; ++i) { s_view[i].x = 200000.0f + (float)i * 100.0f; }
+    g_snapshot.member[Runtime::PARTY_HIRED2].x = 200100.0f;
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgDown");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = true;
+    MonsterAI::SetPawnFinishEnabled(false);
+    UpdateTacticalSituations(600000);
+    assert(!s_tactical.active);
+    MonsterAI::SetPawnFinishEnabled(true);
+
+    MonsterAI::SetFallenGuardRadius(10.0f);   // вернуть для остальных тестов
+}
+
+// 85.30: добивание — на уровне матчера, без Директора. Каждый блок убивает свою
+// поломку: адресата (пешка вместо игрока), различение двух падений, порог
+// близости монстров и диагностику отказа.
+static void TestPawnFinishUnitsAndBlockers()
+{
+    using namespace MonsterAI;
+    SetPawnFinishEnabled(true);
+
+    TacticalPartyActor party[3];
+    memset(party, 0, sizeof(party));
+    party[0].slot = Runtime::PARTY_ARISEN;
+    party[0].body = 0x111100u;
+    party[0].act = "cPlActRun";
+    party[0].positionValid = true;
+    party[0].x = 0.0f;
+    party[1].slot = Runtime::PARTY_HIRED1;
+    party[1].body = 0x222200u;
+    party[1].act = "cPlActDmgDown";          // сбита с ног: на земле, в сознании
+    party[1].positionValid = true;
+    party[1].x = 300.0f;
+    party[1].downedValid = true;
+    party[1].downedAwake = true;
+    party[2].slot = Runtime::PARTY_HIRED2;
+    party[2].body = 0x333300u;
+    party[2].act = "cPlActWait";             // стоит на ногах: не цель
+    party[2].positionValid = true;
+    party[2].x = 100.0f;
+
+    TacticalMonsterActor mobs[2];
+    memset(mobs, 0, sizeof(mobs));
+    mobs[0].body = 0x444400u; mobs[0].kind = "uEm0100"; mobs[0].act = "cEm0100ActWait";
+    mobs[0].positionValid = true;
+    mobs[0].x = 500.0f;                      // 2.0 м от сбитой пешки
+    mobs[1].body = 0x555500u; mobs[1].kind = "uEm0100"; mobs[1].act = "cEm0100ActRun";
+    mobs[1].positionValid = true;
+    mobs[1].x = 800.0f;                      // 5.0 м
+
+    TacticalScan scan;
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_PAWN_FINISH);
+    assert(scan.match.targetSlot == Runtime::PARTY_HIRED1);   // цель — ПЕШКА
+    assert(scan.match.targetBody == party[1].body);
+    assert(scan.match.evidenceBody == mobs[0].body);          // ближайший монстр
+    assert(std::fabs(scan.match.pairDistanceM - 2.0f) < 0.001f);   // метры!
+    assert(scan.finish.monstersOfKind == 2);
+
+    // Стоящая рядом пешка (Hired2) целью не становится ни при каких условиях:
+    // добивают только лежащую в сознании.
+    assert(scan.match.targetBody != party[2].body);
+    assert(scan.match.targetBody != party[0].body);
+
+    // Игрок (Аризен) — вообще не цель этого механизма, даже если стоит вплотную.
+    party[0].x = 500.0f;
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(scan.matched);
+    assert(scan.match.targetSlot == Runtime::PARTY_HIRED1);
+
+    // Лежит БЕЗ сознания — это уже не добивание, а встреча у тела: механизм
+    // добивания обязан молчать (иначе он бил бы лежачего без сознания).
+    // Гасим встречу у тела ключом, чтобы причина в логе принадлежала именно
+    // добиванию: два механизма делят один канал диагностики, и без этого
+    // проверялось бы «кто-то из них объяснился», а не добивание.
+    SetFallenGuardRadius(0.0f);
+    party[1].downedAwake = false;
+    party[1].act = "cPlActDmgCrumbleDead";
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.finish.reason
+           && !strcmp(scan.finish.reason, "no-pawn-on-ground-awake"));
+
+    // Сбита с ног, но монстров рядом нет: ближайший в 12 м при пределе 10 м.
+    party[1].downedAwake = true;
+    party[1].act = "cPlActDmgDown";
+    mobs[0].x = 1500.0f;
+    mobs[1].x = 1600.0f;
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.finish.reason && !strcmp(scan.finish.reason, "no-mob-at-pawn"));
+    assert(std::fabs(scan.finish.nearestKindM - 12.0f) < 0.001f);
+
+    // Ключ 0: механизм выключен целиком — даже когда всё сошлось.
+    mobs[0].x = 500.0f;
+    SetPawnFinishEnabled(false);
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(!scan.matched);
+    SetPawnFinishEnabled(true);
+    ScanTacticalSituations(party, 3, mobs, 2, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_PAWN_FINISH);   // и это он, а не встреча
+    SetFallenGuardRadius(10.0f);
+}
+
+// 85.29: единицы и причины отказа — на уровне матчера, без Директора.
+// Каждый блок убивает свою поломку: деление на масштаб, отбор исполнителя,
+// диагностику причины.
+static void TestFallenGuardUnitsAndBlockers()
+{
+    using namespace MonsterAI;
+    SetFallenGuardRadius(10.0f);
+
+    // Мир в сантиметрах: всё, как в игре.
+    TacticalPartyActor party[2];
+    memset(party, 0, sizeof(party));
+    party[0].slot = Runtime::PARTY_ARISEN;   // 0
+    party[0].body = 0x111100u;
+    party[0].act = "cPlActRun";
+    party[0].positionValid = true;
+    party[0].x = 0.0f; party[0].y = 0.0f; party[0].z = 0.0f;
+    party[1].slot = Runtime::PARTY_HIRED2;   // 3
+    party[1].body = 0x222200u;
+    party[1].act = "cPlActDmgCrumbleDead";
+    party[1].positionValid = true;
+    party[1].x = 0.0f; party[1].y = 0.0f; party[1].z = 400.0f;   // 4.0 м
+    TacticalMonsterActor mobs[2];
+    memset(mobs, 0, sizeof(mobs));
+    mobs[0].body = 0x333300u; mobs[0].kind = "uEm0100"; mobs[0].act = "cEm0100ActWait";
+    mobs[0].positionValid = true;
+    mobs[0].x = 0.0f; mobs[0].y = 0.0f; mobs[0].z = 500.0f;     // 1.0 м от тела
+    // Вид, которого нет среди правил встречи: он не должен попадать в исполнители.
+    mobs[1].body = 0x444400u; mobs[1].kind = "uEm0300"; mobs[1].act = "cEm0300ActWait";
+    mobs[1].positionValid = true;
+    mobs[1].x = 0.0f; mobs[1].y = 0.0f; mobs[1].z = 500.0f;     // не наш вид
+
+    TacticalScan scan;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_FALLEN_GUARD);
+    assert(scan.match.targetSlot == Runtime::PARTY_ARISEN);
+    assert(scan.match.evidenceBody == mobs[0].body);
+    // Метры, не «сырые единицы»: 400 см = 4.0 м, 100 см = 1.0 м.
+    assert(std::fabs(scan.match.pairDistanceM - 4.0f) < 0.001f);
+    assert(std::fabs(scan.fallen.approachM - 4.0f) < 0.001f);
+    assert(std::fabs(scan.fallen.nearestKindM - 1.0f) < 0.001f);
+    assert(scan.fallen.monstersOfKind == 1);
+
+    // Пешка упала актом, которого нет в списке, но наблюдатель подтвердил —
+    // работает вердикт наблюдателя, а не угадывание имени.
+    party[1].act = "cPlActSomeNewFall";
+    party[1].downedValid = true;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(scan.matched);
+    party[1].downedValid = false;
+
+    // Игрок ДАЛЕКО: 14.0 м при радиусе 10 м. Причина названа числом.
+    party[1].act = "cPlActDmgCrumbleDead";   // падение — снова по имени акта
+    party[1].z = 1400.0f;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason && !strcmp(scan.fallen.reason, "approach-too-far"));
+    assert(std::fabs(scan.fallen.approachM - 14.0f) < 0.001f);
+
+    // Игрок рядом, но монстров у тела нет: 20 м — за пределом 15 м.
+    party[1].z = 300.0f;
+    mobs[0].z = 2300.0f;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason && !strcmp(scan.fallen.reason, "no-mob-at-body"));
+    assert(std::fabs(scan.fallen.nearestKindM - 20.0f) < 0.001f);
+
+    // 85.31: счёт монстров ЧЕСТНЫЙ и при отказе по подходу. Раньше здесь стояло
+    // «monstersOfKind=0» в бою, где монстры этого вида были, — читалось как «их
+    // нет», а значило «мы не считали».
+    party[1].act = "cPlActDmgCrumbleDead";
+    party[1].z = 1400.0f;                       // 14 м при радиусе 10 м
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason && !strcmp(scan.fallen.reason, "approach-too-far"));
+    assert(scan.fallen.monstersOfKind == 1);    // считаем ДО отказа, а не после
+
+    // Пешки на земле нет вовсе.
+    party[1].z = 400.0f;
+    mobs[0].z = 400.0f;
+    party[1].act = "cPlActWait";
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason && !strcmp(scan.fallen.reason, "no-pawn-down"));
+
+    // 85.31: пешку НЕСУТ на руках. Поле показало, что в этом состоянии тело
+    // отдаёт координаты (0,0,0), и мы печатали «подход 340 м» — выдуманное число.
+    // Теперь это отдельная причина, и никаких метров не выдумывается.
+    // Ровно как в поле: наблюдатель по-прежнему говорит «лежит» (downedValid),
+    // а акт пешки — перенос. Тогда раньше и выходило «подход 340 м» из нулей.
+    party[1].act = "cPlActLifted";
+    party[1].downedValid = true;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason && !strcmp(scan.fallen.reason, "pawn-carried"));
+    assert(scan.fallen.approachM < 0.0f);       // метры не считались вовсе
+
+    // Мусорная позиция (0,0,0) у лежащей пешки: «позиции нет», а не «340 м».
+    party[1].act = "cPlActDmgCrumbleDead";
+    party[1].downedValid = false;
+    party[1].x = 0.0f; party[1].y = 0.0f; party[1].z = 0.0f;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(!scan.matched);
+    assert(scan.fallen.reason
+           && !strcmp(scan.fallen.reason, "pawn-position-unavailable"));
+    assert(scan.fallen.approachM < 0.0f);
+    party[1].z = 400.0f;
+}
+
 int main()
 {
     TestPriorityAndHysteresis();
@@ -1411,6 +2030,12 @@ int main()
     TestHobgoblinPackAndGrab();
     TestSaurianPackNoGrab();
     TestOnFieldRiftedMainPawn();
+    TestChantContinuationUsesAdmittedSpecies();
+    TestChantLifecycleHoldsForWolfVictim();
+    TestResponderCapPicksNearest();
+    TestFallenGuardSituation();
+    TestFallenGuardUnitsAndBlockers();
+    TestPawnFinishUnitsAndBlockers();
     MonsterAI::Shutdown();
     assert(!MonsterAI::Enabled());
 

@@ -19,6 +19,8 @@ set -e
 ROOT=$(pwd)
 T="$ROOT/tools/tcomp"
 GPP="g++ -std=c++11 -fsyntax-only -I$T -I$T/shim -I$ROOT"
+# То же, но с настоящей компиляцией и линковкой: -fsyntax-only тела не проверяет.
+GPPC="g++ -std=c++11 -I$T -I$T/shim -I$ROOT -D__try=try -D__except(x)=catch(...)"
 
 echo "== 1/10 AnimProbe.cpp =="
 $GPP "$T/animprobe_t.cpp"
@@ -47,6 +49,45 @@ $GPP "$T/pawnhaste_t.cpp"
 
 echo "== 1d/10 VocationCordon.cpp =="
 $GPP "$T/cordon_t.cpp"
+
+echo "== 1p/10 MemProbe.cpp (ворота записи, 85.24) =="
+# ЗАЧЕМ. MemProbe — фундамент (чтение/запись чужой памяти) и до 85.24 не
+# проверялся: в общем шиме нет PE-заголовков и PAGE_*, поэтому файл не
+# собирался. В 85.24 сюда добавлены ворота записи (BlockWritesFor/WritesOpen
+# и гейт внутри WrSafe) — ошибиться в фундаменте дороже всего, поэтому шим
+# дополнен отдельным memprobe_shim.h, а файл теперь под проверкой.
+$GPP "-D__try=try" "-D__except(x)=catch(...)" "$T/memprobe_t.cpp"
+
+echo "== 1q/10 PawnAI core calls (85.24) =="
+# ЗАЧЕМ. Смежные шаги проверяют только ВЫРЕЗАННЫЕ UI-блоки PawnAI.cpp, а новый
+# продуктовый сброс (ProductWorldUnload) и ворота записи живут в начале файла и
+# в проверку не попадали. Проба содержит ровно те вызовы, что делает PawnAI:
+# исчезнувшее имя или переехавший namespace она ловит за секунду.
+$GPP "$T/pawncore_probe.cpp"
+
+echo "== 1r/10 LogMem.cpp + ЛИНКОВКА (85.25) =="
+# ЗАЧЕМ. 25.09.2026 сборка MSVC упала на линковке: SetWorkerThreadId оказался
+# определен в АНОНИМНОМ пространстве имён — файл его видел, PawnAI.cpp нет.
+# Компиляция при этом проходила, поэтому синтаксическая проверка такое не
+# ловит В ПРИНЦИПЕ: объявление в LogMem.h корректно, тела просто нет.
+# Здесь две отдельные единицы трансляции, как в жизни: LogMem.cpp даёт
+# определения, logmem_call.cpp (ровно вызовы dinput8.cpp и PawnAI.cpp) на них
+# ссылается. Отсутствие тела падает за секунду — с той же формулировкой
+# undefined reference, что была в студии.
+$GPPC -DDDDA_LOGMEM_PORTABLE_FIXTURE -c "$ROOT/src/runtime/LogMem.cpp" -o /tmp/synchk_logmem.o
+$GPPC -c "$T/logmem_call.cpp" -o /tmp/synchk_logmem_call.o
+g++ /tmp/synchk_logmem.o /tmp/synchk_logmem_call.o -o /tmp/synchk_logmem_probe
+
+echo "== 1s/10 CombatIntel.cpp (85.26, обработчик урона) =="
+# ЗАЧЕМ. CombatIntel — кто по кому ударил и проверка «свой или чужой». До сих
+# пор файл не проверялся ВООБЩЕ: в нём панель на ImGui, а настоящий ImGui тянет
+# DirectX; плюс MinHook намеренно отказывается собираться вне x86; плюс четыре
+# ассемблерных переходника MSVC. Ошибку в этом файле владелец ловил бы своей
+# сборкой — так уже было с линковкой LogMem. Теперь всё три помехи закрыты
+# (imgui.h, MinHook/ и prep_combatintel.py), и файл разбирается целиком.
+python3 "$ROOT/tools/tcomp/prep_combatintel.py" /tmp/synchk_combatintel.cpp
+$GPP -DDDDA_COMBATINTEL_PORTABLE_FIXTURE -D__stdcall= -I"$ROOT/src" \
+     -D__try=try "-D__except(x)=catch(...)" /tmp/synchk_combatintel.cpp
 
 echo "== 1e/10 DashWatch.cpp =="
 $GPP "$T/dashwatch_t.cpp"

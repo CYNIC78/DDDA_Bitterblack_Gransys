@@ -150,6 +150,10 @@ void Unitialize()
     Hooks::PawnAI_Shutdown();
     Hooks::TargetLockShutdown();
     Hooks::CameraPlusShutdown();  // останавливает поток, НО без Wait (через событие)
+    // 85.25: сколько нарушений доступа перехвачено за сессию. Раньше эта цифра
+    // была недоступна: обработчик молчал, и мы не знали, что он работает.
+    logFile << "LogMem: session fault-handling summary faults="
+            << LogMem::VEH_Faults() << std::endl;
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;
     logFile << "MH_DisableHook: " << MH_StatusToString(MH_DisableHook(MH_ALL_HOOKS)) << std::endl;
     logFile << "MH_Uninitialize: " << MH_StatusToString(MH_Uninitialize()) << std::endl;
