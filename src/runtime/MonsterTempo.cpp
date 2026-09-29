@@ -220,7 +220,11 @@ static int       g_nOvr = 0;
 // Build 012 keeps Director mobilization separate from generic multiplicative
 // overrides. The envelope interpolates absolute immutable endpoints, so neither
 // PawnHaste nor a transitional live factor can be captured as a new baseline.
-static const int   kMaxDirectorMobilizations = 16;
+// 85.34: 16 -> 32. Причина: параллельные приказы (85.33) могут удерживать
+// оболочки у ДВУХ наборов исполнителей сразу (главный приказ + второй), а
+// раньше 16 хватало ровно на один набор плюс запас. Таблица по-прежнему
+// ограничена: переполнение остаётся честным отказом, а не тихой потерей.
+static const int   kMaxDirectorMobilizations = 32;
 static const DWORD kDirectorDecayMs = 1400;
 static const float kWolfRageLocoLo = 1.20f;
 static const float kWolfRageLocoHi = 1.25f;
@@ -359,6 +363,21 @@ static void DirectorMobilizationFor(uintptr_t body, float* loco, float* atk)
         if (atk)  *atk  = m.stableAnim + (m.rageAnim - m.stableAnim) * level;
         return;
     }
+}
+
+// 85.34: уровень приказа для этого тела. 0 = приказа нет, всплеска нет.
+// Возвращается именно уровень (0..1), а не готовый множитель: размер всплеска
+// знает карточка вида, и складывать два источника одного числа незачем.
+float DirectorAdrenalineLevelFor(uintptr_t body)
+{
+    if (!body) return 0.0f;
+    for (int i = 0; i < g_nDirectorMob; ++i) {
+        const DirectorMob& m = g_directorMob[i];
+        if (m.body != body) continue;
+        if (m.level < 0.0f) return 0.0f;
+        return m.level > 1.0f ? 1.0f : m.level;
+    }
+    return 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -822,6 +841,257 @@ static void HMoveSprint() {}
 // «Место в диапазоне» для этой особи: 0 — самый медленный край, 1 — самый
 // быстрый. Отдельно от самого диапазона: так связка ручек не ломает
 // заданные границы (см. ниже).
+
+static uint32_t HashUnit32(uint32_t x)
+{
+    x ^= x >> 13; x *= 0x5BD1E995u; x ^= x >> 15;
+    x *= 0x27D4EB2Fu; x ^= x >> 16;
+    return x;
+}
+
+// ────────────────────────── ЛЕСТНИЦА ОПАСНОСТИ (85.40) ──────────────────────
+//
+// Ступень = место особи в пачке. Числа по умолчанию — пилот на гоблинах
+// (docs/ENCOUNTER_MEMORY_DESIGN §9.4, выбор владельца: новичок = ровно ваниль).
+// Ранги могут переопределяться секцией [ranks] в ddda_ai_overhaul.ini;
+// включается вид флагом [species.<kind>] ranks = on (пока только гоблин —
+// допуск идёт списком, см. RanksSpeciesAllowed).
+static const char* kRankNames[kRankSteps] = {
+    "novice", "soldier", "veteran", "elite", "miniboss"
+};
+
+// Встроенные числа: вес / полоса размера / множитель атаки.
+static const float kRankDef[kRankSteps][4] = {
+    { 0.34f, 0.95f, 1.03f, 1.00f },   // новичок: ванильная атака, мелкий
+    { 0.46f, 1.03f, 1.07f, 1.09f },   // солдат: основной боец
+    { 0.13f, 1.07f, 1.12f, 1.20f },   // ветеран: 1-2 на пачку
+    { 0.05f, 1.12f, 1.18f, 1.35f },   // элита
+    { 0.02f, 1.18f, 1.25f, 1.52f },   // мини-босс: редко
+};
+
+struct RanksSlot {
+    char          kind[24];
+    uint32_t      used;
+    RanksNumbers n;
+};
+static const int kRanksSlots = 8;
+static RanksSlot s_ranks[kRanksSlots];
+static int        s_ranksUsed = 0;
+static uint32_t   s_ranksSalt = 0;
+
+// Кому лестница разрешена ВООБЩЕ. Гоблин — пилот. Волк в список не входит
+// намеренно: у него другая рука (сопротивления/укус), размер не трогаем.
+bool RanksSpeciesAllowed(const char* kind)
+{
+    return kind && !strcmp(kind, "uEm0100");
+}
+
+uint32_t RanksSessionSalt()
+{
+    if (!s_ranksSalt) {
+        // Соль сессии: ступень стабильна внутри захода и перетасовывается
+        // между заходами. Без неё хеш адреса дал бы слоту одну ступень навсегда.
+        s_ranksSalt = (uint32_t)GetTickCount() * 2654435761u;
+        if (!s_ranksSalt) s_ranksSalt = 0x9E3779B9u;
+    }
+    return s_ranksSalt;
+}
+
+// 85.42: сколько особей какого ранга выдано за сессию. Печатается в итоговой
+// сводке — чтобы вопрос «кто заспавнился» решался логом, а не вычиткой строк.
+static int s_rankIssued[kRanksSlots][kRankSteps];
+static const char* s_rankKind[kRanksSlots];
+static int s_rankIssuedTotal = 0;
+
+void NoteRankIssued(const char* kind, int step)
+{
+    if (!kind || step < 0 || step >= kRankSteps) return;
+    for (int i = 0; i < s_ranksUsed && i < kRanksSlots; ++i) {
+        if (s_ranks[i].kind[0] && s_rankKind[i] && !strcmp(s_rankKind[i], kind)) {
+            ++s_rankIssued[i][step];
+            ++s_rankIssuedTotal;
+            return;
+        }
+    }
+    // вид ещё не попал в таблицу счётчиков — заводим
+    for (int i = 0; i < kRanksSlots; ++i) {
+        if (!s_rankKind[i]) {
+            s_rankKind[i] = kind;
+            ++s_rankIssued[i][step];
+            ++s_rankIssuedTotal;
+            return;
+        }
+    }
+}
+
+void RankSummary(char* out, int cap)
+{
+    if (!out || cap <= 0) return;
+    out[0] = 0;
+    int used = 0;
+    for (int i = 0; i < kRanksSlots; ++i) {
+        // ВНИМАНИЕ: сумму считаем явно. Запись «!a + b + ...» читается
+        // компилятором как (!a) + b + ..., и вид с одними новичками выпадал
+        // из сводки (поймано фикстурой, 85.42).
+        const int tot = s_rankIssued[i][0] + s_rankIssued[i][1]
+                      + s_rankIssued[i][2] + s_rankIssued[i][3]
+                      + s_rankIssued[i][4];
+        if (!s_rankKind[i] || tot == 0) continue;
+        used += snprintf(out + used, (size_t)(cap - used), "%s%s:",
+                         used ? " " : "", s_rankKind[i]);
+        for (int r = 0; r < kRankSteps && used < cap; ++r)
+            used += snprintf(out + used, (size_t)(cap - used), "%s%d",
+                             r ? " " : "", s_rankIssued[i][r]);
+        if (used >= cap) break;
+    }
+    if (!used) snprintf(out, (size_t)cap, "none");
+}
+
+const char* RankName(int step)
+{
+    if (step < 0 || step >= kRankSteps) return "?";
+    return kRankNames[step];
+}
+
+static void RanksSanitize(RanksNumbers& n)
+{
+    float sum = 0.0f;
+    for (int i = 0; i < kRankSteps; ++i) {
+        RankStep& st = n.step[i];
+        if (!(st.weight >= 0.0f)) st.weight = 0.0f;         // NaN -> 0
+        if (st.sizeMin > st.sizeMax) { float t = st.sizeMin; st.sizeMin = st.sizeMax; st.sizeMax = t; }
+        if (st.sizeMin < 0.70f) st.sizeMin = 0.70f;         // предел движка
+        if (st.sizeMax > 1.40f) st.sizeMax = 1.40f;         // выше — расходится хитбокс
+        if (!(st.atk >= 1.0f)) st.atk = 1.0f;               // ниже ванили не бывает
+        if (st.atk > 1.80f) st.atk = 1.80f;
+        sum += st.weight;
+    }
+    if (sum <= 0.0001f) {
+        for (int i = 0; i < kRankSteps; ++i)
+            n.step[i].weight = kRankDef[i][0];
+    }
+}
+
+RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
+{
+    RanksNumbers out;
+    memset(&out, 0, sizeof(out));
+
+    for (int i = 0; i < kRankSteps; ++i) {
+        out.step[i].weight  = kRankDef[i][0];
+        out.step[i].sizeMin = kRankDef[i][1];
+        out.step[i].sizeMax = kRankDef[i][2];
+        out.step[i].atk     = kRankDef[i][3];
+    }
+
+    // 85.41: ЛЕСТНИЦА — ИНСТРУМЕНТ РАЗМЕРА, а размер менять можно не всем.
+    //
+    // В поле 85.40 у ВОЛКА лестница оказалась включена (в живом ini стояло
+    // ranks = on) — волки получили полосу роста и множители атаки, хотя размер
+    // волка трогать нельзя (гигант-волк смотрится нелепо; позиция владельца).
+    // Поэтому вид допускается по СПИСКУ В КОДЕ, а ini может только ВЫКЛЮЧИТЬ:
+    //   * список — здесь; новый вид под лестницу = пересборка (как и с картами);
+    //   * исключённому виду ключ даже не читается (его старые значения в живом
+    //     ini остаются, но ни на что не влияют);
+    //   * у включённого вида отсутствие ключа = включено: бэкфилль дописал бы
+    //     "off", и пилот не поднялся бы без ручной правки ini.
+    if (!speciesKind || !RanksSpeciesAllowed(speciesKind)) {
+        out.enabled = false;
+        return out;
+    }
+    char sec[64];
+    snprintf(sec, sizeof(sec), "species.%s", speciesKind);
+    out.enabled = ini.Bool(sec, "ranks", true);   // ключ может только выключить
+    if (!out.enabled) return out;
+
+    // Числа рангов: [ranks], по ключу на ранг. Ключа нет = встроенное.
+    for (int i = 0; i < kRankSteps; ++i) {
+        char k[32];
+        snprintf(k, sizeof(k), "rank%dWeight",  i);
+        out.step[i].weight  = ini.Float("ranks", k, out.step[i].weight);
+        snprintf(k, sizeof(k), "rank%dSizeMin", i);
+        out.step[i].sizeMin = ini.Float("ranks", k, out.step[i].sizeMin);
+        snprintf(k, sizeof(k), "rank%dSizeMax", i);
+        out.step[i].sizeMax = ini.Float("ranks", k, out.step[i].sizeMax);
+        snprintf(k, sizeof(k), "rank%dAtk",     i);
+        out.step[i].atk     = ini.Float("ranks", k, out.step[i].atk);
+    }
+    RanksSanitize(out);
+    return out;
+}
+
+void RegisterRanks(const char* kind, const RanksNumbers& n)
+{
+    if (!kind || !kind[0]) return;
+    for (int i = 0; i < s_ranksUsed; ++i) {
+        if (!strcmp(s_ranks[i].kind, kind)) { s_ranks[i].n = n; ++s_ranks[i].used; return; }
+    }
+    if (s_ranksUsed >= kRanksSlots) return;
+    RanksSlot& sl = s_ranks[s_ranksUsed++];
+    memset(&sl, 0, sizeof(sl));
+    lstrcpynA(sl.kind, kind, sizeof(sl.kind));
+    sl.n = n;
+    sl.used = 1;
+}
+
+bool GetRanks(const char* kind, RanksNumbers* out)
+{
+    if (!kind || !out) return false;
+    for (int i = 0; i < s_ranksUsed; ++i) {
+        if (!strcmp(s_ranks[i].kind, kind)) {
+            if (!s_ranks[i].n.enabled) return false;
+            *out = s_ranks[i].n;
+            return true;
+        }
+    }
+    return false;
+}
+
+bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return false;
+    if (step < 0 || step >= kRankSteps) return false;
+    if (sizeOut) *sizeOut = 0.5f * (n.step[step].sizeMin + n.step[step].sizeMax);
+    if (atkOut)  *atkOut  = n.step[step].atk;
+    return true;
+}
+
+bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
+                   float* sizeOut, float* atkOut)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return false;
+
+    // Один хеш — ступень, второй — место внутри полосы (комплекция).
+    const uint32_t h = HashUnit32(body ^ RanksSessionSalt() ^ 0x1ADDE12u);
+
+    float sum = 0.0f;
+    for (int i = 0; i < kRankSteps; ++i) sum += n.step[i].weight;
+    if (sum <= 0.0001f) return false;
+
+    // 85.42: берём ВСЕ 32 бита, а не младшие 16. Адреса тел в пачке идут с
+    // шагом 0x7410/0x8BF0 — на структурных входах младшие биты коррелируют,
+    // и раздача ранга «уплывала» (в поле 85.41 из 10 тел вышло 3 мини-босса,
+    // хотя задумано 0-1). Ширина значения — не панацея, но лишний запас.
+    float t = (float)h / 4294967295.0f;
+    float acc = 0.0f;
+    int   pick = kRankSteps - 1;
+    for (int i = 0; i < kRankSteps; ++i) {
+        acc += n.step[i].weight;
+        if (t <= acc / sum) { pick = i; break; }
+    }
+
+    const uint32_t h2 = HashUnit32((body >> 4) ^ RanksSessionSalt() ^ 0x57A7E5u);
+    const float u = (float)h2 / 4294967295.0f;
+    const RankStep& st = n.step[pick];
+
+    if (stepOut) *stepOut = pick;
+    if (sizeOut) *sizeOut = st.sizeMin + (st.sizeMax - st.sizeMin) * u;
+    if (atkOut)  *atkOut  = st.atk;
+    return true;
+}
+
 static float HashUnit(uintptr_t body, uint32_t salt)
 {
     // ФИНАЛИЗАТОР MURMUR3, а не один раунд умножения.
@@ -854,14 +1124,17 @@ static float FactorFor(uintptr_t body)
     if (f < kFactorMin) f = kFactorMin;
     if (f > kFactorMax) f = kFactorMax;
 
-    // Компенсация частоты шага (Cadence): особи меньше 1.0 имеют более короткий
-    // шаг в Root Motion, поэтому получают бонус к частоте перебора ног, чтобы не отставать!
-    float scaleH = 1.0f;
-    if (Mem::Rd((void*)(body + 0x64), &scaleH, 4) && scaleH > 0.5f && scaleH < 1.0f) {
-        const float cadence = (1.0f / scaleH) - 1.0f;
-        f *= (1.0f + cadence * 0.75f);
-        if (f > kFactorMax) f = kFactorMax;
-    }
+    // 85.40: КОМПЕНСАЦИЯ ЧАСТОТЫ ШАГА УДАЛЕНА (решение владельца).
+    //
+    // Она поднимала БАЗОВЫЙ темп особям ниже 1.0 (короткий шаг в Root Motion),
+    // а потолок разгона от приказа такой прибавки не имел — и допуск
+    // «потолок выше базы» молча отбивал у таких тел приказы директора. Плюс
+    // движок откатывает наши записи размера, поэтому включение формулы было
+    // непредсказуемым: 10 из 26 тел в поле уходили ниже 1.0 сами.
+    //
+    // Теперь мелкий ведёт себя как ванильный мелкий — это и есть правило
+    // владельца «ниже ваниллы не делаем»: слабость задохлика не наша формула,
+    // а ванильный факт. Вместе с этим снят и запрет на пол 1.0 в коридорах.
     return f;
 }
 
@@ -1462,6 +1735,15 @@ void Shutdown()
                   (unsigned)s_unknownAttackLike, (unsigned)unknownDetails,
                   (unsigned)g_animEnrolls, (unsigned)g_animRestores);
         logFile << l << std::endl;
+
+        // 85.42: раздача рангов за сессию — «кто заспавнился» одной строкой.
+        if (s_rankIssuedTotal > 0) {
+            char rs[220];
+            RankSummary(rs, sizeof(rs));
+            sprintf_s(l, "Tempo: rank summary total=%d  %s",
+                      s_rankIssuedTotal, rs);
+            logFile << l << std::endl;
+        }
     }
 
     // Снимаем множители до отцепления хуков: если кто-то из монстров
@@ -1567,6 +1849,7 @@ static void FillDirectorReceipt(const DirectorMob& m,
                            + (m.rageAnim - m.stableAnim) * m.level;
     receipt->holding = m.holding;
     receipt->decaying = !m.holding && m.level > 0.0f;
+
 }
 
 bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,

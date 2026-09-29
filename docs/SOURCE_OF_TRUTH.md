@@ -468,6 +468,13 @@ uEm0400  size=29568  observe tempoRage aggroWrite
          // saurian: PackMark only, NO grab; live f8&1 + fC 4/2
 ```
 
+**85.36:** перечисленные числа — только значения ПО УМОЛЧАНИЮ. `Director::Init`
+читает рабочую копию из `ddda_ai_overhaul.ini`, секция `[species.uEmXXXX]`
+(`rageLocoMin/Max`, `rageAnimMin/Max`, `tempoRage`), через модуль
+`monsterai/SpeciesTuning`. Ключа нет = число карточки. Значения ниже базового
+диапазона поднимаются до базового, пределы движка зажимаются, перевёрнутый или
+нулевой по ширине диапазон чинится (иначе admit молча отбивал бы каждое тело).
+
 `Director::Init` зовёт `Tempo::RegisterRageProfile` для каждой `tempoRage` строки.
 Tempo не зависит от `monsterai`; волк имеет встроенный fallback для unit-тестов.
 

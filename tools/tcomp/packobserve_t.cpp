@@ -192,6 +192,95 @@ static void TestHornChargeIgnoreAndFall()
     assert(strstr(PackObserveStatus(), "led"));
 }
 
+// 85.39: смерть должна быть отличима от ухода из вида, а корона — привязана
+// к телу. Фикстура задаёт дистанцию сама (в рантайме её даёт Arisen).
+static void TestDeathVerdict()
+{
+    PackObserveShutdown();
+    PackObserveInit();
+    uintptr_t b[3] = { 0x5001, 0x5002, 0x5003 };
+    const char* k[3] = { "uEm0100", "uEm0100", "uEm0100" };
+    const char* wait[3] = {
+        "cEm0100ActWait", "cEm0100ActWait", "cEm0100ActWait"
+    };
+    PackObserveFixtureSetDist(8.0f);
+    PackObserveIngest(Make(5000, 3, b, k, wait), 5000);
+
+    // Тело 0x5002 получает удар (предсмертное действие) и исчезает рядом.
+    const char* dying[3] = {
+        "cEm0100ActWait", "cEmActDmgShrink", "cEm0100ActWait"
+    };
+    PackObserveIngest(Make(5150, 3, b, k, dying), 5150);
+    uintptr_t rest[2] = { 0x5001, 0x5003 };
+    const char* k2[2] = { "uEm0100", "uEm0100" };
+    const char* wait2[2] = { "cEm0100ActWait", "cEm0100ActWait" };
+    PackObserveIngest(Make(5300, 2, rest, k2, wait2), 5300);
+
+    std::string log = Slurp();
+    Need(log, "DEATH @0x5002");
+    Need(log, "lastAct=cEmActDmgShrink");
+    Need(log, "conf=likely");
+    Need(log, "hint=shrink");
+    Need(log, "mates=2");
+
+    // То же тело, но далеко от игрока, — это выгрузка вида, не смерть.
+    PackObserveFixtureSetDist(300.0f);
+    PackObserveIngest(Make(5450, 3, b, k, wait), 5450);
+    PackObserveIngest(Make(5600, 2, rest, k2, wait2), 5600);
+    log = Slurp();
+    Need(log, "LEAVE @0x5002");
+    Need(log, "why=out-of-view");
+    PackObserveFixtureSetDist(-1.0f);
+}
+
+static void Put(WorldReport& w, int i, uintptr_t body, const char* kind,
+                const char* act, float x)
+{
+    w.units[i].ptr = body;
+    w.units[i].kind = kind;
+    lstrcpynA(w.units[i].actName, act, sizeof(w.units[i].actName));
+    w.units[i].x = x;
+    w.units[i].y = 0.0f;
+    w.units[i].z = 1000.0f;
+}
+
+static void TestComponentBinding()
+{
+    PackObserveShutdown();
+    PackObserveInit();
+    PackObserveFixtureSetDist(9.0f);
+
+    WorldReport w;
+    memset(&w, 0, sizeof(w));
+    w.timestampMs = 6000;
+    w.count = 4;
+    Put(w, 0, 0x6001, "uEm0100", "cEm0100ActWait", 1000.0f);
+    Put(w, 1, 0x6002, "uEm0100", "cEm0100ActWait", 2000.0f);
+    Put(w, 2, 0x6003, "uEm0100", "cEm0100ActWait", 3000.0f);
+    Put(w, 3, 0x60C0, "uEm0100_3", "cEm0100ActWait", 2030.0f);  // +30 см
+    PackObserveIngest(w, 6000);
+    std::string log = Slurp();
+    Need(log, "SKIP uEm0100_3 (component, not full-body uEm0100)");
+    Need(log, "nearest=0x6002 dist=0.3m");
+
+    // Носитель получает смертельный удар, деталь ещё на нём.
+    Put(w, 1, 0x6002, "uEm0100", "cEmActDmgShrink", 2000.0f);
+    w.timestampMs = 6150;
+    PackObserveIngest(w, 6150);
+
+    // Носитель и деталь исчезли в одном кадре: смерть обязана назвать деталь.
+    Put(w, 1, 0x6003, "uEm0100", "cEm0100ActWait", 3000.0f);
+    w.count = 2;                        // остались 0x6001 и 0x6003
+    w.timestampMs = 6300;
+    PackObserveIngest(w, 6300);
+    log = Slurp();
+    Need(log, "DEATH @0x6002");
+    Need(log, "nearComp=uEm0100_3");
+    Need(log, "compDist=0.3m");
+    Need(log, "COMPONENT-GONE uEm0100_3");
+    PackObserveFixtureSetDist(-1.0f);
+}
+
 static void TestGoneDebounce()
 {
     PackObserveShutdown();
@@ -224,6 +313,8 @@ int main()
     TestRabbleTrio();
     TestSizeLedAndSkipMixed();
     TestHornChargeIgnoreAndFall();
+    TestDeathVerdict();
+    TestComponentBinding();
     TestGoneDebounce();
     PackObserveShutdown();
     std::cout << "packobserve: PASS (cards, roles, rabble/led, skip, fall, gone)\n";

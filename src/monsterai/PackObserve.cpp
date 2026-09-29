@@ -24,6 +24,14 @@ static const int    kFallEscapes    = 2;
 static const float  kScaleHintHi    = 1.12f;
 static const float  kScaleHintLo    = 1.08f;
 static const uint32_t kScaleOffH    = 0x64;
+// 85.39 — смерть и компоненты. Только лог, поведение не меняется.
+// Тело мёртвого гоблина движок выбрасывает из скана: раньше это выглядело
+// как обычный LEAVE и убийство нельзя было привязать к телу. Теперь уход
+// делится на DEATH (исчез, живя вблизи) и LEAVE (ушёл из вида).
+static const int    kCompKinds      = 8;
+static const float  kDeathNearM     = 60.0f;  // дальше — считаем выгрузкой вида
+static const DWORD  kDeathRecentMs  = 700;    // «жил только что»: видели < 0.7 с назад
+static const float  kCompNearM      = 3.0f;   // компонент ближе — считаем «на теле»
 
 struct Member {
     uintptr_t body;
@@ -41,6 +49,8 @@ struct Member {
     uint32_t  chargeCount;
     uint32_t  escapeCount;
     uint32_t  ignoreCount;
+    char      nearComp[16];      // 85.39: ближайший компонент за время жизни
+    float     nearCompDistM;
     bool      present;
 };
 
@@ -69,10 +79,22 @@ static int      s_emptyTicks = 0;
 static DWORD    s_lastTick = 0;
 
 static char     s_status[240] = "PackObserve: idle (exact uEm0100, read-only)";
-static bool     s_skipLogged[8] = {};
-static char     s_skipKind[8][16] = {};
-static int      s_nSkip = 0;
 static bool     s_mixedLogged = false;
+
+// 85.39: компоненты вида (uEm0100_*). Каждый вид логируется один раз при
+// появлении — с ближайшим полным телом — и один раз при исчезновении:
+// если корона — отдельный компонент, она уйдёт вместе со своим короносцем.
+struct CompKind {
+    char      kind[16];
+    uintptr_t nearBody;
+    float     nearDistM;
+    float     x, y, z;
+    bool      posValid;
+    bool      alive;
+    bool      logged;
+};
+static CompKind s_comp[kCompKinds];
+static int      s_nComp = 0;
 
 int ClassifyGoblinAct(const char* act)
 {
@@ -155,17 +177,42 @@ static Member* FindMember(uintptr_t body)
     return 0;
 }
 
-static bool AlreadySkipped(const char* kind)
+// 85.39: улика смерти по имени действия. Die/Dead — приговор; DmgShrink —
+// эмпирический след: в сессии 29.09 последним читаемым действием убитого
+// гоблина был cEmActDmgShrink, и сразу после этого тело ушло из скана.
+static bool LooksLikeDeath(const char* act)
 {
-    if (!kind) return true;
-    for (int i = 0; i < s_nSkip; ++i)
-        if (!strcmp(s_skipKind[i], kind)) return true;
-    if (s_nSkip < 8) {
-        lstrcpynA(s_skipKind[s_nSkip], kind, sizeof(s_skipKind[s_nSkip]));
-        s_skipLogged[s_nSkip] = true;
-        ++s_nSkip;
-    }
-    return false;
+    if (!act || !act[0]) return false;
+    return strstr(act, "Die") != nullptr || strstr(act, "Dead") != nullptr;
+}
+
+static bool LooksLikeDeathHint(const char* act)
+{
+    return act && strstr(act, "DmgShrink") != nullptr;
+}
+
+// 85.39: реестр видов-компонентов (uEm0100_*).
+static CompKind* FindCompKind(const char* kind)
+{
+    if (!kind) return 0;
+    for (int i = 0; i < s_nComp; ++i)
+        if (!strcmp(s_comp[i].kind, kind)) return &s_comp[i];
+    return 0;
+}
+
+static CompKind* AddCompKind(const char* kind)
+{
+    if (!kind || s_nComp >= kCompKinds) return 0;
+    CompKind& c = s_comp[s_nComp++];
+    memset(&c, 0, sizeof(c));
+    lstrcpynA(c.kind, kind, sizeof(c.kind));
+    return &c;
+}
+
+static void ResetCompKinds()
+{
+    memset(s_comp, 0, sizeof(s_comp));
+    s_nComp = 0;
 }
 
 static bool ReadScaleH(uintptr_t body, float* out)
@@ -184,11 +231,18 @@ static bool ReadScaleH(uintptr_t body, float* out)
 #endif
 }
 
+#ifdef DDDA_PACKOBSERVE_PORTABLE
+// 85.39: в переносном фикстуре дистанцию задаёт тест — иначе вердикт
+// DEATH (нужна дистанция) нельзя проверить без рантайма.
+static float s_portableDistM = -1.0f;
+void PackObserveFixtureSetDist(float d) { s_portableDistM = d; }
+#endif
+
 static float DistToArisen(float x, float y, float z)
 {
 #ifdef DDDA_PACKOBSERVE_PORTABLE
     (void)x; (void)y; (void)z;
-    return -1.0f;
+    return s_portableDistM;
 #else
     float ax = 0.0f, ay = 0.0f, az = 0.0f;
     if (!Runtime::GetArisenWorldPos(&ax, &ay, &az)) return -1.0f;
@@ -203,6 +257,8 @@ static void ResetEncounter(const char* why)
 {
     const int was = s_live;
     const int wasComp = s_composition;
+    // 85.39: состав пачки пишем ДО очистки — иначе dump покажет n=0.
+    if (was > 0) PackObserveDump();
     memset(s_mem, 0, sizeof(s_mem));
     s_nMem = 0;
     s_live = 0;
@@ -229,6 +285,7 @@ static void ResetEncounter(const char* why)
                 << " composition=" << PackCompositionName(wasComp)
                 << " reason=" << (why ? why : "clear") << std::endl;
     }
+    ResetCompKinds();
 }
 
 static void UpdateStatus()
@@ -416,13 +473,40 @@ static void LogJoin(const Member& m)
             << std::endl;
 }
 
+// 85.39: уход тела из кадра. Мёртвое тело движок выбрасывает из скана, и
+// раньше это было неотличимо от «ушёл из вида» — теперь вердикт явный:
+//   DEATH — видели мёртвым (Die/Dead) либо исчез, живя вблизи (< 60 м) и
+//           меньше 0.7 с назад;
+//   LEAVE — иначе (ушёл далеко / выгрузился вместе с видом).
 static void LeaveMember(Member& m, uint32_t now)
 {
-    logFile << "PackObserve: LEAVE @0x" << std::hex << m.body << std::dec
+    const bool actDeath = LooksLikeDeath(m.act);
+    const bool recent   = (now - m.lastSeenMs) <= kDeathRecentMs;
+    const bool nearIn   = (m.distM >= 0.0f && m.distM <= kDeathNearM);
+    const bool death    = actDeath || (recent && nearIn);
+
+    logFile << "PackObserve: " << (death ? "DEATH" : "LEAVE")
+            << " @0x" << std::hex << m.body << std::dec
+            << " kind=" << m.kind
             << " lastAct=" << (m.act[0] ? m.act : "?")
             << " role=" << PackRoleName(m.role)
-            << " lived=" << (now - m.joinMs) << "ms"
-            << std::endl;
+            << " scaleH=" << (m.scaleValid ? m.scaleH : -1.0f)
+            << " dist=" << m.distM << "m"
+            << " lived=" << (now - m.joinMs) << "ms";
+    if (death) {
+        // 85.40: деталь печатаем ТОЛЬКО когда она действительно на теле
+        // (в поле 85.39 строка называла компонент, стоявший в 300 м).
+        const bool compOnBody = m.nearComp[0] && m.nearCompDistM <= kCompNearM;
+        logFile << " conf=" << (actDeath ? "high" : "likely")
+                << " hint=" << (LooksLikeDeathHint(m.act) ? "shrink" : "none")
+                << " mates=" << (s_live > 0 ? s_live - 1 : 0)
+                << " nearComp=" << (compOnBody ? m.nearComp : "(far)");
+        if (compOnBody)
+            logFile << " compDist=" << m.nearCompDistM << "m";
+    } else {
+        logFile << " why=out-of-view";
+    }
+    logFile << std::endl;
     m.present = false;
 }
 
@@ -480,8 +564,11 @@ static void OnAct(Member& m, const char* act, uint32_t now)
     }
     if (RoleIsSignal(role) && role != m.loggedRole) {
         m.loggedRole = role;
-        if (role != PACK_ROLE_CALLER && role != PACK_ROLE_COMMAND
-            && role != PACK_ROLE_INSUB && role != PACK_ROLE_FLEE) {
+        // 85.39: рог и команда пишутся своими строками (HORN/CHARGE), а
+        // побег и неподчинение раньше не были видны без выбранного лидера.
+        // Теперь видно всегда: без этого проверка «убили вожака — разбежались»
+        // в поле не наблюдаема.
+        if (role != PACK_ROLE_CALLER && role != PACK_ROLE_COMMAND) {
             logFile << "PackObserve: ROLE @0x" << std::hex << m.body
                     << std::dec
                     << " " << PackRoleName(role)
@@ -495,9 +582,6 @@ void PackObserveInit()
     s_armed = true;
     s_admitted = false;
     ResetEncounter("init");
-    s_nSkip = 0;
-    memset(s_skipLogged, 0, sizeof(s_skipLogged));
-    memset(s_skipKind, 0, sizeof(s_skipKind));
     s_lastTick = 0;
     lstrcpynA(s_status,
               "PackObserve: idle (exact uEm0100, read-only)",
@@ -513,6 +597,46 @@ void PackObserveShutdown()
     s_armed = false;
     s_admitted = false;
     lstrcpynA(s_status, "PackObserve: off", sizeof(s_status));
+}
+
+// 85.39: компонент вида (uEm0100_*) — запомнить позицию и ближайшее полное
+// тело. Пишет в лог один раз на появление вида. Ничего не назначает.
+static void NoteComponent(const WorldPresence& u, const WorldReport& world)
+{
+    CompKind* c = FindCompKind(u.kind);
+    if (!c) c = AddCompKind(u.kind);
+    if (!c) return;
+    c->alive = true;
+    c->x = u.x; c->y = u.y; c->z = u.z;
+    c->posValid = (u.x != 0.0f || u.y != 0.0f || u.z != 0.0f);
+
+    uintptr_t nb = 0;
+    float nd = -1.0f;
+    if (c->posValid) {
+        float best = 1.0e9f;
+        for (int i = 0; i < world.count; ++i) {
+            const WorldPresence& v = world.units[i];
+            if (!v.ptr || !ExactGoblin(v.kind)) continue;
+            const float dx = v.x - u.x;
+            const float dy = v.y - u.y;
+            const float dz = v.z - u.z;
+            const float d = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
+            if (d < best) { best = d; nb = v.ptr; }
+        }
+        if (nb) nd = best;
+    }
+    c->nearBody = nb;
+    c->nearDistM = nd;
+
+    if (!c->logged) {
+        c->logged = true;
+        logFile << "PackObserve: SKIP " << u.kind
+                << " (component, not full-body uEm0100)"
+                << " nearest=0x" << std::hex << nb << std::dec
+                << " dist=" << nd << "m"
+                << " pos=" << (c->posValid ? "ok" : "invalid")
+                << std::endl;
+    }
 }
 
 void PackObserveIngest(const WorldReport& world, uint32_t nowMs)
@@ -533,19 +657,28 @@ void PackObserveIngest(const WorldReport& world, uint32_t nowMs)
 
     int nSeen = 0;
     if (fresh) {
+        for (int i = 0; i < s_nComp; ++i) s_comp[i].alive = false;
         for (int i = 0; i < world.count && nSeen < kMaxMembers; ++i) {
             const WorldPresence& u = world.units[i];
             if (!u.ptr || !u.kind) continue;
             if (GoblinComponent(u.kind)) {
-                if (!AlreadySkipped(u.kind)) {
-                    logFile << "PackObserve: SKIP " << u.kind
-                            << " (component, not full-body uEm0100)"
-                            << std::endl;
-                }
+                NoteComponent(u, world);
                 continue;
             }
             if (!ExactGoblin(u.kind)) continue;
             ++nSeen;
+        }
+        // 85.39: компонент пропал из кадра. Если он пропал вместе со своим
+        // телом, строка даёт привязку «деталь -> носитель» — то, чем можно
+        // поймать корону вожака без глаз тестера.
+        for (int i = 0; i < s_nComp; ++i) {
+            CompKind& c = s_comp[i];
+            if (c.logged && !c.alive) {
+                logFile << "PackObserve: COMPONENT-GONE " << c.kind
+                        << " (last nearest=0x" << std::hex << c.nearBody << std::dec
+                        << " dist=" << c.nearDistM << "m)" << std::endl;
+                c.logged = false;
+            }
         }
     }
 
@@ -584,6 +717,25 @@ void PackObserveIngest(const WorldReport& world, uint32_t nowMs)
         m->lastSeenMs = nowMs;
         m->x = u.x; m->y = u.y; m->z = u.z;
         m->distM = DistToArisen(u.x, u.y, u.z);
+        // 85.39: ближайший к телу компонент — кандидат в корону вожака.
+        // Держим последнее значение, чтобы строка DEATH могла его назвать.
+        m->nearComp[0] = 0;
+        m->nearCompDistM = -1.0f;
+        const bool memberPosOk = (u.x != 0.0f || u.y != 0.0f || u.z != 0.0f);
+        if (memberPosOk) {
+            for (int c = 0; c < s_nComp; ++c) {
+                const CompKind& ck = s_comp[c];
+                if (!ck.alive || !ck.posValid) continue;
+                const float dx = ck.x - u.x;
+                const float dy = ck.y - u.y;
+                const float dz = ck.z - u.z;
+                const float d = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
+                if (m->nearCompDistM < 0.0f || d < m->nearCompDistM) {
+                    m->nearCompDistM = d;
+                    lstrcpynA(m->nearComp, ck.kind, sizeof(m->nearComp));
+                }
+            }
+        }
         if (!m->scaleValid) m->scaleValid = ReadScaleH(m->body, &m->scaleH);
         OnAct(*m, u.actName, nowMs);
         if (freshJoin) LogJoin(*m);

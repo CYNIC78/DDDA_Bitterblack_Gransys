@@ -577,6 +577,32 @@ static bool DistanceM(const TacticalPartyActor& p, const TacticalMonsterActor& m
     return true;
 }
 
+// 85.32: ВЕС СОБЫТИЯ = РАНГ × БЛИЗОСТЬ.
+//
+// Владелец: «те, кто ближе к тому или иному событию, — для них это событие
+// важнее; ближе бежать — выше шансы на успех». Раньше закон был жёсткий:
+// старший ранг побеждал всегда, и добивание лежащей пешки (70) проигрывало рогу
+// (85) даже когда волк уже грыз эту пешку в четырёх метрах, а рог звучал в
+// одиннадцати.
+//
+// Теперь ранг — это ОСНОВА веса, а близость её двигает. Близость берётся как
+// расстояние между двумя сторонами события (то самое число, что идёт в лог как
+// `distance`): у добивания — монстр -> лежащая пешка, у встречи — игрок -> тело,
+// у рога/воя/каста — игрок -> вещающий. Смысл один: насколько событие «созрело».
+// В 10 метрах вес падает вдвое, поэтому ранг в 20% отыгрывается дистанцией.
+//
+// Почему это безопасно для проверенных механизмов: события контакта (хват,
+// прижим, подъём на руки) по своим же правилам живут в 2–2.5 м, то есть всегда
+// получают близость близкую к максимальной и остаются впереди. Математика делает
+// то, что раньше делал ручной порядок строк.
+static float ProximityScore(const TacticalRule& rule, float distanceM)
+{
+    float d = distanceM;
+    if (!(d >= 0.0f)) d = 10.0f;   // расстояния нет — считаем «средним», не нулём
+    if (d > 60.0f) d = 60.0f;      // за 60 м близость уже не довод
+    return (float)rule.priority * 10.0f / (10.0f + d);
+}
+
 static void InitScan(TacticalScan* out)
 {
     memset(out, 0, sizeof(*out));
@@ -589,6 +615,11 @@ static void InitScan(TacticalScan* out)
     out->match.response = TACTICAL_RESPONSE_NONE;
     out->match.targetSlot = -1;
     out->match.pairDistanceM = -1.0f;
+    out->chosenScore = -1.0f;
+    out->chosenDistanceM = -1.0f;
+    out->outrankedSituation = TACTICAL_SITUATION_NONE;
+    out->outrankedScore = -1.0f;
+    out->outrankedDistanceM = -1.0f;
 }
 
 static const TacticalRule* FindRule(int situation)
@@ -1048,6 +1079,29 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
     bool finishHave = false;
     int bestDiagnosticPriority = -1;
     int bestMatchPriority = -1;
+    float bestMatchScore = -1.0f;
+    // 85.33: все подошедшие события собираем, а не держим одно лучшее. Из них
+    // главное уходит прежним путём (со своим жизненным циклом), остальные —
+    // в список одновременных: по ним директор делит пачку.
+    struct PendingEvent {
+        float score;
+        int   priority;
+        int   situation;
+        int   targetSlot;
+        uintptr_t targetBody;
+        const char* responderKind;
+        float pairDistanceM;
+        int   response;
+        float urgency;
+    };
+    PendingEvent pending[8];
+    int nPending = 0;
+    // Кто победил бы по СТАРОМУ закону (просто старший ранг) — нужен, чтобы
+    // показать в логе, кого обошла близость.
+    int rankWinnerSituation = TACTICAL_SITUATION_NONE;
+    int rankWinnerPriority = -1;
+    float rankWinnerScore = -1.0f;
+    float rankWinnerDistanceM = -1.0f;
 
     for (int r = 0; r < (int)(sizeof(kRules) / sizeof(kRules[0])); ++r) {
         const TacticalRule& rule = kRules[r];
@@ -1282,16 +1336,88 @@ void ScanTacticalSituations(const TacticalPartyActor* party, int partyCount,
                                  && pairsAdmissible
                                  && diag.match.situation
                                     != TACTICAL_SITUATION_NONE;
-        if (correlatedPair && rule.priority > bestMatchPriority) {
-            diag.match.pairsConsidered = diag.pairCandidates;
-            bestMatchScan = diag;
-            bestMatchPriority = rule.priority;
+        if (correlatedPair) {
+            const float score = ProximityScore(rule, diag.match.pairDistanceM);
+            if (rule.priority > bestMatchPriority)
+                bestMatchPriority = rule.priority;
+            if (rule.priority > rankWinnerPriority) {
+                rankWinnerPriority = rule.priority;
+                rankWinnerSituation = rule.situation;
+                rankWinnerScore = score;            // вес ЭТОГО правила
+                rankWinnerDistanceM = diag.match.pairDistanceM;
+            }
+            if (nPending < (int)(sizeof(pending) / sizeof(pending[0]))) {
+                PendingEvent& pe = pending[nPending++];
+                pe.score = score;
+                pe.priority = rule.priority;
+                pe.situation = rule.situation;
+                pe.targetSlot = diag.match.targetSlot;
+                pe.targetBody = diag.match.targetBody;
+                pe.responderKind = rule.monsterKind;
+                pe.pairDistanceM = diag.match.pairDistanceM;
+                pe.response = rule.response;
+                pe.urgency = rule.urgency;
+            }
+            if (score > bestMatchScore) {
+                diag.match.pairsConsidered = diag.pairCandidates;
+                bestMatchScan = diag;
+                bestMatchScore = score;
+            }
         }
     }
 
     if (bestMatchPriority >= 0) {
         *out = bestMatchScan;
         out->matched = true;
+        out->chosenScore = bestMatchScore;
+        out->chosenDistanceM = bestMatchScan.match.pairDistanceM;
+        // Обошёл ли близкий младший ранг старшего — это и есть новое решение,
+        // которое владелец должен видеть в логе.
+        if (rankWinnerSituation != TACTICAL_SITUATION_NONE
+            && rankWinnerSituation != bestMatchScan.situation) {
+            out->outrankedSituation = rankWinnerSituation;
+            out->outrankedScore = rankWinnerScore;
+            out->outrankedDistanceM = rankWinnerDistanceM;
+        }
+
+        // 85.33: одновременные события — по убыванию веса, без повторов.
+        // Одно и то же событие для другого вида-исполнителя (те же цель и
+        // ситуация) — это не второе событие, а тот же случай с другим
+        // исполнителем: исполнителей между двумя записями не делим.
+        out->altCount = 0;
+        for (int pass = 0; pass < 2; ++pass) {
+            int bestIdx = -1;
+            float bestSc = -1.0f;
+            for (int i = 0; i < nPending; ++i) {
+                if (pending[i].score < 0.0f) continue;   // уже взят
+                if (pending[i].situation == bestMatchScan.situation
+                    && pending[i].targetBody == bestMatchScan.match.targetBody)
+                    continue;                            // это главное событие
+                bool dupe = false;
+                for (int k = 0; k < out->altCount; ++k)
+                    if (out->alts[k].situation == pending[i].situation
+                        && out->alts[k].targetBody == pending[i].targetBody)
+                        dupe = true;
+                if (dupe) continue;
+                if (pending[i].score > bestSc) { bestSc = pending[i].score; bestIdx = i; }
+            }
+            if (bestIdx < 0) break;
+            TacticalAltEvent& alt = out->alts[out->altCount++];
+            alt.situation = pending[bestIdx].situation;
+            alt.name = TacticalSituationName(pending[bestIdx].situation);
+            alt.priority = pending[bestIdx].priority;
+            alt.response = pending[bestIdx].response;
+            alt.urgency = pending[bestIdx].urgency;
+            alt.score = pending[bestIdx].score;
+            alt.targetSlot = pending[bestIdx].targetSlot;
+            alt.targetBody = pending[bestIdx].targetBody;
+            alt.responderKind = pending[bestIdx].responderKind;
+            alt.pairDistanceM = pending[bestIdx].pairDistanceM;
+            alt.occupiesSameTarget =
+                pending[bestIdx].targetBody == bestMatchScan.match.targetBody;
+            pending[bestIdx].score = -1.0f;
+            if (out->altCount >= TACTICAL_MAX_ALTS) break;
+        }
     } else if (bestDiagnosticPriority >= 0) {
         *out = bestDiagnostic;
         out->matched = false;

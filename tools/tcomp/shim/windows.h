@@ -33,6 +33,9 @@ typedef uintptr_t      ULONG_PTR;
 typedef long long      LONGLONG;
 typedef unsigned long long ULONGLONG;
 typedef wchar_t        WCHAR;
+// 85.34: EntityConfig.cpp читает mtime конфига — FILETIME в шиме не было,
+// поэтому весь модуль стоял вне синтаксического гейта.
+typedef struct _FILETIME_ { DWORD dwLowDateTime; DWORD dwHighDateTime; } FILETIME;
 typedef const wchar_t* LPCWSTR;
 typedef DWORD*         LPDWORD;
 
@@ -80,7 +83,15 @@ inline void* VirtualAlloc(void*, SIZE_T, DWORD, DWORD) { return 0; }
 inline BOOL  VirtualFree(void*, SIZE_T, DWORD) { return 1; }
 inline DWORD GetTickCount() { return 0; }
 inline void  Sleep(DWORD) {}
-inline int   wsprintfA(LPSTR, LPCSTR, ...) { return 0; }
+// 85.34: заглушка возвращала 0 и НЕ форматировала строку. Для синтаксической
+// проверки это было незаметно, но рантайм-фикстура конфига на этом молча теряла
+// имена секций ([em0100] превращался в пустую строку) — тест «падал» на верном
+// коде. Теперь форматирование настоящее.
+template <class... A>
+inline int   wsprintfA(LPSTR buf, LPCSTR fmt, A... a)
+{
+    return snprintf(buf, 256, fmt, a...);
+}
 inline BOOL  CreateDirectoryA(LPCSTR, void*) { return 1; }
 inline DWORD GetModuleFileNameA(HMODULE, LPSTR, DWORD) { return 0; }
 

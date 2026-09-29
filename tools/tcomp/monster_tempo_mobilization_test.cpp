@@ -149,10 +149,12 @@ int main()
     SetRange(1.05f, 1.20f);
     SetAnimRange(1.05f, 1.15f);
     g_tempoTestNow = 3000;
-    for (int i = 0; i < 16; ++i)
+    // 85.34: ёмкость выросла 16 -> 32: параллельные приказы (85.33) держат
+    // оболочки у ДВУХ наборов исполнителей сразу, и 16 перестало хватать.
+    for (int i = 0; i < 32; ++i)
         assert(AdmitDirectorMobilization(0x20000u + (uintptr_t)i * 0x100u,
                                             "uEm0200", 1.0f, 600, &r, &reason));
-    assert(DirectorMobilizationCount() == 16);
+    assert(DirectorMobilizationCount() == 32);
     assert(!AdmitDirectorMobilization(0x30000u, "uEm0200", 1.0f, 600,
                                          &r, &reason));
     assert(std::string(reason) == "director-mobilization-table-full");
@@ -169,6 +171,45 @@ int main()
     g_tempoTestNow = 4600;
     RefreshTable();
     assert(DirectorMobilizationCount() == 0);
+
+    // --- 85.34: УРОВЕНЬ АДРЕНАЛИНА -----------------------------------------
+    //
+    // Tempo отдаёт наружу ровно одно число про адреналин — УРОВЕНЬ приказа
+    // (0..1). Размер всплеска живёт в карточке вида (ddda_entities.ini), и
+    // складывать два источника одного числа незачем. Здесь проверяем, что
+    // уровень честный: приказа нет — ноль, приказ есть — urgency, приказ
+    // снят или просрочен — снова ноль.
+    HardResetAllDirectorMobilization();
+    g_tempoTestNow = 5000;
+    assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.0f));   // нет приказа
+
+    // Слабое событие (услышал рог, urgency 0.65) — слабый всплеск: силу решает
+    // КОНТЕКСТ, а не «всем поровну».
+    assert(AdmitDirectorMobilization(0x50000u, "uEm0200", 0.65f, 600, &r, &reason));
+    assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.65f));
+
+    // Пришло событие серьёзнее (собрата прижали, 0.85) — уровень поднялся.
+    assert(AdmitDirectorMobilization(0x50000u, "uEm0200", 0.85f, 600, &r, &reason));
+    assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.85f));
+
+    // А слабый сигнал после сильного уровень НЕ понижает: оболочка на тело одна
+    // и максимизируется, иначе частые слабые события гасили бы разгон.
+    assert(AdmitDirectorMobilization(0x50000u, "uEm0200", 0.55f, 600, &r, &reason));
+    assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.85f));
+
+    // Распад ведёт уровень: половина от 1400 мс -> примерно половина.
+    ReleaseDirectorMobilization(0x50000u);
+    g_tempoTestNow = 5700;
+    RefreshTable();
+    {
+        const float lvl = DirectorAdrenalineLevelFor(0x50000u);
+        assert(lvl > 0.35f && lvl < 0.55f);   // уровень тает, а не срывается в ноль
+    }
+
+    // Снятие приказа и выгрузка мира: уровень ноль, всплеска нет.
+    g_tempoTestNow = 5800;
+    HardResetAllDirectorMobilization();
+    assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.0f));
 
     std::cout << "MonsterTempo Build012 mobilization: PASS\n";
     return 0;

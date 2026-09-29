@@ -234,6 +234,20 @@ bool     DirectorFocusSet(int member, uintptr_t expectedBody,
                           const char* exactKind = "uEm0200",
                           const uintptr_t* responders = 0,
                           int nResponders = 0);
+// 85.33: ВТОРОЙ ПРИКАЗ — только внимание (агрессия), без аренды темпа.
+// Владелец: «пачка может реагировать на более чем одно событие; часть пачки
+// защищает горниста, вторая атакует лежащую пешку». Списки исполнителей двух
+// приказов не пересекаются — их делит директор по близости к якорю события.
+// Отдельная запись (а не расширение первого приказа) сделана намеренно: путь
+// главного приказа проверен полем и не должен получить новых ветвей.
+bool     DirectorSecondarySet(int member, uintptr_t expectedBody,
+                              uintptr_t excludedEnemyBody = 0,
+                              int response = DIRECTOR_RESPONSE_ALERT,
+                              const char* exactKind = "uEm0100",
+                              const uintptr_t* responders = 0,
+                              int nResponders = 0);
+void     DirectorSecondaryClear(const char* reason);
+int      DirectorSecondaryMember();
 int      DirectorFocusMember();
 int      DirectorResponseLevel();
 uint32_t DirectorWriteCount();

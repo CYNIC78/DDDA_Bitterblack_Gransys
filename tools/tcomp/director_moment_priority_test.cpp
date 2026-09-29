@@ -28,12 +28,21 @@ static bool      g_identityRecordMissing[4] = {};
 static bool      g_identityDuplicate[4] = {};
 static bool g_observerDemand = false;
 static int g_focusMember = -1;
+// 85.33: проба ВТОРОГО приказа (директор отдаёт его отдельной записью).
+static int g_secondaryMember = -1;
+static uintptr_t g_secondaryBody = 0;
+static int g_secondaryResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
+static char g_secondaryKind[16] = "uEm0100";
+static std::vector<uintptr_t> g_secondaryBodies;
 static uintptr_t g_focusBody = 0;
 static uintptr_t g_focusExcludedBody = 0;
 static int g_focusResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
 static char g_focusKind[16] = "uEm0200";
 // 85.23: список исполнителей, переданный в Aggro (пусто = весь вид).
 static std::vector<uintptr_t> g_focusSetBodies;
+
+// Хелпер сравнения для проб 85.34 (в этом файле своего не было).
+static bool Near(float a, float b) { return fabsf(a - b) < 0.00001f; }
 
 namespace Runtime {
 bool ReadPartyCombatSnapshot(PartyCombatSnapshot* out)
@@ -71,6 +80,13 @@ bool GetFactors(uintptr_t, float* loco, float* atk)
 }
 
 void RegisterRageProfile(const char*, float, float, float, float) {}
+
+// 85.36: директор читает действующие границы [monsterTempo], чтобы числа вида
+// нельзя было поставить НИЖЕ базы (иначе admit молча отбивает тело). В фикстуре
+// это те же числа, что стоят в поставляемом ini.
+void GetRange(float* lo, float* hi)      { if (lo) *lo = 1.05f; if (hi) *hi = 1.20f; }
+void GetAnimRange(float* lo, float* hi)  { if (lo) *lo = 1.05f; if (hi) *hi = 1.15f; }
+
 bool DirectorReady(const char** reasonOut)
 {
     if (reasonOut) *reasonOut = g_tempoReady ? "ready" : g_tempoReason;
@@ -212,6 +228,11 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
             g_focusSetBodies.push_back(responders[i]);
     if (member < 0) {
         g_focusMember = -1;
+        g_secondaryMember = -1;
+        g_secondaryBody = 0;
+        g_secondaryResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
+        strcpy(g_secondaryKind, "uEm0100");
+        g_secondaryBodies.clear();
         g_focusBody = 0;
         g_focusExcludedBody = 0;
         g_focusResponse = DIRECTOR_RESPONSE_NONE;
@@ -235,6 +256,40 @@ bool DirectorFocusSet(int member, uintptr_t expectedBody,
     g_focusKind[sizeof(g_focusKind) - 1] = 0;
     return true;
 }
+bool DirectorSecondarySet(int member, uintptr_t expectedBody,
+                          uintptr_t excludedEnemyBody, int response,
+                          const char* exactKind, const uintptr_t* responders,
+                          int nResponders)
+{
+    (void)excludedEnemyBody;
+    g_secondaryBodies.clear();
+    if (responders && nResponders > 0)
+        for (int i = 0; i < nResponders; ++i)
+            g_secondaryBodies.push_back(responders[i]);
+    uintptr_t resolved = 0;
+    if (member < 0 || !expectedBody
+        || !ResolveMemberBody(member, &resolved) || resolved != expectedBody
+        || !exactKind || !exactKind[0])
+        return false;
+    g_secondaryMember = member;
+    g_secondaryBody = expectedBody;
+    g_secondaryResponse = response;
+    strncpy(g_secondaryKind, exactKind, sizeof(g_secondaryKind) - 1);
+    g_secondaryKind[sizeof(g_secondaryKind) - 1] = 0;
+    return true;
+}
+
+void DirectorSecondaryClear(const char* reason)
+{
+    (void)reason;
+    g_secondaryMember = -1;
+    g_secondaryBody = 0;
+    g_secondaryResponse = DIRECTOR_RESPONSE_NONE;
+    g_secondaryBodies.clear();
+}
+
+int DirectorSecondaryMember() { return g_secondaryMember; }
+
 // 84.16/84.18 dual-observe: Director DumpSnapshot dumps both instruments.
 // Fixture keeps them silent: no goblin/party world in this harness.
 void CardReconDump() {}
@@ -1908,6 +1963,259 @@ static void TestPawnFinishUnitsAndBlockers()
     SetFallenGuardRadius(10.0f);
 }
 
+// 85.32: ВЕС ВМЕСТО СТАРШИНСТВА.
+//
+// Владелец: «те, кто ближе к тому или иному событию, — для них это событие
+// важнее; ближе бежать — выше шансы на успех». Проверяем:
+//   * близкое младшее событие обходит далёкое старшее;
+//   * далёкое младшее старшего НЕ обходит (старый порядок сохраняется);
+//   * событие контакта (хват) остаётся впереди — оно и так живёт в 2 м;
+//   * числа решения уходят в лог, иначе его не проверить в поле.
+static void TestProximityWeightedArbitration()
+{
+    using namespace MonsterAI;
+    TacticalPartyActor party[2];
+    TacticalMonsterActor mobs[3];
+    TacticalScan scan;
+
+    // ── 1) ДОБИВАНИЕ РЯДОМ ПРОТИВ РОГА ДАЛЕКО ──────────────────────────────
+    // Рог звучит у x=0, ближайший к нему член партии (игрок) — в 11 м: событие
+    // «холодное». Лежащая в сознании пешка — у x=2000, и гоблин в МЕТРЕ от неё.
+    memset(party, 0, sizeof(party));
+    party[0].slot = 0; party[0].body = 0x1000u; party[0].act = "cPlActRun";
+    party[0].positionValid = true; party[0].x = 1100.0f;
+    party[1].slot = 3; party[1].body = 0x2000u; party[1].act = "cPlActDmgDown";
+    party[1].positionValid = true; party[1].x = 2000.0f;
+    party[1].downedValid = true; party[1].downedAwake = true;
+    memset(mobs, 0, sizeof(mobs));
+    mobs[0].body = 0x3000u; mobs[0].kind = "uEm0100";
+    mobs[0].act = "cEm0100ActHornTensionUp";                 // рог
+    mobs[0].positionValid = true; mobs[0].x = 0.0f;
+    mobs[1].body = 0x4000u; mobs[1].kind = "uEm0100"; mobs[1].act = "cEm0100ActWait";
+    mobs[1].positionValid = true; mobs[1].x = 2100.0f;       // 1.0 м от пешки
+    mobs[2].body = 0x5000u; mobs[2].kind = "uEm0100"; mobs[2].act = "cEm0100ActWait";
+    mobs[2].positionValid = true; mobs[2].x = 5000.0f;       // далеко от всего
+
+    ScanTacticalSituations(party, 2, mobs, 3, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_PAWN_FINISH);
+    assert(scan.match.targetSlot == Runtime::PARTY_HIRED2);   // цель — пешка
+    assert(scan.outrankedSituation == TACTICAL_SITUATION_GOB_HORN_ALERT);
+    assert(scan.chosenScore > scan.outrankedScore);
+
+    // ── 2) РОГ РЯДОМ ПРОТИВ ДОБИВАНИЯ ДАЛЕКО ───────────────────────────────
+    // Игрок почти на роге (2 м) — событие «горячее»; пешка лежит в 9 м от
+    // своих гоблинов. Старший снова прав, и это ровно прежнее поведение.
+    party[0].x = 200.0f;
+    mobs[1].x = 2900.0f;                                     // 9.0 м от пешки
+    ScanTacticalSituations(party, 2, mobs, 3, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_GOB_HORN_ALERT);
+    // Старший выиграл сам — значит, обойдённых нет: прежний порядок сохранён.
+    assert(scan.outrankedSituation == TACTICAL_SITUATION_NONE);
+
+    // ── 3) ХВАТ (КОНТАКТ) НЕ ОТДАЁТ ПЕРВЕНСТВО ────────────────────────────
+    // Событие контакта по своим правилам живёт в 2 м, поэтому его вес и так
+    // максимальный: ручной порядок строк больше не нужен, математика совпадает
+    // с ним. Сбитая пешка в 1.5 м от второго гоблина проигрывает хвату.
+    memset(party, 0, sizeof(party));
+    party[0].slot = 0; party[0].body = 0x1000u; party[0].act = "cPlActGrabStart";
+    party[0].positionValid = true; party[0].x = 100.0f;
+    party[1].slot = 3; party[1].body = 0x2000u; party[1].act = "cPlActDmgDown";
+    party[1].positionValid = true; party[1].x = 100.0f;
+    party[1].downedValid = true; party[1].downedAwake = true;
+    memset(mobs, 0, sizeof(mobs));
+    mobs[0].body = 0x3000u; mobs[0].kind = "uEm0100";
+    mobs[0].act = "cEm0100ActHagaijime";                     // держит игрока
+    mobs[0].positionValid = true; mobs[0].x = 200.0f;
+    // Второй гоблин стоит ВНЕ радиуса хвата (2 м), иначе правило хвата
+    // справедливо откажется: «держат двое» — это уже другая неоднозначность.
+    // Он в 2.5 м от сбитой пешки, то есть добивание тоже состоялось.
+    mobs[1].body = 0x4000u; mobs[1].kind = "uEm0100"; mobs[1].act = "cEm0100ActWait";
+    mobs[1].positionValid = true; mobs[1].x = 350.0f;
+    ScanTacticalSituations(party, 2, mobs, 2, &scan);
+    assert(scan.matched);
+    assert(scan.situation == TACTICAL_SITUATION_GOBLIN_GRAB_ALERT);
+
+    // ── 4) РЕШЕНИЕ ВИДНО В ЛОГЕ ───────────────────────────────────────────
+    // Механизм, который молча меняет старшинство, проверить в поле нечем.
+    // Гоняем сцену через Директора и ищем строку решения в логе.
+    FreshDirector();
+    SetMember(0, 1000.0f, 1000.0f, true);
+    SetMember(1, 900.0f,  900.0f,  true);
+    SetMember(2, 950.0f,  950.0f,  true);
+    SetMember(3, 700.0f,  700.0f,  true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetGoblins(3);
+    for (int i = 0; i < 3; ++i) { s_view[i].act[0] = 0; strcpy(s_view[i].act, "cEm0100ActWait"); }
+    // Рог у x=0, игрок в 11 м от него; лежащая пешка у x=2000, гоблин в метре.
+    strcpy(s_view[0].act, "cEm0100ActHornTensionUp");
+    s_view[0].x = 0.0f;
+    s_view[1].x = 2100.0f;
+    s_view[2].x = 5000.0f;
+    g_snapshot.member[Runtime::PARTY_ARISEN].x = 1100.0f;
+    g_snapshot.member[Runtime::PARTY_HIRED2].x = 2000.0f;
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgDown");
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = true;
+    UpdateTacticalSituations(700000);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_PAWN_FINISH);
+    assert(s_tactical.targetSlot == Runtime::PARTY_HIRED2);   // цель — пешка
+
+    logFile.flush();
+    {
+        std::ifstream log("/tmp/director_moment_priority_test.log");
+        std::string line;
+        bool sawDecision = false;
+        while (std::getline(log, line)) {
+            if (line.find("BY-WEIGHT name=PAWN-FINISH") == std::string::npos) continue;
+            if (line.find("outranked=GOB-HORN-ALERT") == std::string::npos) continue;
+            sawDecision = true;
+        }
+        assert(sawDecision);
+    }
+}
+
+// 85.33: ПАРАЛЛЕЛЬНЫЕ ПРИКАЗЫ.
+//
+// Сценарий владельца: «трубит горнист, и одновременно упала пешка — пачка
+// делится: часть защищает горниста, вторая атакует лежащую пешку». Проверяем:
+//   * деление считается и попадает в лог ВСЕГДА (даже когда ключ выключен) —
+//     это и есть «сначала лог, потом поведение»;
+//   * при ключе 0 мир не меняется: второй приказ не выдаётся, главный берёт
+//     всех подходящих, как раньше;
+//   * при ключе 1 главный берёт ТОЛЬКО свою часть, а остальные уходят вторым
+//     приказом — с той же целью и видом, что у второго события;
+//   * никто не получает два приказа сразу (списки не пересекаются).
+static void TestParallelOrdersSplit()
+{
+    using namespace MonsterAI;
+
+    // Рог у x=0, игрок в 11 м от него. Сбитая пешка у x=2000, гоблин в метре.
+    for (int pass = 0; pass < 2; ++pass) {
+        const bool parallel = (pass == 1);
+        config.forceBool = true;
+        config.forceKey = "parallelOrders";
+        config.forceValue = parallel;
+        FreshDirector();
+        config.forceBool = false;
+
+        SetMember(0, 1000.0f, 1000.0f, true);
+        SetMember(1, 900.0f,  900.0f,  true);
+        SetMember(2, 950.0f,  950.0f,  true);
+        SetMember(3, 700.0f,  700.0f,  true);
+        for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+        SetGoblins(3);
+        // s_view[0] — горнист, s_view[1] — у тела, s_view[2] — далеко от обоих.
+        strcpy(s_view[0].act, "cEm0100ActHornTensionUp");
+        s_view[0].x = 0.0f;
+        strcpy(s_view[1].act, "cEm0100ActWait");
+        s_view[1].x = 2100.0f;
+        s_view[2].x = 5000.0f;
+        // Аризен ближе всех к рогу (9 м) — значит рог целится в НЕГО: так
+        // проверка читается прямо, без знания, кого выбрал сканер.
+        g_snapshot.member[Runtime::PARTY_ARISEN].x = 900.0f;
+        g_snapshot.member[Runtime::PARTY_HIRED2].x = 2000.0f;
+        strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActDmgDown");
+        g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = true;
+        g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = true;
+
+        SetActuatorEnabled(true);
+        UpdateTacticalSituations(800000);
+        ApplyPolicies();
+
+        // Главное — добивание: пешка в метре от гоблина, это ближе, чем рог.
+        assert(s_tactical.active);
+        assert(s_tactical.situation == TACTICAL_SITUATION_PAWN_FINISH);
+        assert(s_tactical.targetSlot == Runtime::PARTY_HIRED2);
+
+        if (!parallel) {
+            // Ключ выключен: мир как был. Второго приказа нет вовсе.
+            assert(g_secondaryMember == -1);
+            assert(g_secondaryBodies.empty());
+            // Всплеск при этом честно достаётся главному приказу: адреналин не
+            // зависит от ключа деления, он про приказ вообще.
+            // Ключ деления выключен: второго приказа нет, и разгон есть только
+            // у главного (в агро список не уходит — идёт «весь вид»).
+            assert(g_secondaryBodies.empty());
+            assert(g_overrides.size() == 3);
+            for (int i = 0; i < 3; ++i)
+                assert(g_overrides.find(s_view[i].body) != g_overrides.end());
+        } else {
+            // Ключ включён: пачка поделилась. Второй приказ — рог, цель игрок,
+            // исполнители — те, кому до рога ближе, чем до пешки.
+            assert(g_secondaryMember == Runtime::PARTY_ARISEN);
+            assert(g_secondaryResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
+            assert(!strcmp(g_secondaryKind, "uEm0100"));
+            // Горнист (0 м у рога, 20 м у пешки) уходит вторым приказом;
+            // дальний (41 м у рога, 30 м у пешки) остаётся с главным: ему
+            // ближе к пешке. Это и есть «ближе бежать — выше шансы».
+            assert(g_secondaryBodies.size() == 1);
+            assert(g_secondaryBodies[0] == s_view[0].body);
+            for (size_t i = 0; i < g_secondaryBodies.size(); ++i) {
+                assert(g_secondaryBodies[i] != s_view[1].body);   // не тот, кто у тела
+                for (size_t k = 0; k < g_focusSetBodies.size(); ++k)
+                    assert(g_focusSetBodies[k] != g_secondaryBodies[i]);  // нет пересечений
+            }
+            // Главному достались двое: тот, кто у тела, и дальний. Список
+            // уходит в агро отдельно — иначе агро запнуло бы всех без разбора.
+            assert(g_focusSetBodies.size() == 2);
+            assert(g_focusSetBodies[0] == s_view[1].body);   // ближний к телу первым
+            assert(g_focusSetBodies[1] == s_view[2].body);
+
+            // 85.34: ВТОРОЙ ПРИКАЗ РАЗГОНЯЕТСЯ. Владелец: «события быстрые,
+            // некогда зевать — реагировать надо резко». Разгон (темп + адреналин
+            // силы атаки) — это оболочка Tempo на теле, поэтому проверяем её:
+            // исполнитель второго приказа обязан держать оболочку.
+            for (size_t i = 0; i < g_secondaryBodies.size(); ++i)
+                assert(g_overrides.find(g_secondaryBodies[i]) != g_overrides.end());
+            // И наоборот: разгон есть у всех, кому выдан приказ — ни один не
+            // остался «голым» наблюдателем.
+            assert(g_overrides.size() == g_focusSetBodies.size()
+                                         + g_secondaryBodies.size());
+            // СИЛУ РЕШАЕТ КОНТЕКСТ, а не «всем поровну»: уровень разгона — это
+            // urgency самого события. «Пешка упала, добей» (0.85) сильнее, чем
+            // «услышал рог, иди посмотри» (0.65) — та самая лестница, ради
+            // которой всё и делалось.
+            assert(Near(g_overrides.find(s_view[1].body)->second.urgency, 0.85f));
+            assert(Near(g_overrides.find(g_secondaryBodies[0])->second.urgency, 0.65f));
+        }
+    }
+
+    // Сценарий кончился — второго приказа быть не должно (пешка встала).
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedValid = false;
+    g_snapshot.member[Runtime::PARTY_HIRED2].downedAwake = false;
+    strcpy(g_snapshot.member[Runtime::PARTY_HIRED2].liveAct, "cPlActRun");
+    UpdateTacticalSituations(800500);
+    ApplyPolicies();
+    assert(g_secondaryMember == -1);
+    // Разгон второго приказа не переживает сам приказ: тела уходят в распад.
+    // Проверяем по журналу снятий: тело, бывшее исполнителем второго приказа,
+    // обязано быть отпущено. Одна проверка мало что даёт (тот же моб мог легально
+    // стать исполнителем ГЛАВНОГО приказа — тогда оболочка у него и должна
+    // остаться), поэтому вторая проверка — строка в логе: она исчезает ровно
+    // тогда, когда разгон второго приказа перестают снимать.
+    for (size_t i = 0; i < g_secondaryBodies.size(); ++i) {
+        const uintptr_t b = g_secondaryBodies[i];
+        bool released = false;
+        for (size_t k = 0; k < g_cleared.size(); ++k)
+            if (g_cleared[k] == b) released = true;
+        assert(released);
+    }
+    logFile.flush();
+    {
+        std::ifstream log("/tmp/director_moment_priority_test.log");
+        std::string line;
+        bool sawRelease = false;
+        while (std::getline(log, line))
+            if (line.find("adrenaline secondary released") != std::string::npos)
+                sawRelease = true;
+        assert(sawRelease);
+    }
+    config.forceBool = false;
+}
+
 // 85.29: единицы и причины отказа — на уровне матчера, без Директора.
 // Каждый блок убивает свою поломку: деление на масштаб, отбор исполнителя,
 // диагностику причины.
@@ -2036,6 +2344,8 @@ int main()
     TestFallenGuardSituation();
     TestFallenGuardUnitsAndBlockers();
     TestPawnFinishUnitsAndBlockers();
+    TestProximityWeightedArbitration();
+    TestParallelOrdersSplit();
     MonsterAI::Shutdown();
     assert(!MonsterAI::Enabled());
 

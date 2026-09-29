@@ -11,6 +11,7 @@
 #include "MonsterDirector.h"
 #include "TacticalCues.h"
 #include "SpeciesCard.h"
+#include "SpeciesTuning.h"
 #include "PackObserve.h"
 #include "../runtime/Runtime.h"
 #include "../CombatBus.h"
@@ -50,6 +51,20 @@ struct TargetScore {
     bool  hpValid;
     float lowAbsoluteHp;
     float huntScore;
+};
+
+// 85.36: адаптер «живой конфиг -> интерфейс модуля чисел вида».
+// Отдельная прослойка нужна не для красоты: рантайм-фикстура директора
+// подменяет конфиг своим двойником, и модуль SpeciesTuning не должен знать ни
+// про iniConfig, ни про этот двойник.
+struct IniSpeciesReader : MonsterAI::SpeciesIniReader,
+                          Runtime::Tempo::RanksIniReader {
+    float Float(const char* section, const char* key, float defValue) override {
+        return config.getFloat(section, key, defValue);
+    }
+    bool Bool(const char* section, const char* key, bool defValue) override {
+        return config.getBool(section, key, defValue);
+    }
 };
 
 static Runtime::PartyCombatSnapshot s_party;
@@ -138,6 +153,60 @@ static bool        s_chantNearest = true;
 // выбор цели и не сработал — выбор цели в игре ничего не делает, его читает
 // только панель. Здесь остаётся только ключ и передача его в матчер.
 static float       s_fallenGuardRadius = 10.0f;  // 0 = выключено
+
+// 85.33: ПАРАЛЛЕЛЬНЫЙ ПРИКАЗ (второе событие).
+//
+// Владелец: «трубит горнист, и одновременно упала пешка — директор даёт сигналы,
+// пачка делится: часть защищает горниста, вторая атакует лежащую пешку».
+//
+// Устройство намеренно асимметричное. Главный приказ живёт как жил: аренда,
+// продолжение, таймаут, освобождение, темп. Второй приказ — ТОЛЬКО внимание
+// (агрессия): он пересчитывается каждый скан, темпа не арендует и обязательств
+// не берёт. Так проверенный механизм главного приказа не получает ни одной новой
+// ветки, а пачка получает вторую задачу.
+//
+// Ключ `parallelOrders`: 0 (по умолчанию в этой сборке) = деление только
+// ЗАПИСЫВАЕТСЯ в лог, мир не меняется; 1 = деление исполняется.
+static bool        s_parallelOrders = false;
+
+// 85.34: исполнители второго приказа, которым выдан темп (а с ним и адреналин).
+// Список нужен ровно для одного: снять оболочки у тех, кто выбыл из набора.
+static uintptr_t   s_secOwned[kMaxPolicyWolves] = {};
+static int         s_nSecOwned = 0;
+
+// Снять оболочки со ВТОРОГО приказа. Темп первого приказа не трогаем никогда:
+// списки исполнителей не пересекаются, но лишняя попытка освободить чужое тело
+// стоила бы тихого снятия темпа у того, кто идёт по главному приказу.
+static void ReleaseSecondaryMobilization(const char* reason)
+{
+    if (!s_nSecOwned) return;
+    for (int i = 0; i < s_nSecOwned; ++i)
+        Runtime::Tempo::ReleaseDirectorMobilization(s_secOwned[i]);
+    logFile << "Monster Director: adrenaline secondary released (" << s_nSecOwned
+            << " bodies, reason=" << (reason ? reason : "clear") << ")" << std::endl;
+    s_nSecOwned = 0;
+}
+struct ParallelOrder {
+    bool        active;
+    int         situation;
+    int         targetSlot;
+    uintptr_t   targetBody;
+    const char* responderKind;
+    int         response;          // TACTICAL_RESPONSE_*
+    float       urgency;           // 85.34: уровень всплеска у второго приказа
+    float       score;
+    float       pairDistanceM;
+    int         nResponder;
+    uintptr_t   responders[kMaxPolicyWolves];
+    // Доли главного приказа: когда деление включено, первый берёт СВОЮ часть,
+    // а не всех ближних (иначе одни и те же особи получили бы два приказа).
+    int         nPrimary;
+    uintptr_t   primary[kMaxPolicyWolves];
+    uint32_t    signature;         // для лога: менялось ли деление
+};
+static ParallelOrder s_parallel;
+static uint32_t      s_lastSplitLogSignature = 0;
+static DWORD         s_lastSplitLogMs = 0;
 // 85.30: добивание лежащей пешки в сознании (ключ `pawnFinish`). Включено по
 // умолчанию — это прямое указание владельца по полю 85.29. Ключ
 // fallenGuardRadius к нему НЕ относится: у добивания нет радиуса от игрока,
@@ -382,6 +451,12 @@ static uint64_t TacticalEventTopology(
 static bool ExactPartyIdentity(const Runtime::PartyCombatSnapshot& snapshot,
                                const char** reasonOut);
 
+// 85.32: след решения «вес вместо старшинства». Печатается один раз на смену
+// решения, ровно когда близкое событие действительно обошло старшее, — иначе
+// проверить в поле нечего.
+static uint64_t s_lastWeightLineSignature = 0;
+static DWORD    s_lastWeightLineMs = 0;
+
 static DWORD    s_lastFallenLineMs = 0;
 static uint64_t s_lastFallenSignature = 0;
 static DWORD    s_lastFinishLineMs = 0;
@@ -503,6 +578,142 @@ static void ReportOneBlocker(const MonsterAI::TacticalFallenDiag& d,
     }
 }
 
+// 85.33: КТО КУДА ИДЁТ. Математика распределения — ровно слова владельца:
+// «те, кто ближе к тому или иному событию, — для них это событие важнее».
+//
+// Для каждой особи считаем расстояние до «якоря» каждого одновременного
+// события (якорь — тот член партии, к которому событие тянет: лежащая пешка у
+// добивания, игрок у встречи, слышащий у рога) и отдаём особь БЛИЖАЙШЕМУ
+// событию своего вида. Дальше внутри события список сортируется по близости и
+// режется лимитом владельца (responderMax): ближе — значит успеет первым.
+//
+// Если событие одно, функция не вызывается вовсе: главный приказ идёт прежним
+// путём, без единой новой ветки.
+static void ComputeParallelSplit(const MonsterAI::TacticalScan& scan,
+                                 const MonsterAI::TacticalPartyActor* party,
+                                 int nParty)
+{
+    const bool hadParallel = s_parallel.active;
+    memset(&s_parallel, 0, sizeof(s_parallel));
+    s_parallel.targetSlot = -1;
+
+    const MonsterAI::TacticalAltEvent* alt = (scan.altCount > 0) ? &scan.alts[0] : 0;
+    if (!alt) {
+        // Деление кончилось. Один раз сообщаем — иначе непонятно, почему вторая
+        // задача пропала из лога.
+        if (hadParallel) {
+            logFile << "Monster Director: situation SPLIT clear reason=no-second-event"
+                    << std::endl;
+            s_lastSplitLogSignature = 0;
+        }
+        return;
+    }
+
+    // Якоря обеих сторон.
+    const MonsterAI::TacticalPartyActor* anchors[2] = { 0, 0 };
+    for (int p = 0; p < nParty; ++p) {
+        if (party[p].body == scan.match.targetBody) anchors[0] = &party[p];
+        if (party[p].body == alt->targetBody) anchors[1] = &party[p];
+    }
+    if (!anchors[0] || !anchors[0]->positionValid) return;
+    if (!anchors[1] || !anchors[1]->positionValid) return;
+
+    const char* kinds[2] = { scan.match.responderKind, alt->responderKind };
+    float primaryD[kMaxViews];
+    float secondD[kMaxViews];
+    int   nPrimary = 0;
+    int   nSecond = 0;
+    for (int i = 0; i < s_nView; ++i) {
+        const MonsterView& v = s_view[i];
+        if (!v.body || v.dead || !v.positionValid) continue;
+        float d[2] = { -1.0f, -1.0f };
+        bool eligible[2] = { false, false };
+        for (int e = 0; e < 2; ++e) {
+            if (!kinds[e] || strcmp(v.kind, kinds[e]) != 0) continue;
+            const float dx = v.x - anchors[e]->x;
+            const float dy = v.y - anchors[e]->y;
+            const float dz = v.z - anchors[e]->z;
+            d[e] = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
+            eligible[e] = true;
+        }
+        if (!eligible[0] && !eligible[1]) continue;
+        // Ближе — значит этот приказ и получит.
+        int owner = 0;
+        if (eligible[0] && eligible[1]) owner = (d[1] < d[0]) ? 1 : 0;
+        else owner = eligible[1] ? 1 : 0;
+        if (owner == 0) {
+            if (nPrimary < kMaxViews) { s_parallel.primary[nPrimary] = v.body; primaryD[nPrimary] = d[0]; ++nPrimary; }
+        } else {
+            if (nSecond < kMaxViews) { s_parallel.responders[nSecond] = v.body; secondD[nSecond] = d[1]; ++nSecond; }
+        }
+    }
+
+    // Внутри события — по близости; лимит владельца режет хвост.
+    for (int pass = 0; pass < 2; ++pass) {
+        uintptr_t* list = (pass == 0) ? s_parallel.primary : s_parallel.responders;
+        float*     dist = (pass == 0) ? primaryD : secondD;
+        int        n    = (pass == 0) ? nPrimary : nSecond;
+        for (int i = 1; i < n; ++i) {
+            const uintptr_t b = list[i];
+            const float     dd = dist[i];
+            int j = i - 1;
+            while (j >= 0 && dist[j] > dd) {
+                list[j + 1] = list[j];
+                dist[j + 1] = dist[j];
+                --j;
+            }
+            list[j + 1] = b;
+            dist[j + 1] = dd;
+        }
+        int keep = n;
+        if (s_policyResponderMax > 0 && s_policyResponderMax < keep)
+            keep = s_policyResponderMax;
+        if (keep > kMaxPolicyWolves) keep = kMaxPolicyWolves;
+        if (pass == 0) nPrimary = keep; else nSecond = keep;
+    }
+
+    s_parallel.nPrimary = nPrimary;
+    s_parallel.nResponder = nSecond;
+    s_parallel.active = (nSecond > 0);
+    s_parallel.situation = alt->situation;
+    s_parallel.targetSlot = alt->targetSlot;
+    s_parallel.targetBody = alt->targetBody;
+    s_parallel.responderKind = alt->responderKind;
+    s_parallel.response = alt->response;
+    s_parallel.urgency = alt->urgency;
+    s_parallel.score = alt->score;
+    s_parallel.pairDistanceM = alt->pairDistanceM;
+    s_parallel.signature = 1u;
+
+    uint32_t sig = 2166136261u;
+    sig = (sig ^ (uint32_t)scan.situation) * 16777619u;
+    sig = (sig ^ (uint32_t)alt->situation) * 16777619u;
+    sig = (sig ^ (uint32_t)nPrimary) * 16777619u;
+    sig = (sig ^ (uint32_t)nSecond) * 16777619u;
+    sig = (sig ^ (uint32_t)(alt->targetBody & 0xFFFFu)) * 16777619u;
+    // Ключ входит в подпись: строка обязана появиться заново, когда владелец
+    // включил исполнение. Иначе он включит ключ и не увидит в логе ничего.
+    sig = (sig ^ (s_parallelOrders ? 1u : 2u)) * 16777619u;
+    const DWORD nowMs = GetTickCount();
+    if (sig != s_lastSplitLogSignature || nowMs - s_lastSplitLogMs >= 3000) {
+        s_lastSplitLogSignature = sig;
+        s_lastSplitLogMs = nowMs;
+        logFile << "Monster Director: situation SPLIT primary="
+                << TacticalSituationName(scan.situation)
+                << "(" << nPrimary << " of " << (nPrimary + nSecond) << ")"
+                << " secondary=" << TacticalSituationName(alt->situation)
+                << "(" << nSecond << ")"
+                << " secondaryTarget="
+                << Runtime::PartyCombatSlotName(alt->targetSlot)
+                << " secondaryDist=" << alt->pairDistanceM << "m"
+                << " rule=closest-to-its-own-event"
+                << " actuate=" << (s_parallelOrders ? 1 : 0)
+                << (s_parallelOrders ? ""
+                    : " (лог; ключ parallelOrders = 1 включает исполнение)")
+                << std::endl;
+    }
+}
+
 static void UpdateTacticalSituations(DWORD now)
 {
     Runtime::PartyCombatSnapshot fresh;
@@ -569,6 +780,9 @@ static void UpdateTacticalSituations(DWORD now)
     ScanTacticalSituations(party, nParty, monsters, nMonster, &scan);
     s_tactical.fallen = scan.fallen;
     s_tactical.finish = scan.finish;
+    // 85.33: одновременные события и деление пачки. Считается всегда (лог), а
+    // исполняется только по ключу — проверяемому механизму ничего не грозит.
+    ComputeParallelSplit(scan, party, nParty);
     const bool anyEvidence = scan.targetCandidates > 0
                           || scan.evidenceCandidates > 0;
 
@@ -684,6 +898,32 @@ static void UpdateTacticalSituations(DWORD now)
     if (s_tactical.timeoutBlocked && samePair) return;
     if (s_tactical.timeoutBlocked && !samePair)
         s_tactical.timeoutBlocked = false;
+
+    // 85.32: событие выбрано ПО ВЕСУ (ранг × близость), а не по старшинству.
+    // Владелец должен видеть это решение целиком: кто победил, кого обошёл и с
+    // какими числами. Печатаем только когда выбор ДЕЙСТВИТЕЛЬНО сменил старшего.
+    if (scan.outrankedSituation != TACTICAL_SITUATION_NONE) {
+        uint64_t sig = (uint64_t)scan.situation;
+        sig = sig * 1099511628211ULL + (uint64_t)scan.outrankedSituation;
+        sig = sig * 1099511628211ULL
+            + (uint64_t)(int)(scan.chosenScore * 10.0f);
+        sig = sig * 1099511628211ULL
+            + (uint64_t)(int)(scan.outrankedScore * 10.0f);
+        if (sig != s_lastWeightLineSignature
+            || now - s_lastWeightLineMs >= kFallenDiagRepeatMs) {
+            s_lastWeightLineSignature = sig;
+            s_lastWeightLineMs = now;
+            logFile << "Monster Director: situation BY-WEIGHT name="
+                    << TacticalSituationName(scan.situation)
+                    << " score=" << scan.chosenScore
+                    << " distance=" << scan.chosenDistanceM << "m"
+                    << " outranked="
+                    << TacticalSituationName(scan.outrankedSituation)
+                    << " itsScore=" << scan.outrankedScore
+                    << " itsDistance=" << scan.outrankedDistanceM << "m"
+                    << " reason=closer-to-its-own-event" << std::endl;
+        }
+    }
     if (!s_tactical.active)
         TacticalEnter(m, now, eventTopology);
 }
@@ -1128,6 +1368,10 @@ static void ClearPolicyOwnershipState()
 {
     memset(s_ownedWolf, 0, sizeof(s_ownedWolf));
     s_nOwnedWolf = 0;
+    // 85.34: списки второго приказа чистятся вместе с первым — состояние приказа
+    // не переживает его самого (оболочки снимет ReleaseSecondaryMobilization).
+    memset(s_secOwned, 0, sizeof(s_secOwned));
+    s_nSecOwned = 0;
     memset(s_responderWolf, 0, sizeof(s_responderWolf));
     s_nResponderWolf = 0;
     s_policyTarget = -1;
@@ -1199,6 +1443,9 @@ static void ReleasePolicy(const char* reason, bool hardReset = false)
     }
     Runtime::Aggro::DirectorFocusSet(-1, 0, 0,
                                       Runtime::Aggro::DIRECTOR_RESPONSE_NONE);
+    // Второй приказ не живёт дольше первого: он выдавался как его дополнение.
+    Runtime::Aggro::DirectorSecondaryClear(reason ? reason : "release");
+    ReleaseSecondaryMobilization(reason);
     SetPolicyStatus(reason, false, hardReset ? "HARD-RESET" : "DECAY");
     ClearPolicyOwnershipState();
 }
@@ -1537,6 +1784,94 @@ static void ApplyPolicies()
         return;
     }
 
+    // 85.33: ВТОРОЙ ПРИКАЗ — независимо от судьбы первого. Есть второе событие —
+    // есть приказ; событие пропало — приказ снят. Так деление не зависит от того,
+    // успел ли главный приказ собрать своих исполнителей (иначе в сцене «все
+    // ближние ушли на второй приказ» главный отказался бы и увёл деление с собой).
+    // Делится только внимание: аренды темпа у второго приказа нет, поэтому он не
+    // спорит с первым за энвелопы и не может испортить его учёт.
+    if (s_parallelOrders && s_parallel.active && s_parallel.targetBody
+        && s_parallel.nResponder > 0) {
+        const int secAggro = s_parallel.response == TACTICAL_RESPONSE_ALERT
+                           ? Runtime::Aggro::DIRECTOR_RESPONSE_ALERT
+                           : Runtime::Aggro::DIRECTOR_RESPONSE_ALARM;
+        if (Runtime::Aggro::DirectorSecondarySet(
+                s_parallel.targetSlot, s_parallel.targetBody, 0, secAggro,
+                s_parallel.responderKind, s_parallel.responders,
+                s_parallel.nResponder)) {
+            ++s_gameplayWrites;
+        }
+
+        // 85.34: ВТОРОЙ ПРИКАЗ ПОЛУЧАЕТ ТОТ ЖЕ АДРЕНАЛИН. Владелец: «события
+        // быстрые, некогда зевать — реагировать надо резко». Оболочка живёт по
+        // телу и не складывается, поэтому пересечения с первым приказом нет по
+        // построению; списки исполнителей уже разделены.
+        const SpeciesCard* secCard = FindSpeciesCard(s_parallel.responderKind);
+        const bool secTempo = secCard && secCard->tempoRage;
+        if (secTempo) {
+            const char* tempoReason = 0;
+            if (!Runtime::Tempo::DirectorReady(&tempoReason)) {
+                static bool loggedNotReady = false;
+                if (!loggedNotReady) {
+                    loggedNotReady = true;
+                    logFile << "Monster Director: secondary tempo NOT granted reason="
+                            << (tempoReason ? tempoReason : "tempo-not-ready")
+                            << " (attention still issued)" << std::endl;
+                }
+            } else {
+                // Сначала отпускаем тех, кто выбыл из набора: иначе они
+                // остались бы разогнанными до конца TTL.
+                for (int i = 0; i < s_nSecOwned; ++i) {
+                    bool still = false;
+                    for (int k = 0; k < s_parallel.nResponder; ++k)
+                        if (s_secOwned[i] == s_parallel.responders[k]) { still = true; break; }
+                    if (!still)
+                        Runtime::Tempo::ReleaseDirectorMobilization(s_secOwned[i]);
+                }
+                int kept = 0;
+                for (int k = 0; k < s_parallel.nResponder; ++k) {
+                    const uintptr_t b = s_parallel.responders[k];
+                    Runtime::Tempo::DirectorMobilizationReceipt receipt;
+                    const char* admitReason = 0;
+                    // Отказ здесь НЕ роняет приказ: внимание важнее разгона, и
+                    // падать из-за переполнения таблицы было бы хуже, чем
+                    // разогнать не всех (главный приказ по-прежнему fail-closed).
+                    if (!Runtime::Tempo::AdmitDirectorMobilization(
+                            b, s_parallel.responderKind, s_parallel.urgency,
+                            kPolicyTtlMs, &receipt, &admitReason)) {
+                        static uint32_t secAdmitFails = 0;
+                        if (++secAdmitFails <= 3)
+                            logFile << "Monster Director: secondary mobilize skipped 0x"
+                                    << std::hex << b << std::dec << " reason="
+                                    << (admitReason ? admitReason : "admit-failed")
+                                    << std::endl;
+                        continue;
+                    }
+                    ++s_gameplayWrites;
+                    s_secOwned[kept++] = b;
+                }
+                s_nSecOwned = kept;
+                // Одна строка на смену набора: видно, что ВТОРОЙ приказ получил
+                // тот же разгон, что и главный (темп + адреналин атаки).
+                static uint32_t lastMobSig = 0;
+                const uint32_t mobSig = 2166136261u ^ (uint32_t)kept * 16777619u
+                                      ^ (uint32_t)(int)(s_parallel.urgency * 100.0f);
+                if (mobSig != lastMobSig) {
+                    lastMobSig = mobSig;
+                    logFile << "Monster Director: secondary mobilized n=" << kept
+                            << " urgency=" << s_parallel.urgency
+                            << " (темп и адреналин атаки как у главного приказа)"
+                            << std::endl;
+                }
+            }
+        } else {
+            ReleaseSecondaryMobilization("species-without-tempo");
+        }
+    } else {
+        Runtime::Aggro::DirectorSecondaryClear("no-second-order");
+        ReleaseSecondaryMobilization("no-second-order");
+    }
+
     int targetSlot = -1;
     uintptr_t targetBody = 0;
     uintptr_t excludedBody = 0;
@@ -1577,9 +1912,17 @@ static void ApplyPolicies()
     const float* refPos = PolicyReferencePos(targetBody, excludedBody,
                                             *identitySnapshot, incident)
                         ? incident : 0;
-    const int nResponder = CollectEligibleResponders(
+    int nResponder = CollectEligibleResponders(
         responders, kMaxPolicyWolves, excludedBody, responderKind, refPos,
         s_policyResponderMax, &reason);
+    // 85.33: при включённом делении главный приказ берёт ТОЛЬКО свою часть —
+    // иначе одни и те же особи получили бы два приказа сразу, а вторая задача
+    // осталась бы без исполнителей. Доля посчитана по близости к якорю события.
+    if (s_parallelOrders && s_parallel.active) {
+        nResponder = s_parallel.nPrimary;
+        for (int i = 0; i < nResponder; ++i) responders[i] = s_parallel.primary[i];
+        reason = "split-share";
+    }
     if (nResponder <= 0) {
         const char* none = !strcmp(responderKind, "uEm0100")
                          ? "goblin-no-free-responder"
@@ -1672,8 +2015,14 @@ static void ApplyPolicies()
     // Список исполнителей уходит в агро ТОЛЬКО когда лимит включён (85.23):
     // при responderMax=0 поведение обязано остаться прежним (весь вид), иначе
     // особь вне нашего обзора перестала бы получать приказ.
-    const uintptr_t* gang = s_policyResponderMax > 0 ? responders : 0;
-    const int nGang = s_policyResponderMax > 0 ? nResponder : 0;
+    // 85.33: при АКТИВНОМ ДЕЛЕНИИ список уходит в агро ВСЕГДА, даже когда лимит
+    // владельца выключен (responderMax = 0). Иначе главный приказ взял бы «весь
+    // вид» и получил то, что уже отдано второму приказу. Это нашла фикстура:
+    // при responderMax = 0 главный забирал всех, и деление не значило ничего.
+    const bool splitActive = s_parallelOrders && s_parallel.active;
+    const uintptr_t* gang = (s_policyResponderMax > 0 || splitActive)
+                          ? responders : 0;
+    const int nGang = (s_policyResponderMax > 0 || splitActive) ? nResponder : 0;
     if (!Runtime::Aggro::DirectorFocusSet(targetSlot, targetBody, excludedBody,
                                            aggroResponse, responderKind,
                                            gang, nGang)) {
@@ -1729,6 +2078,9 @@ void Init()
         s_fallenGuardRadius = 10.0f;   // NaN/мусор из ini — не оставляем без защиты
     MonsterAI::SetFallenGuardRadius(s_fallenGuardRadius);
     s_pawnFinish = config.getBool("monsterAI", "pawnFinish", true);
+    // 85.33: параллельные приказы. По умолчанию ВЫКЛЮЧЕНО: сначала владелец
+    // смотрит в логе деление (SPLIT), потом включает этот ключ без пересборки.
+    s_parallelOrders = config.getBool("monsterAI", "parallelOrders", false);
     MonsterAI::SetPawnFinishEnabled(s_pawnFinish);
     MonsterAI::SetNearestPairFallback(s_chantNearest);
     if (s_policyResponderMax > kMaxPolicyWolves)
@@ -1757,12 +2109,82 @@ void Init()
     ResetRuntimeState("waiting");
     Runtime::Aggro::SetObserverDemand(s_enabled);
     // 84.21: rage-профили видов — из карточек (единый источник правды).
-    for (int i = 0; i < SpeciesCardCount(); ++i) {
-        const SpeciesCard* card = &kSpeciesCards[i];
-        if (!card->tempoRage) continue;
-        Runtime::Tempo::RegisterRageProfile(card->kind, card->rageLocoLo,
-                                            card->rageLocoHi,
-                                            card->rageAnimLo, card->rageAnimHi);
+    // 85.36: сами числа вида можно править в ddda_ai_overhaul.ini, секция
+    // [species.<kind>] — без пересборки. Ключа нет = число карточки, поэтому
+    // старый ini ведёт себя как раньше. Небезопасное число (ниже базового
+    // диапазона) поднимается в SpeciesTuning и печатается в лог: молчаливый
+    // отказ приказа разбирать в поле дороже, чем строка в логе.
+    {
+        float baseLocoMin = 1.0f, baseLocoMax = 1.0f;
+        float baseAnimMin = 1.0f, baseAnimMax = 1.0f;
+        Runtime::Tempo::GetRange(&baseLocoMin, &baseLocoMax);
+        Runtime::Tempo::GetAnimRange(&baseAnimMin, &baseAnimMax);
+
+        IniSpeciesReader reader;
+        for (int i = 0; i < SpeciesCardCount(); ++i) {
+            const SpeciesCard* card = &kSpeciesCards[i];
+            if (!card->tempoRage) continue;
+
+            const MonsterAI::SpeciesTempoNumbers n = MonsterAI::SpeciesTempoFromIni(
+                reader, *card, baseLocoMin, baseLocoMax, baseAnimMin, baseAnimMax);
+
+            if (!n.rageEnabled) {
+                logFile << "Monster Director: species " << card->kind
+                        << " tempoRage=0 (ini): no order boost for this species"
+                        << std::endl;
+                continue;
+            }
+
+            Runtime::Tempo::RegisterRageProfile(card->kind, n.rageLocoMin,
+                                                n.rageLocoMax,
+                                                n.rageAnimMin, n.rageAnimMax);
+
+            char l[320];
+            sprintf_s(l, "Monster Director: species %s rage ceilings run %.2f..%.2f"
+                         " swing %.2f..%.2f (base run %.2f..%.2f swing %.2f..%.2f)",
+                      card->kind, n.rageLocoMin, n.rageLocoMax,
+                      n.rageAnimMin, n.rageAnimMax,
+                      baseLocoMin, baseLocoMax, baseAnimMin, baseAnimMax);
+            logFile << l << std::endl;
+            if (n.sanitized)
+                logFile << "Monster Director: species " << card->kind
+                        << " numbers raised to safe: " << n.note << std::endl;
+        }
+    }
+
+    // 85.40: РАНГИ ОСОБЕЙ. Читаем здесь (директор уже держит адаптер к
+    // ddda_ai_overhaul.ini) и отдаём в рантайм-модуль темпа, откуда их берёт
+    // тюнер при выдаче размера и статов. Вид допускается списком в коде
+    // (сегодня гоблин), ini может только выключить: [species.<kind>] ranks = off.
+    // Числа — секция [ranks], встроенные значения пилота в MonsterTempo.cpp.
+    {
+        IniSpeciesReader reader;
+        int nOn = 0;
+        for (int i = 0; i < SpeciesCardCount(); ++i) {
+            const SpeciesCard* card = &kSpeciesCards[i];
+            const Runtime::Tempo::RanksNumbers ln =
+                Runtime::Tempo::RanksFromIni(reader, card->kind);
+            Runtime::Tempo::RegisterRanks(card->kind, ln);
+            if (!ln.enabled) continue;
+            ++nOn;
+            // 85.42: печатаем и ВЕСА — без них из лога не видно, какая доля
+            // пачки задумана на каждый ранг (в 85.41 именно это мешало понять,
+            // почему в пачке оказалось три мини-босса).
+            char l[420];
+            sprintf_s(l, "Monster Director: ranks %s ON  novice w%.2f %.2f..%.2f x%.2f"
+                         " | soldier w%.2f %.2f..%.2f x%.2f | veteran w%.2f %.2f..%.2f x%.2f"
+                         " | elite w%.2f %.2f..%.2f x%.2f | miniboss w%.2f %.2f..%.2f x%.2f",
+                      card->kind,
+                      ln.step[0].weight, ln.step[0].sizeMin, ln.step[0].sizeMax, ln.step[0].atk,
+                      ln.step[1].weight, ln.step[1].sizeMin, ln.step[1].sizeMax, ln.step[1].atk,
+                      ln.step[2].weight, ln.step[2].sizeMin, ln.step[2].sizeMax, ln.step[2].atk,
+                      ln.step[3].weight, ln.step[3].sizeMin, ln.step[3].sizeMax, ln.step[3].atk,
+                      ln.step[4].weight, ln.step[4].sizeMin, ln.step[4].sizeMax, ln.step[4].atk);
+            logFile << l << std::endl;
+        }
+        if (nOn == 0)
+            logFile << "Monster Director: ranks off (no species allowed/enabled)"
+                    << std::endl;
     }
     lstrcpynA(s_status, s_enabled
         ? "Monster Director: PackMark+tactics armed"

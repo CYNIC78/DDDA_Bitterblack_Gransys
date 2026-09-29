@@ -156,11 +156,150 @@ open('tools/tcomp/ui_roles_block.inc','w',encoding='utf-8').write(s[start:end])
 PY
 $GPP "$T/ui_roles_t.cpp"
 
+echo "== 2f/10 EntityConfig.cpp (85.34: ключи адреналина) =="
+$GPP "$T/entityconfig_t.cpp"
+
+echo "== 2g/10 EntityConfig BEHAVIOR (85.34: наследование и границы) =="
+# Не только разбор, но и ПОВЕДЕНИЕ: наследование [default] -> [class.*] ->
+# [emXXXX] и зажимы (пол 1.0, потолок 1.6). До 85.34 у слоя не было ни одного
+# рантайм-теста, а фикстура заодно нашла дыру в шиме: wsprintfA ничего не
+# форматировал, поэтому [em0100] в тестах превращался в пустую секцию.
+g++ -std=c++11 -Wall -Wextra -Werror -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" \
+    "$T/entityconfig_behavior_test.cpp" -o /tmp/synchk_entitycfg
+/tmp/synchk_entitycfg
+
+echo "== 2h/10 SpeciesTuning.cpp (85.36: числа вида из ini) =="
+# ЗАЧЕМ. Модуль читает [species.uEmXXXX] и ЗАЖИМАЕТ небезопасные числа. Он
+# собирался только студий у владельца; здесь проверяется сборкой.
+$GPP "$T/species_tuning_t.cpp"
+
+echo "== 2i/10 SpeciesTuning BEHAVIOR (85.36: зажимы и наследование ключа) =="
+# Не разбор, а ПОВЕДЕНИЕ: отсутствие ключа = число карточки, мусор -> карточка,
+# перевёрнутый диапазон, пределы движка и главное — ГАРАНТИЯ ПРИКАЗА (потолок не
+# ниже базового диапазона, иначе admit отобьёт тело молча).
+# Модуль включается в фикстуру как есть, поэтому второй раз его компилировать
+# нельзя: будет multiple definition (урок 85.36).
+g++ -std=c++11 -Wall -Wextra -Werror -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" \
+    "$T/species_tuning_test.cpp" -o /tmp/synchk_species
+/tmp/synchk_species
+
+echo "== 2i2/10 Ranks BEHAVIOR (85.40/85.42: ранги вместо коридора) =="
+# Проверяем ПОВЕДЕНИЕ лестницы: флаг вида (нет ключа -> ступеней нет),
+# встроенные числа пилота, починка мусора в [ladder], детерминизм по адресу
+# тела и РАЗБРОС: рядовых большинство, элита и мини-босс редки, но живые.
+# Флаги GC обязательны: фикстура тянет MonsterTempo.cpp, где есть ссылки на
+# рантайм-данные, которых в песочнице нет (урок фикстуры мобилизации).
+g++ -std=c++11 -Wall -Wextra -Werror -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" \
+    -D__try=try -D__except\(x\)=catch\(...\) -ffunction-sections -fdata-sections \
+    "$T/ranks_test.cpp" -Wl,--gc-sections -o /tmp/synchk_ranks
+/tmp/synchk_ranks
+
+echo "== 2j/10 Все .cpp проекта включают stdafx.h (C1010) =="
+# ЗАЧЕМ. 85.37 уехал с ошибкой C1010: новый файл SpeciesTuning.cpp не включал
+# "stdafx.h", а в студии включены предкомпилированные заголовки. g++ этого НЕ
+# ловит: там stdafx подменён шимом и без него всё собирается. Владелец заплатил
+# итерацией. Теперь проверяем сам проект: каждый ClCompile без NotUsing обязан
+# где-то включать "stdafx.h" — не обязательно первой строкой (перед ним у части
+# файлов стоит комментарий, MSVC это допускает), но ОБЯЗАН.
+python3 - <<'PYCHK'
+import re, io, os, sys
+proj = 'ddda-ai-overhaul.vcxproj'
+s = io.open(proj, encoding='utf-8').read()
+blocks = re.findall(r'<ClCompile Include="([^"]+)"(?:\s*/>|>(.*?)</ClCompile>)', s, re.S)
+bad = []
+for path, inner in blocks:
+    if 'NotUsing' in (inner or ''):
+        continue
+    p = path.replace('\\', '/')
+    if not os.path.exists(p):
+        bad.append(p + ': файла из проекта нет на диске'); continue
+    txt = io.open(p, encoding='utf-8', errors='replace').read()
+    if '#include "stdafx.h"' not in txt:
+        bad.append(p + ': нет #include "stdafx.h" -> у владельца будет C1010')
+for b in bad:
+    print(' ', b)
+sys.exit(1 if bad else 0)
+PYCHK
+
 echo "== 2c/10 EnemyAI.cpp =="
 $GPP "$T/enemyai_t.cpp"
 
 echo "== 2d/10 EnemyTuner.cpp =="
 $GPP -Isrc "-D__try=try" "-D__except(x)=catch(...)" "$T/enemytuner_t.cpp"
+
+echo "== 10/10 структурные проверки (85.34 + 85.36) =="
+# ЗАЧЕМ. У EnemyTuner нет рантайм-фикстуры: он пишет в живые тела игры, и в
+# песочнице таких тел нет. Но у него есть ровно одна фраза, которую нельзя
+# потерять при рефакторинге: всплеск адреналина входит в ТУ ЖЕ формулу, что и
+# обычные множители. Потеряется — тесты этого не заметят, а владелец заметит
+# молчанием фичи в поле. Поэтому проверяем форму кода явно.
+python3 - <<'PYCHK'
+import sys
+src = open('src/EnemyTuner.cpp', encoding='utf-8').read()
+bad = []
+# 1) адреналin умножается в обеих силах (физическая и магическая);
+if '* adrAtk' not in src:  bad.append('нет множителя adrAtk в силе физ. атаки')
+if '* adrMAtk' not in src: bad.append('нет множителя adrMAtk в силе маг. атаки')
+# 2) уровень берётся у Tempo, а пик — у карточки вида;
+if 'DirectorAdrenalineLevelFor' not in src: bad.append('нет запроса уровня у Tempo')
+if 'adrenalineAtk' not in src:              bad.append('нет пика вида (adrenalineAtk)')
+# 3) всплеск включает блок боевых статов (иначе он не применится, когда все
+#    множители ini равны 1.0 — самый частый случай);
+if 'rec0->haveCombat || spikeLive' not in src: bad.append('всплеск не входит в условие блока')
+# 4) пол 1.0 (ваниль — нижний порог) и потолок вида;
+if 'if (v < 1.0f) return 1.0f;' not in src: bad.append('нет пола всплеска')
+if 'kAdrenalineMax' not in src:             bad.append('нет потолка всплеска')
+for b in bad: print(' ', b)
+
+# 5) Поставленный ddda_entities.ini: проверяем ФАЙЛ, который уезжает владельцу.
+#    Числа тут — решение по балансу, они меняются; держим не числа, а правило:
+#    ванильная сила удара остаётся нижним порогом, даже для худшего ролла особи
+#    (ролл симметричный 0.9..1.1, поэтому множитель обязан быть >= 1.111...).
+import re as _re
+ini = open('ddda_entities.ini', encoding='utf-8').read()
+def _sec(name):
+    m = _re.search(r'^\[' + name + r'\](.*?)(?=^\[|\Z)', ini, _re.S | _re.M)
+    return m.group(1) if m else ''
+def _val(sec, key):
+    m = _re.search(r'^' + key + r'\s*=\s*([0-9.]+)', sec, _re.M)
+    return float(m.group(1)) if m else None
+d = _sec('default')
+for key in ('attackMult', 'magickAttackMult'):
+    v = _val(d, key)
+    if v is None: bad.append('в [default] нет ' + key); continue
+    if v * 0.9 < 1.0 - 1e-6:
+        bad.append('%s=%s: худший ролл особи уводит удар НИЖЕ ваниллы' % (key, v))
+if _val(d, 'adrenalineAtk') is None:     bad.append('в [default] нет adrenalineAtk')
+if _val(d, 'adrenalineMagick') is None:  bad.append('в [default] нет adrenalineMagick')
+if _val(_sec('class.boss'), 'attackMult') != 1.0:
+    bad.append('у боссов не зафиксирована ванильная сила удара')
+
+# 6) Числа вида (85.36): их теперь читает MonsterDirector из ini, а модуль
+#    SpeciesTuning зажимает. Проверяем ФОРМУ: зажим ниже базы, зажим пределов
+#    движка и строгий зазор — то, без чего приказ молча отобьётся на каждом
+#    теле, а в поле это выглядит как «монстры перестали реагировать».
+st = open('src/monsterai/SpeciesTuning.cpp', encoding='utf-8').read()
+if 'p.lo < baseLo' not in st or 'p.hi < baseHi' not in st:
+    bad.append('SpeciesTuning: нет зажима "потолок не ниже базового диапазона"')
+if 'kMinGap' not in st:
+    bad.append('SpeciesTuning: нет строгого зазора (низ == верх не регистрируется)')
+if 'kLocoClampMax' not in st or 'kAnimClampMax' not in st:
+    bad.append('SpeciesTuning: нет пределов движка')
+if '"tempoRage"' not in st:
+    bad.append('SpeciesTuning: нет ключа-выключателя вида')
+md = open('src/monsterai/MonsterDirector.cpp', encoding='utf-8').read()
+if 'SpeciesTempoFromIni' not in md:
+    bad.append('MonsterDirector: не читает числа вида из ini')
+if 'GetRange(&baseLocoMin' not in md or 'GetAnimRange(&baseAnimMin' not in md:
+    bad.append('MonsterDirector: не берёт базовый диапазон у Tempo')
+oa = open('ddda_ai_overhaul.ini', encoding='utf-8').read()
+for kind in ('uEm0200', 'uEm0100', 'uEm0101', 'uEm0400'):
+    if ('[species.%s]' % kind) not in oa:
+        bad.append('в ddda_ai_overhaul.ini нет секции [species.%s]' % kind)
+
+for b in bad: print(' ', b)
+sys.exit(1 if bad else 0)
+PYCHK
 
 echo "== 9/10 ASCII in UI strings =="
 python3 - <<'PY'

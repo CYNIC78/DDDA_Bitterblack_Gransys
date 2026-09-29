@@ -107,6 +107,8 @@ static void SetVanilla(Tuning& t)
     t.defenseMult       = 1.0f;
     t.magickAttackMult  = 1.0f;
     t.magickDefenseMult = 1.0f;
+    t.adrenalineAtk     = 1.0f;
+    t.adrenalineMagick  = 1.0f;
     t.enabled     = true;
 }
 
@@ -159,6 +161,19 @@ static void ReadSection(iniConfig& cfg, const char* section, Tuning& t)
     t.defenseMult       = ClampCombat(cfg.getFloat(section, "defenseMult",       t.defenseMult));
     t.magickAttackMult  = ClampCombat(cfg.getFloat(section, "magickAttackMult",  t.magickAttackMult));
     t.magickDefenseMult = ClampCombat(cfg.getFloat(section, "magickDefenseMult", t.magickDefenseMult));
+    // Адреналин: пол жёстко 1.0 (ваниль — нижний порог), потолок 1.6. Значение
+    // вне диапазона зажимается, а не отбрасывается: владелец должен увидеть, что
+    // его число не принято целиком, а не гадать, почему всплеска нет.
+    {
+        float aa = cfg.getFloat(section, "adrenalineAtk", t.adrenalineAtk);
+        if (!(aa == aa) || aa < 1.0f) aa = 1.0f;
+        if (aa > kAdrenalineMax) aa = kAdrenalineMax;
+        t.adrenalineAtk = aa;
+        float am = cfg.getFloat(section, "adrenalineMagick", t.adrenalineMagick);
+        if (!(am == am) || am < 1.0f) am = 1.0f;
+        if (am > kAdrenalineMax) am = kAdrenalineMax;
+        t.adrenalineMagick = am;
+    }
     t.enabled     = cfg.getBool(section, "enabled",     t.enabled);
 }
 
@@ -282,6 +297,19 @@ int  ReloadCount(){ return s_reloads; }
 void ForceReload(){ Load(); }
 
 // ------------------------------------------------------------------ Tick ----
+// 85.34: см. комментарий в заголовке.
+bool AnyAdrenalineConfigured()
+{
+    if (s_default.adrenalineAtk > 1.0f || s_default.adrenalineMagick > 1.0f)
+        return true;
+    for (int i = 0; i < s_nEntries; ++i) {
+        if (s_entries[i].t.adrenalineAtk > 1.0f
+            || s_entries[i].t.adrenalineMagick > 1.0f)
+            return true;
+    }
+    return false;
+}
+
 void Tick()
 {
     DWORD now = MsNow();

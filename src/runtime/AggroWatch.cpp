@@ -127,12 +127,22 @@ static int       s_directorFocus = MEMBER_NONE;
 // (поведение до 85.23). Заполняется Director'ом только при включённом лимите.
 static const int kDirectorResponderMax = 16;
 static uintptr_t s_directorResponders[kDirectorResponderMax] = {};
+
+// 85.33: второй приказ (см. комментарий в заголовке).
+static int       s_secFocus = MEMBER_NONE;
+static uintptr_t s_secExpectedBody = 0;
+static uintptr_t s_secExcludedBody = 0;
+static int       s_secResponse = DIRECTOR_RESPONSE_NONE;
+static char      s_secKind[16] = "uEm0100";
+static uintptr_t s_secResponders[kDirectorResponderMax] = {};
+static int       s_nSecResponders = 0;
 static int       s_nDirectorResponders = 0;
 static uintptr_t s_directorExpectedBody = 0;
 static uintptr_t s_directorExcludedBody = 0;
 static int       s_directorResponse = DIRECTOR_RESPONSE_NONE;
 static char      s_directorKind[16] = "uEm0200";
 static uint32_t  s_directorWrites = 0;
+static uint32_t  s_secWrites = 0;      // 85.33: только записи второго приказа
 static bool      s_directorIdentityBlockLogged = false;
 static float    s_pinFakehitValue = 150.0f;
 static uint32_t s_pinWrites = 0;
@@ -609,6 +619,16 @@ static bool InDirectorResponderSet(uintptr_t body)
     return false;
 }
 
+// 85.33: у второго приказа пустой список означает «никто»: директор всегда
+// передаёт его явно. У главного пусто означает «весь вид» (поведение до 85.23).
+static bool InSecondaryResponderSet(uintptr_t body)
+{
+    if (!s_nSecResponders) return false;
+    for (int i = 0; i < s_nSecResponders; ++i)
+        if (s_secResponders[i] == body) return true;
+    return false;
+}
+
 static bool IsPinnableKind(const char* kind, bool director)
 {
     if (!kind) return false;
@@ -698,6 +718,36 @@ static bool DirectorIdentityExactNow()
     uintptr_t resolved = 0;
     return ResolveMemberBody(s_directorFocus, &resolved)
         && resolved == s_directorExpectedBody;
+}
+
+// 85.33: ЧЕЙ ПРИКАЗ РАЗРЕШАЕТ ЗАПИСЬ. У главного приказа своя личность, у
+// второго — своя. Смешивать их нельзя: иначе второй приказ писал бы карты под
+// личностью первого и молча перестал бы писать, когда первый сменил цель.
+enum { kOrderNone = 0, kOrderPrimary = 1, kOrderSecondary = 2 };
+
+static bool SecondaryIdentityExactNow()
+{
+    if (s_secFocus < 0 || !s_secExpectedBody) return false;
+    uintptr_t resolved = 0;
+    return ResolveMemberBody(s_secFocus, &resolved)
+        && resolved == s_secExpectedBody;
+}
+
+static bool OrderIdentityExactNow(int orderScope)
+{
+    if (orderScope == kOrderPrimary)   return DirectorIdentityExactNow();
+    if (orderScope == kOrderSecondary) return SecondaryIdentityExactNow();
+    return true;
+}
+
+// Личность не сходится — приказ снимается, а не просто пропускает запись:
+// иначе мёртвая личность «писала» бы на каждом тике и мусорила в лог.
+static void OrderIdentityDrop(int orderScope)
+{
+    if (orderScope == kOrderSecondary)
+        DirectorSecondaryClear("identity-lost");
+    else if (orderScope == kOrderPrimary)
+        DirectorFocusSet(MEMBER_NONE, 0);
 }
 
 // Proven live uEm0200 card heads (AGGRO_RECON §19.3 / §25.3).
@@ -1163,12 +1213,12 @@ void CardReconDump()
 // Одна карта: форма -> диапазон -> запись -> readback -> откат.
 // want = kPinValue/kCombatPinValue (штырь) или kSuppValue (0, подавление).
 // who — фактический владелец карты (по пере-читанному указателю).
-static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now, bool director)
+static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now, int orderScope)
 {
     // Tick-level validation is not a reusable permission: resolve the fixed
     // record slot immediately before every Director card mutation.
-    if (director && !DirectorIdentityExactNow()) {
-        DirectorFocusSet(MEMBER_NONE, 0);
+    if (orderScope && !OrderIdentityExactNow(orderScope)) {
+        OrderIdentityDrop(orderScope);
         return -3;
     }
     const uintptr_t card = R.body + S.off;
@@ -1191,7 +1241,7 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
             ? LiveSaurianCardMode(flag, c4, &pinCeil, &maxNative)
             : LiveWolfCardMode(flag, c4, &pinCeil, &maxNative));
     if (!live) {
-        if (director && want != kSuppValue) {
+        if (orderScope && want != kSuppValue) {
             const int woke = goblin ? TryGoblinEmptyCardWake(R, S, who)
                                     : TrySaurianEmptyCardWake(R, S, who);
             if (woke == 0) return 0;
@@ -1243,7 +1293,10 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         return 2;
     }
     if (writeWant == kSuppValue) ++s_pinSuppWrites; else ++s_pinWrites;
-    if (director) ++s_directorWrites;
+    if (orderScope) {
+        ++s_directorWrites;
+        if (orderScope == kOrderSecondary) ++s_secWrites;
+    }
 
     // Successful per-card readbacks are research telemetry, not product
     // evidence. Quiet Director operation keeps transitions and summaries;
@@ -1293,10 +1346,10 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
 // прилипнуть. Тот же контракт: нативный диапазон -> write -> readback ->
 // откат. Дельта-лог в отдельном «пространстве» PinLog (off | 0x1000000),
 // чтобы не мешать штырю на той же карточке.
-static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, bool director)
+static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, int orderScope)
 {
-    if (director && !DirectorIdentityExactNow()) {
-        DirectorFocusSet(MEMBER_NONE, 0);
+    if (orderScope && !OrderIdentityExactNow(orderScope)) {
+        OrderIdentityDrop(orderScope);
         return;
     }
     const uintptr_t card = R.body + S.off;
@@ -1351,7 +1404,10 @@ static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, bool dir
     }
     if (!wrote) return;
     ++s_pinFakehitWrites;
-    if (director) ++s_directorWrites;
+    if (orderScope) {
+        ++s_directorWrites;
+        if (orderScope == kOrderSecondary) ++s_secWrites;
+    }
 
     // Detailed successful card telemetry is opt-in research verbosity.
     if (!s_logEvents) return;
@@ -1404,11 +1460,11 @@ static uintptr_t s_fhSignalLease = 0;
 // нельзя: ставим только младший бит (V -> V+1), если он ещё 0.
 // +0x278/+0x280 не трогаем (счётчик и вес — минимальная поверхность).
 static void GoblinFakehitCard(Row& R, Slot& S, const char* who, DWORD now,
-                              bool director)
+                              int orderScope)
 {
     if (!IsGoblinFamily(R.kind)) return;
-    if (director && !DirectorIdentityExactNow()) {
-        DirectorFocusSet(MEMBER_NONE, 0);
+    if (orderScope && !OrderIdentityExactNow(orderScope)) {
+        OrderIdentityDrop(orderScope);
         return;
     }
     const uintptr_t card = R.body + S.off;
@@ -1459,8 +1515,13 @@ static void GoblinFakehitCard(Row& R, Slot& S, const char* who, DWORD now,
     }
     if (!wrote) return;
     ++s_pinFakehitWrites;
-    if (director) {
+    if (orderScope) {
         ++s_directorWrites;
+        if (orderScope == kOrderSecondary) ++s_secWrites;
+    }
+    // Аренда сигнала FALLEN-GUARD принадлежит ПЕРВОМУ приказу: у второго своя
+    // цель, и его записи не должны продлевать чужую аренду.
+    if (orderScope == kOrderPrimary) {
         // Сигнал — событие, а не поток записей: одна строка на lease.
         if (s_directorExpectedBody != s_fhSignalLease) {
             s_fhSignalLease = s_directorExpectedBody;
@@ -1564,10 +1625,14 @@ static void PinShapeDump(Row& R, const PartyRef* party, int nParty, DWORD now)
 // на остальных живых картах той же особи. Классификация по ПЕРЕ-ЧИТАННОМУ
 // указателю: ротация кэша между тиками не должна перепутать «чужую»
 // и «свою» карту.
+// 85.33: orderScope — чей приказ: 0 = ручной пин, 1 = главный приказ директора,
+// 2 = второй (параллельный) приказ. Список исполнителей проверяется по СВОЕМУ
+// приказу: иначе второй приказ писал бы особи первого и наоборот.
 static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
-                   int targetMember, bool suppress, bool fakehit, bool director)
+                   int targetMember, bool suppress, bool fakehit, int orderScope)
 {
-    if (director && !InDirectorResponderSet(R.body)) return;
+    if (orderScope == kOrderPrimary   && !InDirectorResponderSet(R.body)) return;
+    if (orderScope == kOrderSecondary && !InSecondaryResponderSet(R.body)) return;
     uintptr_t mBody = 0;
     for (int p = 0; p < nParty; ++p) {
         if (party[p].member != targetMember) continue;
@@ -1575,7 +1640,7 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
         break;
     }
     if (!mBody) return;
-    if (director && CombatOccupiesOther(R, party, nParty, targetMember))
+    if (orderScope && CombatOccupiesOther(R, party, nParty, targetMember))
         return;
 
     for (int k = 0; k < R.nSlots; ++k) {
@@ -1600,20 +1665,20 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
             // один член формулы не трогаем. Блок B у волка и гоблина на
             // одних оффсетах, но флаг у гоблина — с константой в старших
             // битах, поэтому диспетчер по виду.
-            const int rc = PinWriteCard(R, S, who, kPinValue, now, director);
+            const int rc = PinWriteCard(R, S, who, kPinValue, now, orderScope);
             if (rc == 0) {
                 if (fakehit) {
                     if (IsGoblinFamily(R.kind))
-                        GoblinFakehitCard(R, S, who, now, director);
+                        GoblinFakehitCard(R, S, who, now, orderScope);
                     else
-                        PinFakehitCard(R, S, who, now, director);
+                        PinFakehitCard(R, S, who, now, orderScope);
                 }
             } else {
                 // Запись не прошла — смотрим, что там с формой (5 с троттл).
                 PinShapeDump(R, party, nParty, now);
             }
         } else if (suppress) {
-            const int rc = PinWriteCard(R, S, who, kSuppValue, now, director);
+            const int rc = PinWriteCard(R, S, who, kSuppValue, now, orderScope);
             if (rc != 0)
                 PinShapeDump(R, party, nParty, now);
         }
@@ -1764,8 +1829,66 @@ void OnWorldUnload()
             << " fakehit=" << s_pinFakehitWrites << ")" << std::endl;
 }
 
+bool DirectorSecondarySet(int member, uintptr_t expectedBody,
+                          uintptr_t excludedEnemyBody, int response,
+                          const char* exactKind, const uintptr_t* responders,
+                          int nResponders)
+{
+    if (member < 0 || member > MEMBER_HIRED2 || !expectedBody
+        || !exactKind || !exactKind[0]) {
+        DirectorSecondaryClear("invalid-request");
+        return false;
+    }
+    uintptr_t resolved = 0;
+    if (!ResolveMemberBody(member, &resolved) || resolved != expectedBody) {
+        DirectorSecondaryClear("identity-not-exact");
+        return false;
+    }
+    const bool was = s_secFocus == member && s_secExpectedBody == expectedBody
+                  && strcmp(s_secKind, exactKind) == 0
+                  && s_secResponse == response;
+    s_secFocus = member;
+    s_secExpectedBody = expectedBody;
+    s_secExcludedBody = excludedEnemyBody;
+    s_secResponse = response;
+    lstrcpynA(s_secKind, exactKind, sizeof(s_secKind));
+    s_nSecResponders = 0;
+    for (int i = 0; i < nResponders && s_nSecResponders < kDirectorResponderMax; ++i) {
+        if (!responders[i]) continue;
+        s_secResponders[s_nSecResponders++] = responders[i];
+    }
+    if (!was) {
+        logFile << "Aggro: DIRECTOR-2 "
+                << (response == DIRECTOR_RESPONSE_ALERT ? "ALERT " : "ALARM ")
+                << MemberName(member)
+                << " expected=0x" << std::hex << expectedBody
+                << " excludedEnemy=0x" << excludedEnemyBody << std::dec
+                << " identity=EXACT kind=" << exactKind
+                << " responders=" << s_nSecResponders
+                << " attention-only (no tempo lease)" << std::endl;
+    }
+    return true;
+}
+
+void DirectorSecondaryClear(const char* reason)
+{
+    if (s_secFocus < 0) return;
+    logFile << "Aggro: DIRECTOR-2 released: " << MemberName(s_secFocus)
+            << " reason=" << (reason ? reason : "clear") << std::endl;
+    s_secFocus = MEMBER_NONE;
+    s_secExpectedBody = 0;
+    s_secExcludedBody = 0;
+    s_secResponse = DIRECTOR_RESPONSE_NONE;
+    s_nSecResponders = 0;
+}
+
+int DirectorSecondaryMember() { return s_secFocus; }
+
 void Shutdown()
 {
+    s_secFocus = MEMBER_NONE;
+    s_secExpectedBody = 0;
+    s_nSecResponders = 0;
     // One bounded footer keeps the automatic mutation evidence available
     // even when successful per-card research lines were intentionally quiet.
     logFile << "Aggro: shutdown summary directorWrites=" << s_directorWrites
@@ -2370,7 +2493,8 @@ void Tick()
                         continue;
                     }
                     PinRow(s_row[i], party, nParty, now, activeMember,
-                           activeSuppress, activeFakehit, directorActive);
+                           activeSuppress, activeFakehit,
+                           directorActive ? kOrderPrimary : kOrderNone);
                 }
                 PinSummary(nW, nLeft, now, activeMember, activeScope,
                            activeSuppress, activeFakehit, directorActive);
@@ -2402,11 +2526,54 @@ void Tick()
                             ++nLeft;
                         else
                             PinRow(*best, party, nParty, now, activeMember,
-                                   activeSuppress, activeFakehit, directorActive);
+                                   activeSuppress, activeFakehit,
+                                   directorActive ? kOrderPrimary : kOrderNone);
                     }
                     PinSummary(best ? 1 : 0, nLeft, now, activeMember, activeScope,
                                activeSuppress, activeFakehit, directorActive);
                 }
+            }
+        }
+    }
+
+    // 85.33: ВТОРОЙ ПРИКАЗ — внимание, без аренды темпа.
+    //
+    // Отдельный проход, а не общий с первым: путь главного приказа проверен
+    // полем, и он не должен получить ни одной новой ветки. Пересечений нет по
+    // построению — списки исполнителей делит директор.
+    if (s_secFocus >= 0 && s_secFocus <= MEMBER_HIRED2) {
+        uintptr_t resolved2 = 0;
+        if (!ResolveMemberBody(s_secFocus, &resolved2)
+            || resolved2 != s_secExpectedBody) {
+            DirectorSecondaryClear("identity-lost");
+        } else if (s_secKind[0] && s_nSecResponders > 0) {
+            const bool secAlarm = (s_secResponse == DIRECTOR_RESPONSE_ALARM);
+            // Тот же бандл, что у главного приказа: у гоблина и хоба «липкий»
+            // член даётся и в ALERT, у волка и завра — только в ALARM.
+            const bool secGoblin = !strcmp(s_secKind, "uEm0100");
+            const bool secHob = !strcmp(s_secKind, "uEm0101");
+            const bool secFakehit = secAlarm || secGoblin || secHob;
+            int nW = 0;
+            for (int i = 0; i < s_nRow; ++i) {
+                Row& R = s_row[i];
+                if (!IsPinnableKind(R.kind, true)) continue;
+                if (strcmp(R.kind, s_secKind) != 0) continue;
+                if (R.body == s_secExcludedBody) continue;
+                if (!InSecondaryResponderSet(R.body)) continue;
+                // Занят чужим боем — не наш: отбор тот же, что у главного
+                // приказа (проверка живёт в PinRow, здесь только счёт).
+                ++nW;
+                PinRow(R, party, nParty, now, s_secFocus, false, secFakehit, kOrderSecondary);
+            }
+            static int  s_lastSecW = -1;
+            static DWORD s_lastSecLogMs = 0;
+            if (nW != s_lastSecW || now - s_lastSecLogMs >= 10000) {
+                s_lastSecW = nW;
+                s_lastSecLogMs = now;
+                logFile << "Aggro: DIRECTOR-2 scope=assigned  touched "
+                        << nW << " of " << s_nSecResponders
+                        << "  target=" << MemberName(s_secFocus)
+                        << "  kind=" << s_secKind << std::endl;
             }
         }
     }

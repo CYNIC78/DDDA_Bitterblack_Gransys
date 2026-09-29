@@ -3,6 +3,7 @@
 #include "runtime/MemProbe.h"
 #include "runtime/MonsterTempo.h"
 #include "EnemyTuner.h"
+#include "runtime/MonsterTempo.h"   // 85.34: оболочка адреналина (сила атаки)
 #include "EntityConfig.h"
 #include "monsterai/SpeciesCard.h"
 #include "TypeAtlas.Generated.h"
@@ -25,6 +26,9 @@
  */
 
 namespace EnemyTuner {
+
+// 85.34: одна строка «всплеск не применяется, слой мутаций выключен» на эпизод.
+static bool s_spikeBlockedLogged = false;
 
 static int  s_tracked = 0;
 static int  s_writes  = 0;
@@ -377,6 +381,9 @@ struct Touched {
     bool  haveCombat;
     int   combatLogged;
     float combatRollAtk, combatRollDef, combatRollMAtk, combatRollMDef; // 0.9..1.1 per body
+    int   spikeLogged;   // 85.34: одна строка на эпизод всплеска (хвост — append)
+    int   rankLogged;  // 85.40: одна строка про ступень на особь
+    int   rankCounted; // 85.43: ранг уже попал в сводку сессии (отдельно от печати)
 
     // Кэш смещения cCharParamEnemy в теле: ищем ровно один раз на особь,
     // чтобы не гонять 29-КБ перебор памяти каждый тик для не-гоблинов.
@@ -497,6 +504,14 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->curAtk = t->curDefC = t->curMAtk = t->curMDefC = 0.0f;
     t->haveCombat = false;
     t->combatLogged = 0;
+    // 85.43: эти два счётчика НЕ сбрасывались, и адрес, переиспользованный
+    // движком под новое тело того же вида, приносил чужое состояние: строку
+    // ранга и строку всплеска новое тело уже не печатало, а сводка сессии
+    // недосчитывала его (поле 85.42: 14 гоблинов в бою, в сводке 12).
+    // Новая запись обязана быть чистой — как и все поля выше.
+    t->spikeLogged = 0;
+    t->rankLogged = 0;
+    t->rankCounted = 0;
     t->combatRollAtk = t->combatRollDef = t->combatRollMAtk = t->combatRollMDef = 1.0f;
     t->charParamOff = 0;
     t->charParamSearched = false;
@@ -1084,7 +1099,20 @@ static float CombatRoll(uintptr_t body, uint32_t salt)
     return 0.9f + t * 0.2f; // 0.9..1.1
 }
 
-static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t, const char* kind)
+// 85.34: spikeAtk/spikeMAtk приходят из оболочки Tempo (их задаёт директор).
+// Всплеск — ещё один множитель В ТОЙ ЖЕ формуле, поэтому писатель остаётся один:
+// ini-множитель, ролл особи и адреналин сходятся в одном значении, а не дерутся
+// за поле. Ваниль — нижний порог: всплеск никогда не ниже 1.0.
+static float ClampSpike(float v)
+{
+    if (!(v == v)) return 1.0f;                       // NaN из битой памяти
+    if (v < 1.0f) return 1.0f;                        // пол: не хуже ванили
+    if (v > EntityCfg::kAdrenalineMax) return EntityCfg::kAdrenalineMax;
+    return v;
+}
+
+static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t,
+                            const char* kind, float spikeAtk, float spikeMAtk)
 {
     if (!rec) return 0;
     if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
@@ -1207,9 +1235,62 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     float rollMAtk = NearlyEq(t.magickAttackMult, 1.0f)  ? 1.0f : rec->combatRollMAtk;
     float rollMDef = NearlyEq(t.magickDefenseMult, 1.0f) ? 1.0f : rec->combatRollMDef;
 
-    float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk;
+    // 85.34: адреналин директора — последний множитель, поверх боевой базы.
+    // Порядок намеренный: база вида -> ini вида -> ролл особи -> всплеск приказа.
+    const float adrAtk  = ClampSpike(spikeAtk);
+    const float adrMAtk = ClampSpike(spikeMAtk);
+    if (!rec->spikeLogged && (adrAtk > 1.0001f || adrMAtk > 1.0001f)) {
+        rec->spikeLogged = 1;
+        char sl[200];
+        sprintf_s(sl, "adrenaline attack x%.3f/x%.3f -> %s 0x%08X  atk %.1f -> %.1f  matk %.1f -> %.1f",
+                  adrAtk, adrMAtk, kind ? kind : "?", (unsigned)body,
+                  rec->baseAtk * t.attackMult * rollAtk,
+                  rec->baseAtk * t.attackMult * rollAtk * adrAtk,
+                  rec->baseMAtk * t.magickAttackMult * rollMAtk,
+                  rec->baseMAtk * t.magickAttackMult * rollMAtk * adrMAtk);
+        logFile << "EnemyTuner: " << sl << std::endl;
+        lstrcpynA(s_status, sl, sizeof(s_status));
+    } else if (rec->spikeLogged && adrAtk <= 1.0001f && adrMAtk <= 1.0001f) {
+        rec->spikeLogged = 0;   // всплеск кончился — строка появится снова
+    }
+    // 85.40: ступень лестницы. Статичный множитель особи, поэтому порядок с
+    // адреналином не важен (умножение), но ставим ДО него: «всплеск — последний».
+    int   rankStep = -1;
+    float rankSize = 0.0f, rankAtk = 1.0f;
+    bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
+                                                  &rankSize, &rankAtk);
+    // 85.41: спецправило «ванильный вожак получает старшую ступень» УБРАНО.
+    // Поле 85.40 показало, почему его нельзя оставлять: порог «крупный = вожак»
+    // сравнивает ЗАПОМНЕННУЮ базу роста с 1.12, а база после загрузки сейва
+    // бывает нашей же прошлой записью (движок откатывает размер). Три гоблина
+    // из десяти получили ×1.52 случайно — у одного рост остался 1.12, у двух
+    // 0.96, то есть «элита» с ростом новичка. Урок тот же, что и с числами:
+    // если признак неотличим — не угадываем, а даём ступень по хешу.
+    if (ranksOn) {
+        // 85.43: сводка сессии считает выдачу ПРИ НАЗНАЧЕНИИ, а не при печати
+        // строки. Раньше счёт жил внутри условий печати, и всё, что мешало
+        // строке (лимит «две на особь», грязный счётчик из чужого слота),
+        // автоматически портило и сводку — а сводка это единственный способ
+        // ответить «кто заспавнился», не вычитывая лог глазами.
+        if (!rec->rankCounted) {
+            rec->rankCounted = 1;
+            Runtime::Tempo::NoteRankIssued(kind, rankStep);
+        }
+        if (rec->rankLogged < 2) {
+            ++rec->rankLogged;
+            char ll[190];
+            sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f -> 0x%08X",
+                      kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
+                      rankStep, rankSize, rankAtk, (unsigned)body);
+            logFile << "EnemyTuner: " << ll << std::endl;
+            lstrcpynA(s_status, ll, sizeof(s_status));
+        }
+    }
+
+    float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk  * adrAtk
+                   * (ranksOn ? rankAtk : 1.0f);
     float wantDef  = rec->baseDefC * t.defenseMult       * rollDef;
-    float wantMAtk = rec->baseMAtk * t.magickAttackMult  * rollMAtk;
+    float wantMAtk = rec->baseMAtk * t.magickAttackMult  * rollMAtk * adrMAtk;
     float wantMDef = rec->baseMDefC* t.magickDefenseMult * rollMDef;
 
     // NaN protection — hot-reload может подсунуть NaN из полузаписанного ini
@@ -1485,11 +1566,38 @@ static void TickOneBody(uintptr_t body, const char* kind)
     // --- боевые статы: урон/броня с per-body roll (audit §8) ----------
     // Должен идти ДО Sanctuary, чтобы Sanctuary видел curDefC/curMDefC
     // и умножал уже боевую защиту на armorMult.
-    if (!NearlyEq(t.attackMult, 1.0f) || !NearlyEq(t.defenseMult, 1.0f) ||
-        !NearlyEq(t.magickAttackMult, 1.0f) || !NearlyEq(t.magickDefenseMult, 1.0f) ||
-        rec0->haveCombat) // после первой встречи продолжаем держать roll
+    //
+    // 85.34: здесь же спрашиваем оболочку директора. Если она молчит, всплеск
+    // равен 1.0 и блок работает ровно как до этой правки — адреналин ничего не
+    // включает сам по себе и не мешает, когда выключен.
+    // 85.34: адреналин = УРОВЕНЬ приказа (Tempo: 0..1, ведёт его urgency события)
+    // x РАЗМЕР всплеска вида (ddda_entities.ini: adrenalineAtk). Два источника
+    // одного числа не смешиваются: сила приказа — в тактике, потолок вида — в
+    // карточке вида, рядом с остальными боевыми параметрами и с hot-reload.
+    const float adrLevel = Runtime::Tempo::DirectorAdrenalineLevelFor(body);
+    float spikeAtk = 1.0f, spikeMAtk = 1.0f;
+    if (adrLevel > 0.0f) {
+        if (t.adrenalineAtk > 1.0f)
+            spikeAtk = 1.0f + (t.adrenalineAtk - 1.0f) * adrLevel;
+        if (t.adrenalineMagick > 1.0f)
+            spikeMAtk = 1.0f + (t.adrenalineMagick - 1.0f) * adrLevel;
+    }
+    const bool spikeLive = spikeAtk > 1.0001f || spikeMAtk > 1.0001f;
+    bool needCombat = !NearlyEq(t.attackMult, 1.0f) || !NearlyEq(t.defenseMult, 1.0f) ||
+                      !NearlyEq(t.magickAttackMult, 1.0f) ||
+                      !NearlyEq(t.magickDefenseMult, 1.0f) ||
+                      rec0->haveCombat || spikeLive; // после первой встречи держим roll
+    if (!needCombat) {
+        // 85.40: вид под лестницей обязан получить ступень ДАЖЕ если все
+        // множители ровно 1.0 — иначе ступени не работали бы там, где силу
+        // решено не трогать глобально. Проба дешёвая и только здесь: пока
+        // другой сигнал молчит, то есть как правило один раз на особь.
+        Runtime::Tempo::RanksNumbers probe;
+        needCombat = Runtime::Tempo::GetRanks(kind, &probe);
+    }
+    if (needCombat) // после первой встречи продолжаем держать roll
     {
-        int nC = ApplyCombatStats(body, rec0, t, kind);
+        int nC = ApplyCombatStats(body, rec0, t, kind, spikeAtk, spikeMAtk);
         if (nC > 0) s_writes += nC;
     }
 
@@ -1535,7 +1643,15 @@ static void TickOneBody(uintptr_t body, const char* kind)
         }
     }
 
-    if (NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
+    // 85.40: лестница. Если вид под ней — размер берётся из полосы ступени,
+    // а не из равномерного коридора, и ранний выход «масштаб выключен»
+    // (коридор 1.0..1.0) больше не мешает: полосу задаёт ступень.
+    int   rankStep = -1;
+    float rankSize = 0.0f, rankAtk = 1.0f;
+    const bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
+                                                        &rankSize, &rankAtk);
+
+    if (!ranksOn && NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
 
     Touched* rec = rec0;      // запись уже получена выше (блок поводка)
 
@@ -1576,9 +1692,23 @@ static void TickOneBody(uintptr_t body, const char* kind)
     const bool isLeader = (rec->baseH >= leaderThresh);
     float wantW = 1.0f, wantH = 1.0f, wantD = 1.0f;
 
-    if (isLeader) {
-        // Вожак от Capcom: сохраняем его авторский статус и крупный размер,
-        // лишь гарантируем верхний предел безопасности (scaleHi + 0.04).
+    if (ranksOn) {
+        // 85.41: лестница ПЕРВИЧНА. Раньше первой стояла ветка «вожак», и тело
+        // с запомненной базой >= 1.12 (часто наша же прошлая запись) и размер
+        // не получало, и ступень ломало. Теперь под лестницей КАЖДОЕ тело
+        // получает полосу своей ступени — без исключений и угадывания.
+        wantH = rankSize;
+        const float lm = 0.02f;   // комплекция внутри полосы
+        uint32_t lh1 = (uint32_t)(body >> 3) * 2654435761u;
+        uint32_t lh2 = (uint32_t)(body >> 5) * 2246822519u;
+        float lj1 = ((float)((lh1 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+        float lj2 = ((float)((lh2 >> 8) & 0xFFFF) / 65535.0f) * 2.0f - 1.0f;
+        wantW = wantH * (1.0f + lm * lj1);
+        wantD = wantH * (1.0f + lm * lj2);
+    } else if (isLeader) {
+        // Вожак от Capcom — только для видов БЕЗ лестницы (их коридор).
+        // Сохраняем его авторский статус и крупный размер, лишь гарантируем
+        // верхний предел безопасности (scaleHi + 0.04).
         wantH = (rec->baseH > scaleHi + 0.04f) ? (scaleHi + 0.04f) : rec->baseH;
         wantW = wantH;
         wantD = wantH;
@@ -1617,7 +1747,13 @@ static void TickOneBody(uintptr_t body, const char* kind)
         char line[192];
         sprintf_s(line,
             "scale %.3f (base %.3f %s) -> %s 0x%08X was=%.3f applies=%d engineReverts=%d",
-            wantH, rec->baseH, isLeader ? "LEADER" : "GENE", kind ? kind : "?",
+            // 85.43: под рангами размер ВСЕГДА от ранга, и подпись говорит про
+            // ИСТОЧНИК размера. Раньше здесь первым стоял признак «крупный
+            // ванильный» (база >= 1.12), и в поле 85.42 половина пачки (6 из 14)
+            // печаталась как LEADER — лог выглядел так, будто вернулось
+            // убранное правило вожака, хотя размер шёл от ранга.
+            wantH, rec->baseH, ranksOn ? "RANK" : (isLeader ? "LEADER" : "GENE"),
+            kind ? kind : "?",
             (unsigned)body, cur, rec->applies, rec->reverts);
         lstrcpynA(s_status, line, sizeof(s_status));
         logFile << "EnemyTuner: " << line << std::endl;
@@ -1676,7 +1812,23 @@ void Tick()
 
     s_tracked = Runtime::EnemyCount();
 
-    if (!EntityCfg::AllowWrites()) return;
+    if (!EntityCfg::AllowWrites()) {
+        // 85.34: честность контракта. Директор может выдать всплеск силы атаки, но
+        // без allowWrites этот слой вообще не пишет — сказать об этом обязательно,
+        // иначе «я включил, а не работает» превращается в поиск несуществующей
+        // поломки. Строка одна на эпизод, не поток.
+        const int holding = Runtime::Tempo::DirectorMobilizationCount();
+        if (!s_spikeBlockedLogged && holding > 0
+            && EntityCfg::AnyAdrenalineConfigured()) {
+            s_spikeBlockedLogged = true;
+            logFile << "EnemyTuner: adrenaline attack NOT applied: mutations layer off "
+                       "(ddda_entities.ini [global] allowWrites=off), bodies on orders "
+                    << holding << std::endl;
+        } else if (holding == 0) {
+            s_spikeBlockedLogged = false;
+        }
+        return;
+    }
 
     for (int i = 0; ; ++i) {
         const char* kind = nullptr;
