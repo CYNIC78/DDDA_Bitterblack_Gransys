@@ -316,6 +316,83 @@ static void TestSessionSummary()
     assert(s.find("1 2 0 0 1") != std::string::npos);   // 1 новичок, 2 солдата, 1 мини-босс
 }
 
+// 85.53: СВОДКА ДЕРЖИТ ИМЯ ВИДА КОПИЕЙ.
+//
+// Поле 85.50 показало в сводке вид «uEm0100_20», которому ранги не выдаются
+// вообще. Причина — сюда сохранялся указатель на строку вызывающего, а тот
+// указывает в сканер мира: слот переиспользуется, и к моменту печати в нём
+// лежит уже другое имя. Проверяем ровно это: счётчики вида не должны «переехать»
+// на чужое имя, когда исходная строка переписана.
+static int SummaryCount(const char* sum, const char* kind, int out[5])
+{
+    for (int i = 0; i < 5; ++i) out[i] = -1;
+    const char* at = strstr(sum, kind);
+    if (!at) return 0;
+    at += strlen(kind);
+    if (*at != ':') return 0;   // «kind:» — иначе это другой вид (uEm0100_20)
+    ++at;
+    for (int i = 0; i < 5; ++i) {
+        while (*at == ' ') ++at;
+        if (*at < '0' || *at > '9') return i;
+        int v = 0;
+        while (*at >= '0' && *at <= '9') { v = v * 10 + (*at - '0'); ++at; }
+        out[i] = v;
+    }
+    return 5;
+}
+
+static void TestSummaryKeepsKindName()
+{
+    char out[256];
+    int before[5];
+    RankSummary(out, sizeof(out));
+    SummaryCount(out, "uEm0100", before);   // могло быть начислено другими тестами
+
+    char buf[24];
+    strcpy(buf, "uEm0100");
+    NoteRankIssued(buf, 0);
+    RankSummary(out, sizeof(out));
+    int mid[5];
+    assert(SummaryCount(out, "uEm0100", mid) > 0);
+    assert(mid[0] == before[0] + 1);                       // +1 новичок
+    assert(strstr(out, "uEm0100_20") == nullptr);          // чужого имени ещё нет
+
+    // Слот сканера переиспользован: строка под указателем теперь другая.
+    strcpy(buf, "uEm0100_20");
+    NoteRankIssued(buf, 2);                                // это уже ДРУГОЙ вид
+    RankSummary(out, sizeof(out));
+
+    int after[5], ghost[5];
+    assert(SummaryCount(out, "uEm0100", after) > 0);
+    for (int i = 0; i < 5; ++i) assert(after[i] == mid[i]);  // счётчики не переехали
+    assert(SummaryCount(out, "uEm0100_20", ghost) == 5);
+    assert(ghost[2] == 1);                                   // и учтён отдельно
+    std::cout << "  summary keeps names: ok\n";
+}
+
+// 85.53: умолчание «трогать ли размер» зависит от вида: гоблину — да (он под
+// рангами с самого начала), волку — нет (правило владельца «волки-гиганты
+// нелепо»). Ключа в ini может не быть вовсе: тогда работает именно умолчание,
+// и ошибиться в нём нельзя — бэкфилл запишет в файл ровно его.
+static void TestScaleDefaultPerSpecies()
+{
+    FakeIni empty;   // ни одного ключа
+    RanksNumbers gob = RanksFromIni(empty, "uEm0100");
+    assert(gob.enabled);
+    assert(gob.scale);            // гоблин: размер от ступени, как было
+
+    RanksNumbers wolf = RanksFromIni(empty, "uEm0200");
+    assert(wolf.enabled);
+    assert(!wolf.scale);          // волк: ступень есть, размер ванильный
+
+    // явный ключ по-прежнему сильнее умолчания (в любую сторону)
+    FakeIni on;
+    on.SetBool("species.uEm0200", "rankScale", true);
+    RanksNumbers wolfOn = RanksFromIni(on, "uEm0200");
+    assert(wolfOn.enabled && wolfOn.scale);
+    std::cout << "  scale defaults: goblin=on wolf=off (key overrides)\n";
+}
+
 int main()
 {
     TestFlagGates();
@@ -323,6 +400,8 @@ int main()
     TestDeterminismAndSpread();
     TestSessionSummary();
     TestToughnessKeys();
+    TestSummaryKeepsKindName();
+    TestScaleDefaultPerSpecies();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
                  "детерминизм, разброс ступеней)\n";
     return 0;

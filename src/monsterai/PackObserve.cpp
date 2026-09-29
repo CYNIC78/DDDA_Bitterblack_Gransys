@@ -54,6 +54,10 @@ struct Member {
     char      nearComp[16];      // 85.39: ближайший компонент за время жизни
     float     nearCompDistM;
     bool      present;
+    // 85.55: горел ли этот зверь хоть раз за свою жизнь. Нужен, чтобы книга
+    // сходилась: «загорелось N тел = выжило + сгорело + ушло из вида».
+    bool      everBurned;
+    bool      burnCounted;       // смерть/уход уже учтены в сводке по огню
 };
 
 static bool     s_armed = false;
@@ -484,6 +488,13 @@ static void LogJoin(const Member& m)
 // FALL/STUMBLE проверяют запас, TRIP — просто спотыкание, его держим отдельно,
 // чтобы итог читался как «сколько раз по гоблинам били и как они это снесли».
 static int s_nFalls = 0, s_nStumbles = 0, s_nTrips = 0;
+// 85.54: горение. Владелец в поле заметил, что пара гоблинов ПЕРЕЖИЛА цикл
+// горения и вернулась в бой — но в логе этого не было видно: печатались только
+// те, кто в огне ПОГИБ. Считаем оба конца: сколько загорелось и сколько вышло
+// из огня живыми. Разница и есть та самая польза от запаса горения.
+static int s_nBurnStarts = 0, s_nBurnSurvived = 0, s_nBurnDeaths = 0;
+static int s_nBurnBodies = 0;   // 85.55: тела, что загорались (а не число возгораний)
+static int s_nBurnLeft   = 0;   // ушли из вида, ничего не доказывая ни в одну сторону
 
 // 85.50: хвост « rank=… pois … kdown … burn …» для строк, где важно, КОМУ это
 // случилось. Ранг берём тем же детерминированным выбором, что и при раздаче
@@ -527,12 +538,42 @@ static bool ActIsTripFamily(const char* a)
     return a && (strstr(a, "RunStumble") != nullptr || strstr(a, "SlopeFall") != nullptr);
 }
 
+// ГОРЕНИЕ — отдельное семейство, и оно важнее прочих для нашей лестницы:
+// у гоблина горение 300 (самое слабое поле из всех), у хоба 2000, и ступени
+// поднимают его до 405 / 600 / 795. Поэтому «загорелся и ВЫЖИЛ» — прямое
+// полевое измерение того, что запас работает.
+//   Burn      — горит (DmgBurn);   DieBurn — погиб в огне;
+//   BurnEnd   — горение прекратилось (это и есть «пережил цикл»).
+static bool ActIsBurnFamily(const char* a)
+{
+    return a && strstr(a, "DmgBurn") != nullptr;
+}
+static bool ActIsBurnEnd(const char* a)
+{
+    return a && strstr(a, "DmgBurnEnd") != nullptr;
+}
+
 static void LeaveMember(Member& m, uint32_t now)
 {
     const bool actDeath = LooksLikeDeath(m.act);
     const bool recent   = (now - m.lastSeenMs) <= kDeathRecentMs;
     const bool nearIn   = (m.distM >= 0.0f && m.distM <= kDeathNearM);
     const bool death    = actDeath || (recent && nearIn);
+
+    // 85.55: КНИГА ПО ОГНЮ ЗАКРЫВАЕТСЯ ЗДЕСЬ.
+    //
+    // В 85.54 счёт стоял на признаке «действие выглядит смертельным» (Die/Dead),
+    // но вердикт о смерти ставится ЕЩЁ И по близости: тварь исчезла рядом и только
+    // что. В поле 85.54 трое гоблинов погибли, стоя в огне, прибор назвал это
+    // смертью (conf=likely), а счётчик насчитал ноль — сводка соврала. Теперь
+    // считаем по настоящему вердикту: смерть в огне, смерть от другой причины
+    // после огня (значит огонь пережил), либо уход из вида.
+    if (m.everBurned && !m.burnCounted) {
+        m.burnCounted = true;
+        if (death && ActIsBurnFamily(m.act))      ++s_nBurnDeaths;
+        else if (death)                            ++s_nBurnSurvived;
+        else                                       ++s_nBurnLeft;
+    }
 
     // 85.50: РАНГ и запасы в строке смерти — зачем и как, см. AppendRankPools.
     char rankInfo[128];
@@ -596,6 +637,36 @@ static void OnAct(Member& m, const char* act, uint32_t now)
                     << " @0x" << std::hex << m.body << std::dec
                     << " act=" << m.act << extra << std::endl;
         }
+    }
+    // 85.54: ГОРЕНИЕ. Печатаем вход в огонь и выход из него, с рангом и
+    // запасом. Так в логе становится видно ровно то, что владелец заметил
+    // глазом: кто загорелся, кто из огня вышел живым и с каким запасом.
+    if (actChanged && ActIsBurnFamily(m.act)
+        && !ActIsBurnFamily(prev) && !ActIsBurnEnd(m.act)) {
+        ++s_nBurnStarts;                  // возгорание (может быть повторным)
+        if (!m.everBurned) {              // а это первое у этого тела
+            m.everBurned = true;
+            ++s_nBurnBodies;
+        }
+        char extra[128];
+        AppendRankPools(m.body, m.kind, extra, (int)sizeof(extra));
+        logFile << "PackObserve: BURN-START @0x" << std::hex << m.body << std::dec
+                << " act=" << m.act << extra << std::endl;
+    }
+    if (actChanged && ActIsBurnEnd(m.act) && !ActIsBurnEnd(prev)) {
+        // Живой выход из огня — печатаем сразу (владельцу видно в бою).
+        //
+        // 85.55: НО В СЧЁТ НЕ БЕРЁМ. Причина: наблюдатель смотрит на особь
+        // с интервалом, и переход через DmgBurnEnd легко пропустить — тварь
+        // может уйти из огня в другое действие напрямую. Если считать только
+        // увиденные выходы, книга не сойдётся (в поле 85.54 из пяти горевших
+        // тел «выжил» показался один, хотя выжили минимум двое). Поэтому счёт
+        // закрывается НА СУДЬБЕ тела: смерть от огня, смерть от другой причины
+        // (значит огонь пережил) или уход из вида (ничего не доказывает).
+        char extra[128];
+        AppendRankPools(m.body, m.kind, extra, (int)sizeof(extra));
+        logFile << "PackObserve: BURN-SURVIVED @0x" << std::hex << m.body << std::dec
+                << " act=" << m.act << extra << std::endl;
     }
     if (role == PACK_ROLE_CALLER && actChanged) {
         ++m.hornCount;
@@ -678,6 +749,17 @@ void PackObserveShutdown()
             << " stumbles=" << s_nStumbles
             << " trips=" << s_nTrips
             << " (fall=knockdown, stumble=dmg-flinch, trip=locomotion)"
+            << std::endl;
+    // 85.54: итог по огню. «survived» — это те, кто вышел из горения живым;
+    // именно их владелец и заметил глазами, а лог их раньше не показывал.
+    logFile << "PackObserve: burn summary bodies=" << s_nBurnBodies
+            << " starts=" << s_nBurnStarts
+            << " survived=" << s_nBurnSurvived
+            << " died=" << s_nBurnDeaths
+            << " left=" << s_nBurnLeft
+            << " (bodies=how many monsters caught fire, starts=ignitions incl."
+               " re-ignitions, survived=came out of the fire alive,"
+               " died=burned to death, left=left view before the outcome)"
             << std::endl;
     if (s_live > 0) ResetEncounter("shutdown");
     s_armed = false;

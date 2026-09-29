@@ -1200,6 +1200,48 @@ static float ClampSpike(float v)
 //   тьма (урон)     0.6    0.6    1.0      1.0     1.0
 //   отшатывание     100    100    100      100     100  (в .prp; у хоба .rst 450)
 //   сбивание        100    100    100      100     100  (в .prp; у хоба .rst 650)
+// 85.53: ЭТАЛОН ЗАПАСОВ — НА ВИД, А НЕ НА ТЕЛО.
+//
+// Поле 85.52 показало, чем это кончается. У одного гоблина запасы вышли
+// 1822 / 169 / 547, то есть ровно ×1.35 ПОВЕРХ ×1.35. Как: слот тела
+// переиспользуется, запись особи вытесняется из таблицы (128 мест на три боя),
+// при повторном появлении того же адреса «ванильными» были приняты НАШИ ЖЕ
+// умноженные числа, и множитель применился второй раз. Тот же класс ошибки,
+// что когда-то у боевых статов, и лечится так же — эталоном на вид.
+//
+// Правильное поведение: первый носитель вида в сессии задаёт эталон (в этот
+// момент там точно ванильные числа), все остальные особи вида берут эталон,
+// что бы ни лежало в их слоте. Плюс к этому ниже убран ранний выход для
+// новичка: если новичку достался слот с чужими умноженными запасами, они
+// теперь приводятся к ванили, а не остаются на нём. «Новичок = ровно ваниль»
+// должно быть верно и для грязного слота.
+struct SpeciesPoolBase {
+    char  kind[24];
+    float pools[kResDebilCount];
+    float flinch, kdown;
+    bool  have;
+};
+static SpeciesPoolBase s_speciesPools[32];
+static int             s_nSpeciesPools = 0;
+
+static SpeciesPoolBase* FindSpeciesPools(const char* kind)
+{
+    if (!kind || !kind[0]) return nullptr;
+    for (int i = 0; i < s_nSpeciesPools; ++i)
+        if (!strcmp(s_speciesPools[i].kind, kind)) return &s_speciesPools[i];
+    return nullptr;
+}
+
+static SpeciesPoolBase* AddSpeciesPools(const char* kind)
+{
+    if (!kind || !kind[0]) return nullptr;
+    if (s_nSpeciesPools >= 32) return nullptr;
+    SpeciesPoolBase& sp = s_speciesPools[s_nSpeciesPools++];
+    memset(&sp, 0, sizeof(sp));
+    lstrcpynA(sp.kind, kind, sizeof(sp.kind));
+    return &sp;
+}
+
 static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
                               const char* kind, float resist, float stand)
 {
@@ -1273,6 +1315,44 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
             return 0;
         }
         rec->haveRes = true;
+
+        // 85.53: эталон вида. Первый носитель вида в сессии его задаёт, все
+        // последующие берут готовый (см. комментарий у SpeciesPoolBase).
+        SpeciesPoolBase* sp = FindSpeciesPools(kind);
+        if (!sp) sp = AddSpeciesPools(kind);
+        if (sp && !sp->have) {
+            for (int i = 0; i < kResDebilCount; ++i) sp->pools[i] = rec->baseRes[i];
+            sp->flinch = rec->baseFlinch;
+            sp->kdown  = rec->baseKdown;
+            sp->have   = true;
+            char l[300];
+            sprintf_s(l, "resist base %s reference taken (pois %.0f froz %.0f burn %.0f"
+                         " flinch %.0f kdown %.0f) - every body of this kind uses it",
+                      kind ? kind : "?", sp->pools[0], sp->pools[10], sp->pools[11],
+                      sp->flinch, sp->kdown);
+            logFile << "EnemyTuner: " << l << std::endl;
+        } else if (sp) {
+            // Слот мог достаться от прошлого жильца: тогда в теле лежат НЕ
+            // ванильные числа. Печатаем один раз на особь — и всё равно
+            // работаем от эталона вида.
+            bool dirty = false;
+            for (int i = 0; i < kResDebilCount; ++i)
+                if (!NearlyEq(rec->baseRes[i], sp->pools[i])) { dirty = true; break; }
+            if (!dirty && (!NearlyEq(rec->baseFlinch, sp->flinch)
+                           || !NearlyEq(rec->baseKdown, sp->kdown)))
+                dirty = true;
+            if (dirty && rec->resLogged < 1) {
+                char l[300];
+                sprintf_s(l, "resist %s 0x%08X slot was dirty (read pois %.0f froz %.0f"
+                             " burn %.0f) - using species reference instead",
+                          kind ? kind : "?", (unsigned)body, rec->baseRes[0],
+                          rec->baseRes[10], rec->baseRes[11]);
+                logFile << "EnemyTuner: " << l << std::endl;
+            }
+            for (int i = 0; i < kResDebilCount; ++i) rec->baseRes[i] = sp->pools[i];
+            rec->baseFlinch = sp->flinch;
+            rec->baseKdown  = sp->kdown;
+        }
     }
 
     // Родные числа игры в лог — один раз на особь. Это и есть цель этой сборки:
@@ -1303,7 +1383,14 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
     }
 
     // Ручек нет — только читаем. Так фича и приезжает: числа видно, бой не тронут.
-    if (NearlyEq(resist, 1.0f) && NearlyEq(stand, 1.0f)) return 0;
+    //
+    // 85.53: РАНЬШЕ ЗДЕСЬ БЫЛ РАННИЙ ВЫХОД для новичка (1.00/1.00). Он верен
+    // ровно до тех пор, пока тело заспавнилось в чистый блок. Но слоты
+    // переиспользуются, и новичок может получить его от ветерана вместе с его
+    // умноженными запасами — тогда «новичок = ваниль» переставало быть правдой.
+    // Теперь единица не повод выйти, а повод СВЕРИТЬ: если в теле лежит не
+    // эталон, он приводится к ванили. Если лежит эталон — не пишем ничего и в
+    // лог не шумим (wrote останется 0).
 
     int wrote = 0;
     for (int c = 0; c < 2; ++c) {

@@ -941,7 +941,17 @@ uint32_t RanksSessionSalt()
 // 85.42: сколько особей какого ранга выдано за сессию. Печатается в итоговой
 // сводке — чтобы вопрос «кто заспавнился» решался логом, а не вычиткой строк.
 static int s_rankIssued[kRanksSlots][kRankSteps];
-static const char* s_rankKind[kRanksSlots];
+// 85.53: ИМЯ ВИДА ХРАНИМ КОПИЕЙ, А НЕ УКАЗАТЕЛЕМ.
+//
+// Поле 85.50 дало в сводке строку «uEm0100_20:1 0 0 0 0» — вид, которому ранги
+// не выдаются вообще (компонент, не тело). Причина: сюда сохранялся СЫРОЙ
+// указатель на строку вызывающего, а тот указывает в сканер мира, где слоты
+// переиспользуются под других существ. К моменту печати сводки в слоте лежало
+// уже чужое имя — и в отчёте появлялся вид, которого мы не считали. Сводка —
+// единственный способ ответить «кто заспавнился» не вычитывая лог глазами,
+// поэтому врать она не имеет права.
+struct RankKindName { char text[24]; bool set; };
+static RankKindName s_rankKind[kRanksSlots];
 static int s_rankIssuedTotal = 0;
 
 const char* RankStepName(int step)
@@ -955,7 +965,8 @@ void NoteRankIssued(const char* kind, int step)
 {
     if (!kind || step < 0 || step >= kRankSteps) return;
     for (int i = 0; i < s_ranksUsed && i < kRanksSlots; ++i) {
-        if (s_ranks[i].kind[0] && s_rankKind[i] && !strcmp(s_rankKind[i], kind)) {
+        if (s_ranks[i].kind[0] && s_rankKind[i].set
+            && !strcmp(s_rankKind[i].text, kind)) {
             ++s_rankIssued[i][step];
             ++s_rankIssuedTotal;
             return;
@@ -963,8 +974,9 @@ void NoteRankIssued(const char* kind, int step)
     }
     // вид ещё не попал в таблицу счётчиков — заводим
     for (int i = 0; i < kRanksSlots; ++i) {
-        if (!s_rankKind[i]) {
-            s_rankKind[i] = kind;
+        if (!s_rankKind[i].set) {
+            lstrcpynA(s_rankKind[i].text, kind, sizeof(s_rankKind[i].text));
+            s_rankKind[i].set = true;
             ++s_rankIssued[i][step];
             ++s_rankIssuedTotal;
             return;
@@ -984,9 +996,9 @@ void RankSummary(char* out, int cap)
         const int tot = s_rankIssued[i][0] + s_rankIssued[i][1]
                       + s_rankIssued[i][2] + s_rankIssued[i][3]
                       + s_rankIssued[i][4];
-        if (!s_rankKind[i] || tot == 0) continue;
+        if (!s_rankKind[i].set || tot == 0) continue;
         used += snprintf(out + used, (size_t)(cap - used), "%s%s:",
-                         used ? " " : "", s_rankKind[i]);
+                         used ? " " : "", s_rankKind[i].text);
         for (int r = 0; r < kRankSteps && used < cap; ++r)
             used += snprintf(out + used, (size_t)(cap - used), "%s%d",
                              r ? " " : "", s_rankIssued[i][r]);
@@ -1063,11 +1075,18 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
     out.enabled = ini.Bool(sec, "ranks", true);   // ключ может только выключить
     if (!out.enabled) return out;
 
-    // 85.52: трогать ли РАЗМЕР. Ключа нет = да (поведение гоблина не меняется).
-    // off = размер берётся из ванильного коридора вида, а крупные ванильные
-    // вожаки сохраняются как раньше; ступень при этом продолжает давать атаку
-    // и крепость.
-    out.scale = ini.Bool(sec, "rankScale", true);
+    // 85.52: трогать ли РАЗМЕР.
+    //
+    // 85.53: УМОЛЧАНИЕ ЗАВИСИТ ОТ ВИДА, и это принципиально. В поле 85.52 у
+    // владельца ключа в ini не было, наш же бэкфилл дописал его со значением по
+    // умолчанию «on» — и волкам начал выдаваться рост по ступени (у одного
+    // 0.935 -> 1.107). Правило владельца: «волки-гиганты нелепо», размер волка
+    // неприкосновенен. Значит для волка умолчание — off, а гоблину, который под
+    // рангами с самого начала, — on (его поведение не меняется ни на цифру).
+    // Урок тот же, что в 85.48: если умолчание нового ключа может удивить —
+    // оно должно быть безопасным, а не «как у соседа».
+    const bool defaultScale = !strcmp(speciesKind, "uEm0100");   // гоблин = да
+    out.scale = ini.Bool(sec, "rankScale", defaultScale);
 
     // Числа рангов: [ranks], по ключу на ранг. Ключа нет = встроенное.
     for (int i = 0; i < kRankSteps; ++i) {
