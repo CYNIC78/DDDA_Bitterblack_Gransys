@@ -2181,6 +2181,51 @@ void Init()
                       ln.step[3].weight, ln.step[3].sizeMin, ln.step[3].sizeMax, ln.step[3].atk,
                       ln.step[4].weight, ln.step[4].sizeMin, ln.step[4].sizeMax, ln.step[4].atk);
             logFile << l << std::endl;
+            // 85.44: крепость рангов. Печатаем ВСЕГДА, даже когда всё по 1.0 —
+            // иначе из лога не видно, что ключи вообще существуют и прочитаны
+            // (урок весов 85.42: «задумано» должно быть видно, а не угадываться).
+            char lk[300];
+            // (латиница: в логе кириллицы нет нигде, не заводим)
+            sprintf_s(lk, "Monster Director: ranks %s toughness (times tougher, 1.00 = vanilla)"
+                          " novice res%.2f stand%.2f | soldier res%.2f stand%.2f"
+                          " | veteran res%.2f stand%.2f | elite res%.2f stand%.2f"
+                          " | miniboss res%.2f stand%.2f",
+                      card->kind,
+                      ln.step[0].resist, ln.step[0].stand, ln.step[1].resist, ln.step[1].stand,
+                      ln.step[2].resist, ln.step[2].stand, ln.step[3].resist, ln.step[3].stand,
+                      ln.step[4].resist, ln.step[4].stand);
+            logFile << lk << std::endl;
+            // 85.48: сверка ini со ВСТРОЕННОЙ лестницей. Молчаливый no-op страшнее
+            // ошибки: в поле 85.47 десять ключей были автодописаны старым билдом как
+            // 1.00, и включённая в коде лестница не сработала — в логе не было ни
+            // одной строки, по которой это можно заметить. Теперь видно обе стороны.
+            float bres = 0.0f, bstand = 0.0f;
+            char lb[300];
+            int  nb = 0;
+            nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb,
+                            "Monster Director: ranks %s builtin ladder", card->kind);
+            bool allOne = true;
+            for (int k = 0; k < Runtime::Tempo::kRankSteps; ++k) {
+                if (!Runtime::Tempo::RanksBuiltinToughness(k, &bres, &bstand)) break;
+                nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb, " %s r%.2f s%.2f",
+                                k == 0 ? "novice" : k == 1 ? "soldier" : k == 2 ? "veteran"
+                                : k == 3 ? "elite" : "miniboss", bres, bstand);
+                if (ln.step[k].resist > 1.001f || ln.step[k].stand > 1.001f)
+                    allOne = false;
+            }
+            logFile << lb << std::endl;
+            if (allOne) {
+                Runtime::Tempo::RanksBuiltinToughness(Runtime::Tempo::kRankSteps - 1, &bres, &bstand);
+                if (bres > 1.001f || bstand > 1.001f) {
+                    char lw[320];
+                    sprintf_s(lw, "Monster Director: ranks %s toughness IS OFF - ini keys"
+                                  " all 1.00, while builtin ladder goes up to res%.2f s%.2f."
+                                  " If those 1.00 came from an older build's auto-fill, put"
+                                  " the ladder into [ranks] (see TEST note)",
+                              card->kind, bres, bstand);
+                    logFile << lw << std::endl;
+                }
+            }
         }
         if (nOn == 0)
             logFile << "Monster Director: ranks off (no species allowed/enabled)"

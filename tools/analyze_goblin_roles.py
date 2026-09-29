@@ -51,6 +51,9 @@ R_DUMP_MEM = re.compile(r'PackObserve: member @0x([0-9a-f]+) role=(\S+)'
                         r' act=(\S+) scaleH=(-?[\d.]+) dist=(-?[\d.]+)'
                         r' horn=(\d+) charge=(\d+) escape=(\d+) ignore=(\d+)')
 # 85.42: и новые строки (rank), и старые (ladder со step=) — лог 85.40/85.41 читается тем же разборщиком
+R_RESIST = re.compile(r'EnemyTuner: resist (\S+) 0x([0-9a-fA-F]+) elem (.*?) \| (.*?) \| flinch ([\d.]+) kdown ([\d.]+)')
+R_RESIST_OLD = re.compile(r'EnemyTuner: resist (\S+) 0x([0-9a-fA-F]+) fire ([\d.]+) \|(.*?)\| flinch ([\d.]+) kdown ([\d.]+)')
+R_RESIST_APP = re.compile(r'EnemyTuner: resist applied (\S+) 0x([0-9a-fA-F]+) res x([\d.]+) stand x([\d.]+) wrote (\d+)')
 R_RANK = re.compile(r'EnemyTuner: (?:rank|ladder) (\S+) (?:step=)?(\w+)\((\d)\) size ([-\d.]+) atk x([\d.]+) -> 0x([0-9a-f]+)', re.I)
 R_TSCALE = re.compile(r'EnemyTuner: scale (-?[\d.]+) \(base (-?[\d.]+) (\w+)\)'
                       r' -> (\S+) 0x([0-9a-f]+) was=(-?[\d.]+) applies=(\d+)'
@@ -71,6 +74,7 @@ def looks_dead(act):
 def parse(path):
     bodies = OrderedDict()      # addr -> dict
     events = []                 # (lineno, text) по порядку
+    resfail = []                # отказы/неудачные попытки чтения крепости
     comps = OrderedDict()       # kind -> dict
     dumps = []
     stats_seen = {}
@@ -84,6 +88,29 @@ def parse(path):
                 b = bodies.setdefault(a, {'events': []})
                 b['events'].append((i, 'RANK', line))
                 b['rank'] = (m.group(2), float(m.group(4)), float(m.group(5)))
+
+            m = R_RESIST.search(line)
+            if m:
+                a = '0x' + m.group(2).lower()
+                b = bodies.setdefault(a, {'events': []})
+                b['events'].append((i, 'RESIST', line))
+                b['resist'] = (m.group(1), m.group(3).strip(), m.group(4).strip(),
+                               m.group(5), m.group(6))
+                b['resist_new'] = True
+            elif R_RESIST_OLD.search(line):
+                m = R_RESIST_OLD.search(line)
+                a = '0x' + m.group(2).lower()
+                b = bodies.setdefault(a, {'events': []})
+                b['events'].append((i, 'RESIST', line))
+                b['resist'] = (m.group(1), 'fire ' + m.group(3), m.group(4).strip(),
+                               m.group(5), m.group(6))
+            if 'resist' in line and ('map rejected' in line or 'not ready' in line):
+                resfail.append((i, line))
+            m = R_RESIST_APP.search(line)
+            if m:
+                a = '0x' + m.group(2).lower()
+                b = bodies.setdefault(a, {'events': []})
+                b['resapp'] = (m.group(3), m.group(4), m.group(5))
 
             m = R_DEATH_NEW.search(line)
             if m:
@@ -171,7 +198,7 @@ def parse(path):
             # но дедуп по точному тексту
             if 'EnemyTuner:' in line:
                 stats_seen[(i, line)] = True
-    return bodies, comps, dumps, events
+    return bodies, comps, dumps, events, resfail
 
 
 def tuner_card(body_entry):
@@ -215,7 +242,7 @@ def main():
         print(__doc__)
         return 1
     path = sys.argv[1]
-    bodies, comps, dumps, events = parse(path)
+    bodies, comps, dumps, events, resfail = parse(path)
 
     print("=" * 78)
     print("1. СМЕРТИ И УХОДЫ (кто перестал существовать в кадре)")
@@ -268,6 +295,18 @@ def main():
             print("    ваниль: строк EnemyTuner по этому телу нет")
         if card.get('rank'):
             print("    ранг: " + card['rank'])
+        rs = bodies[a].get('resist')
+        if rs:
+            if bodies[a].get('resist_new'):
+                print("    крепость (ваниль из игры): elem %s | %s | flinch %s kdown %s"
+                      % (rs[1], rs[2], rs[3], rs[4]))
+            else:
+                print("    крепость (ваниль из игры): fire %s | %s | flinch %s kdown %s"
+                      % (rs[1], rs[2], rs[3], rs[4]))
+        ra = bodies[a].get('resapp')
+        if ra:
+            print("    крепость правили: сопротивления x%s, сбивание x%s, записей %s"
+                  % (ra[0], ra[1], ra[2]))
         if card['scale'] is not None:
             print(f"    размер: наш {card['scale']} (база вида {card['base']}, "
                   f"наложений {card.get('applies')}, откатов {card.get('reverts')})")
@@ -301,6 +340,36 @@ def main():
     for i, g in dumps:
         print(f"  {i:5d}  n={g[0]} {g[1]} leader={g[2]} horn={g[4]} charge={g[5]} "
               f"ignore={g[6]} fall={g[7]} shield={g[8]} caller={g[9]} flee={g[10]}")
+
+    print()
+    print("=" * 78)
+    print("5. КРЕПОСТЬ: ЧТО ИГРА САМА ДАЁТ ГОБЛИНАМ (ванильные числа, 85.44)")
+    print("=" * 78)
+    sets = {}
+    for a, b in sorted(bodies.items()):
+        rs = b.get('resist')
+        if not rs:
+            continue
+        head = "elem" if b.get('resist_new') else "fire"
+        key = "%s %s | %s | flinch %s kdown %s" % (head, rs[1], rs[2], rs[3], rs[4])
+        sets.setdefault(key, []).append(a)
+    nrej = len([1 for i, l in resfail if 'map rejected' in l])
+    ntry = len([1 for i, l in resfail if 'not ready' in l])
+    if nrej or ntry:
+        print("  ВНИМАНИЕ: тел с отказом чтения %d, первых неудачных попыток %d"
+              % (nrej, ntry))
+        print("    (до 85.46 отказ был навсегда — первая пачка после загрузки зоны")
+        print("     могла остаться без крепости; от 85.46 код пробует ещё)")
+    if not sets:
+        print("  строк нет (сборка до 85.44 либо крепость не читалась)")
+    elif len(sets) == 1:
+        k = list(sets.keys())[0]
+        print("  у всех %d тел ОДИН и тот же набор:" % len(sets[k]))
+        print("    " + k)
+    else:
+        print("  наборов: %d (тела одного вида обязаны совпадать!)" % len(sets))
+        for k, v in sets.items():
+            print("    [%d тел] %s" % (len(v), k))
 
     print()
     print("=" * 78)

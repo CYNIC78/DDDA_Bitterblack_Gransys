@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.43-rank-log"
+#define MOD_BUILD_TAG "85.52-wolf-ranks"

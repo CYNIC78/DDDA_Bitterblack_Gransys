@@ -200,6 +200,50 @@ static const uint32_t kFldAttack         = 0x00C; // 物理攻撃力 (Physical A
 static const uint32_t kFldDefense        = 0x010; // 物理防御力 (Physical Defense)
 static const uint32_t kFldMagickAttack   = 0x014; // 魔法攻撃力 (Magick Attack)
 static const uint32_t kFldMagickDefense  = 0x018; // 魔法防御力 (Magick Defense)
+
+// 85.44: КРЕПОСТЬ — сопротивления дебилитациям и выносливости к сбиванию.
+// Смещения и имена взяты из карты CharParamEnemy.Generated.h (не из головы):
+// 0x38 fire 0x3C ice 0x40 thunder ... 0x54..0xA0 сопротивления наложениям,
+// 0xE0 отшатывание, 0xE4 сбивание с ног. Элементные сопротивления (fire/ice/…)
+// мы НЕ двигаем — это урон, а не дебилитация; огонь должен кусаться как кусался.
+struct ResField { uint32_t off; const char* name; };
+static const ResField kResDebil[] = {
+    { 0x054, "pois"  }, { 0x058, "torp"  }, { 0x05C, "blnd"  }, { 0x060, "slp"   },
+    { 0x064, "tar"   }, { 0x068, "drnch" }, { 0x06C, "poss"  }, { 0x070, "sil"   },
+    { 0x074, "stfl"  }, { 0x078, "curs"  },
+    // ПОРЯДОК ЭТОЙ ПАРЫ В ПАМЯТИ ОТЛИЧАЕТСЯ ОТ ПОРЯДКА В ФАЙЛЕ ИГРЫ.
+    // В файле em0100_cmn.prp: 耐延焼 (горение) = 300, 耐氷漬け (заморозка) = 800.
+    // Живое чтение по этим смещениям дало наоборот: 0x7C = 800, 0x80 = 300,
+    // при том что остальные 18 полей совпали с файлом ровно. Значит в самом
+    // движке пара лежит в другом порядке, и метки ставим ПО ПАМЯТИ, а не по
+    // файлу. Полевое подтверждение: гоблины в 85.42/85.44 загорались от костров
+    // легко — это низкое горение (300), а не 800.
+    { 0x07C, "froz"  }, { 0x080, "burn"  },
+    { 0x084, "thst"  }, { 0x088, "hlyx"  }, { 0x08C, "drkx"  }, { 0x090, "petr"  },
+    { 0x094, "atkd"  }, { 0x098, "defd"  }, { 0x09C, "matkd" }, { 0x0A0, "mdefd" },
+};
+static const int kResDebilCount = (int)(sizeof(kResDebil) / sizeof(kResDebil[0]));
+
+// ЭЛЕМЕНТНЫЙ УРОН — ДРУГАЯ СЕМЬЯ ПОЛЕЙ, и её мы НЕ трогаем. Это множители
+// получаемого урона: у гоблина 耐魔 (тьма) = 0.6, у волка 耐炎 1.1 / 耐氷 0.85,
+// у сауриана 耐炎 0.6 / 耐氷 2.5. Здесь «меньше = крепче», в отличие от
+// сопротивлений дебилитациям. Печатаем их в лог только как ЯКОРЯ карты: два
+// неединичных значения (тьма 0.6 у гоблина, у других видов свои) подтверждают,
+// что смещения прочитаны верно.
+struct ElemField { uint32_t off; const char* name; };
+static const ElemField kElemAnchors[] = {
+    { 0x038, "fire" }, { 0x03C, "ice"  }, { 0x040, "thun" },
+    { 0x044, "holy" }, { 0x048, "dark" }, { 0x04C, "slash" }, { 0x050, "strike" },
+};
+static const int kElemAnchorCount = (int)(sizeof(kElemAnchors) / sizeof(kElemAnchors[0]));
+// Сколько раз пробовать прочитать крепость, прежде чем приговорить тело.
+// Попытки бесплатны (это 22 чтения), а ошибка дорогая: в поле 85.45 первая пачка
+// после загрузки зоны отдала не-числа и была отвергнута НАВСЕГДА — живая пачка
+// осталась без крепости, хотя подкрепления в том же бою читались нормально.
+static const int kResMaxTries = 60;
+static const uint32_t kFldHumanHp = 0x0DC;   // 人間敵 HP — третий якорь (у гоблина 1000)
+static const uint32_t kFldFlinch  = 0x0E0;   // human_flinch_endur (у гоблина 100)
+static const uint32_t kFldKdown   = 0x0E4;   // human_knockdown_endur (у гоблина 100)
 static const uint32_t kFldReturnActivate = 0x100; // リターンテリトリー発動タイム
 static const uint32_t kFldReturnDuration = 0x104; // リターンテリトリー継続タイム
 static const uint32_t kFldScale          = 0x12C; // スケール値
@@ -385,6 +429,18 @@ struct Touched {
     int   rankLogged;  // 85.40: одна строка про ступень на особь
     int   rankCounted; // 85.43: ранг уже попал в сводку сессии (отдельно от печати)
 
+    // 85.44: крепость ранга. Ванильные значения читаем ОДИН раз (иначе после
+    // нашей же правки прочитаем её же и будем делить вечно), затем каждый тик
+    // сверяем текущее с желаемым — как со статами и размером.
+    float baseRes[kResDebilCount];
+    float baseFlinch, baseKdown;
+    bool  haveRes;
+    bool  resRejected;   // карта не сложилась после всех попыток -> особь не трогаем
+    int   resTries;      // сколько раз пробовали прочитать (поле 85.45: первая попытка
+                         // после загрузки зоны может застать блок незаполненным)
+    int   resLogged;
+    int   resApplied;
+
     // Кэш смещения cCharParamEnemy в теле: ищем ровно один раз на особь,
     // чтобы не гонять 29-КБ перебор памяти каждый тик для не-гоблинов.
     uint32_t charParamOff;
@@ -512,6 +568,14 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->spikeLogged = 0;
     t->rankLogged = 0;
     t->rankCounted = 0;
+    t->haveRes = false;
+    t->resRejected = false;
+    t->resTries = 0;
+    t->resLogged = 0;
+    t->resApplied = 0;
+    for (int i = 0; i < kResDebilCount; ++i) t->baseRes[i] = 1.0f;
+    t->baseFlinch = 0.0f;
+    t->baseKdown  = 0.0f;
     t->combatRollAtk = t->combatRollDef = t->combatRollMAtk = t->combatRollMDef = 1.0f;
     t->charParamOff = 0;
     t->charParamSearched = false;
@@ -1111,6 +1175,191 @@ static float ClampSpike(float v)
     return v;
 }
 
+// 85.44: КРЕПОСТЬ РАНГА — сопротивления наложениям и устойчивость к сбиванию.
+//
+// НАПРАВЛЕНИЕ ПОЛЕЙ — то, что здесь надо знать точно, и здесь я ошибался.
+//
+// Первая версия (85.44) предполагала, что сопротивления наложениям лежат
+// множителем получаемого эффекта («крепче = делить»), как элементный урон. Живое
+// чтение в поле 85.44 это опровергло: у гоблина 耐毒 = 1000, 耐延焼 = 300,
+// 耐氷漬け = 800, 耐敵化 = 10000 — это ЗАПАСЫ, а не множители. И они растут
+// вместе с крепостью вида: у хобгоблина те же поля 3000 / 2000 / 3500, у сауриана
+// к яду 10000 (саурианы к яду стойки по лору), у волка к яду всего 600. Умножаем
+// число — особь становится крепче. Значит для ВСЕХ 22 полей (20 сопротивлений +
+// отшатывание + сбивание) «крепче» = УМНОЖАТЬ, а элементный урон — единственная
+// семья, где «крепче» = меньше, и её мы не трогаем вообще.
+//
+// В ini ключ читается как «во сколько раз крепче» (1.0 = ваниль), поэтому
+// направление по-прежнему целиком на совести этого кода, а не настройки.
+//
+// Опорные числа из файла игры (em0100_cmn.prp и соседние), для калибровки:
+//   поле         гоблин  хоб    волк   сауриан  гарпия
+//   яд             1000   3000    600    10000     600
+//   горение         300   2000    400     1000     500
+//   заморозка       800   3500    800      500    1000
+//   тьма (урон)     0.6    0.6    1.0      1.0     1.0
+//   отшатывание     100    100    100      100     100  (в .prp; у хоба .rst 450)
+//   сбивание        100    100    100      100     100  (в .prp; у хоба .rst 650)
+static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
+                              const char* kind, float resist, float stand)
+{
+    if (!rec || !base) return 0;
+    if (rec->resRejected) return 0;
+
+    if (!rec->haveRes) {
+        // Санити-гейт: если карта смещений разъедется, мы прочитаем мусор
+        // (NaN, отрицательные, гигантские числа). Тогда лучше не трогать вовсе —
+        // и сказать об этом в лог, чем писать случайные байты в живого монстра.
+        //
+        // НО: неудача первой попытки ещё не значит, что карта плохая. В поле 85.45
+        // десять гоблинов первой пачки, прочитанные сразу после загрузки зоны,
+        // отдали не-числа, а подкрепления в том же бою читались правильно. Поэтому
+        // пробуем несколько раз, а в лог несём ПОДРОБНОСТЬ (какое поле и какое
+        // значение), чтобы разбор не гадал. Приговор — только после всех попыток.
+        bool  ok = true;
+        int   badIdx = -1;
+        float badVal = 0.0f;
+        float sum = 0.0f;
+        for (int i = 0; i < kResDebilCount; ++i) {
+            float v = 0.0f;
+            if (!SafeRead((const void*)(base + kResDebil[i].off), &v, 4)) {
+                ok = false; badIdx = i; badVal = 0.0f; break;
+            }
+            if (!(v == v) || v < 0.0f || v > 10000.0f) {
+                ok = false; badIdx = i; badVal = v; break;
+            }
+            rec->baseRes[i] = v;
+            sum += v;
+        }
+        if (ok) {
+            if (!SafeRead((const void*)(base + kFldFlinch), &rec->baseFlinch, 4) ||
+                !SafeRead((const void*)(base + kFldKdown),  &rec->baseKdown,  4)) {
+                ok = false; badIdx = -2;
+            } else if (!(rec->baseFlinch == rec->baseFlinch) || rec->baseFlinch < 0.0f
+                       || rec->baseFlinch > 100000.0f) {
+                ok = false; badIdx = -2; badVal = rec->baseFlinch;
+            } else if (!(rec->baseKdown == rec->baseKdown) || rec->baseKdown < 0.0f
+                       || rec->baseKdown > 100000.0f) {
+                ok = false; badIdx = -3; badVal = rec->baseKdown;
+            }
+        }
+        if (ok && sum <= 0.0f) { ok = false; badIdx = -4; }  // все нули: блок ещё пуст
+
+        if (!ok) {
+            ++rec->resTries;
+            if (rec->resTries == 1) {
+                char l[240];
+                if (badIdx == -4)
+                    sprintf_s(l, "resist %s 0x%08X not ready (block still empty) - will retry",
+                              kind ? kind : "?", (unsigned)body);
+                else
+                    sprintf_s(l, "resist %s 0x%08X not ready (field %d val %.2f) - will retry",
+                              kind ? kind : "?", (unsigned)body, badIdx, badVal);
+                logFile << "EnemyTuner: " << l << std::endl;
+            }
+            if (rec->resTries < kResMaxTries) return 0;   // попробуем на следующем тике
+            rec->haveRes = true;
+            rec->resRejected = true;
+            char l[240];
+            if (badIdx == -4)
+                sprintf_s(l, "resist %s 0x%08X map rejected after %d tries"
+                             " (still empty) - body left untouched",
+                          kind ? kind : "?", (unsigned)body, rec->resTries);
+            else
+                sprintf_s(l, "resist %s 0x%08X map rejected after %d tries"
+                             " (field %d val %.2f) - body left untouched",
+                          kind ? kind : "?", (unsigned)body, rec->resTries, badIdx, badVal);
+            logFile << "EnemyTuner: " << l << std::endl;
+            return 0;
+        }
+        rec->haveRes = true;
+    }
+
+    // Родные числа игры в лог — один раз на особь. Это и есть цель этой сборки:
+    // увидеть настоящие сопротивления гоблина, а не гадать по вики.
+    if (rec->resLogged < 1) {
+        ++rec->resLogged;
+        char line[560];
+        int n = 0;
+        n += sprintf_s(line + n, sizeof(line) - (size_t)n, "resist %s 0x%08X elem",
+                       kind ? kind : "?", (unsigned)body);
+        for (int i = 0; i < kElemAnchorCount; ++i) {
+            float ev = 0.0f;
+            if (SafeRead((const void*)(base + kElemAnchors[i].off), &ev, 4))
+                n += sprintf_s(line + n, sizeof(line) - (size_t)n, " %s %.2f",
+                               kElemAnchors[i].name, ev);
+        }
+        float hpv = 0.0f;
+        if (SafeRead((const void*)(base + kFldHumanHp), &hpv, 4))
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " hp %.0f |", hpv);
+        else
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " hp ? |");
+        for (int i = 0; i < kResDebilCount && n < (int)sizeof(line) - 60; ++i)
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " %s %.2f",
+                           kResDebil[i].name, rec->baseRes[i]);
+        sprintf_s(line + n, sizeof(line) - (size_t)n, " | flinch %.1f kdown %.1f",
+                  rec->baseFlinch, rec->baseKdown);
+        logFile << "EnemyTuner: " << line << std::endl;
+    }
+
+    // Ручек нет — только читаем. Так фича и приезжает: числа видно, бой не тронут.
+    if (NearlyEq(resist, 1.0f) && NearlyEq(stand, 1.0f)) return 0;
+
+    int wrote = 0;
+    for (int c = 0; c < 2; ++c) {
+        uintptr_t b = base + (uintptr_t)c * 0x140;
+        if (c && !LooksLikeCharParam(b)) break;
+        for (int i = 0; i < kResDebilCount; ++i) {
+            // Поля, которые игра уже сделала почти иммунными (одержимость и
+            // печать навыков — по 10000), не трогаем: умножать их бессмысленно,
+            // а запись ради записи — лишний риск. Порог 5000 отделяет их от
+            // рабочих полей (у гоблина всё остальное 300..1000).
+            if (rec->baseRes[i] >= 5000.0f) continue;
+            const float want = rec->baseRes[i] * resist;     // крепче = больше запас
+            float cur = 0.0f;
+            if (!SafeRead((const void*)(b + kResDebil[i].off), &cur, 4)) continue;
+            if (NearlyEq(cur, want)) continue;
+            if (SafeWrite((void*)(b + kResDebil[i].off), &want, 4)) ++wrote;
+        }
+        const float wantF = rec->baseFlinch * stand;          // крепче = больше запас
+        const float wantK = rec->baseKdown  * stand;
+        float cur = 0.0f;
+        if (SafeRead((const void*)(b + kFldFlinch), &cur, 4) && !NearlyEq(cur, wantF))
+            if (SafeWrite((void*)(b + kFldFlinch), &wantF, 4)) ++wrote;
+        if (SafeRead((const void*)(b + kFldKdown), &cur, 4) && !NearlyEq(cur, wantK))
+            if (SafeWrite((void*)(b + kFldKdown), &wantK, 4)) ++wrote;
+    }
+
+    if (wrote) {
+        ++rec->resApplied;
+        // Логируем первые разы и далее редко: движок может откатывать правку
+        // каждый тик, и тогда лог превратится в поток.
+        if (rec->resApplied <= 5 || (rec->resApplied % 32) == 0) {
+            // Обратное чтение ПОСЛЕ записи. Раньше здесь стояло одно поле с
+            // меткой "burn", но по этому смещению (0x07C) лежит ЗАМОРОЗКА —
+            // метка врала, и в поле 85.47 строка выглядела так, будто горение
+            // умножилось не на своё число. Теперь печатаем обе половины пары
+            // плюс яд и оба поля устойчивости: яд/заморозка/горение — это
+            // рабочие поля с разными родными числами (1000/800/300 у гоблина),
+            // по ним сразу видно, что умножено верно.
+            float rbPois = 0.0f, rbFroz = 0.0f, rbBurn = 0.0f, rbFl = 0.0f, rbKd = 0.0f;
+            SafeRead((const void*)(base + 0x054), &rbPois, 4);
+            SafeRead((const void*)(base + 0x07C), &rbFroz, 4);
+            SafeRead((const void*)(base + 0x080), &rbBurn, 4);
+            SafeRead((const void*)(base + kFldFlinch), &rbFl, 4);
+            SafeRead((const void*)(base + kFldKdown), &rbKd, 4);
+            char l[280];
+            sprintf_s(l, "resist applied %s 0x%08X res x%.2f stand x%.2f wrote %d"
+                         " readback pois %.0f froz %.0f burn %.0f flinch %.0f kdown %.0f"
+                         " (run %d)",
+                      kind ? kind : "?", (unsigned)body, resist, stand, wrote,
+                      rbPois, rbFroz, rbBurn, rbFl, rbKd, rec->resApplied);
+            logFile << "EnemyTuner: " << l << std::endl;
+        }
+    }
+    return wrote;
+}
+
 static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t,
                             const char* kind, float spikeAtk, float spikeMAtk)
 {
@@ -1257,8 +1506,10 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     // адреналином не важен (умножение), но ставим ДО него: «всплеск — последний».
     int   rankStep = -1;
     float rankSize = 0.0f, rankAtk = 1.0f;
+    float rankResist = 1.0f, rankStand = 1.0f;
     bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
-                                                  &rankSize, &rankAtk);
+                                                  &rankSize, &rankAtk,
+                                                  &rankResist, &rankStand);
     // 85.41: спецправило «ванильный вожак получает старшую ступень» УБРАНО.
     // Поле 85.40 показало, почему его нельзя оставлять: порог «крупный = вожак»
     // сравнивает ЗАПОМНЕННУЮ базу роста с 1.12, а база после загрузки сейва
@@ -1279,13 +1530,25 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
         if (rec->rankLogged < 2) {
             ++rec->rankLogged;
             char ll[190];
-            sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f -> 0x%08X",
-                      kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
-                      rankStep, rankSize, rankAtk, (unsigned)body);
+            // 85.52: у видов с rankScale = off размер ступенью НЕ задаётся —
+            // печатаем это прямо, иначе в логе «size 1.190» читалось бы как
+            // выданный рангом рост, которого на самом деле нет.
+            if (Runtime::Tempo::RankScaleEnabled(kind))
+                sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f -> 0x%08X",
+                          kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
+                          rankStep, rankSize, rankAtk, (unsigned)body);
+            else
+                sprintf_s(ll, "rank %s %s(%d) size off (vanilla) atk x%.2f -> 0x%08X",
+                          kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
+                          rankStep, rankAtk, (unsigned)body);
             logFile << "EnemyTuner: " << ll << std::endl;
             lstrcpynA(s_status, ll, sizeof(s_status));
         }
     }
+
+    // 85.44: крепость ранга. По умолчанию ручки = 1.0, то есть НИЧЕГО не
+    // пишется — сборка только читает родные сопротивления и говорит их в лог.
+    if (ranksOn) ApplyRankToughness(body, rec, base, kind, rankResist, rankStand);
 
     float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk  * adrAtk
                    * (ranksOn ? rankAtk : 1.0f);
@@ -1650,8 +1913,12 @@ static void TickOneBody(uintptr_t body, const char* kind)
     float rankSize = 0.0f, rankAtk = 1.0f;
     const bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
                                                         &rankSize, &rankAtk);
+    // 85.52: ранги могут работать без размера (волк). Если вид просил не
+    // трогать рост — идём обычной дорогой: коридор вида для рядовых и
+    // сохранение крупных ванильных вожаков.
+    const bool rankScale = ranksOn && Runtime::Tempo::RankScaleEnabled(kind);
 
-    if (!ranksOn && NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
+    if (!rankScale && NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
 
     Touched* rec = rec0;      // запись уже получена выше (блок поводка)
 
@@ -1692,7 +1959,7 @@ static void TickOneBody(uintptr_t body, const char* kind)
     const bool isLeader = (rec->baseH >= leaderThresh);
     float wantW = 1.0f, wantH = 1.0f, wantD = 1.0f;
 
-    if (ranksOn) {
+    if (rankScale) {
         // 85.41: лестница ПЕРВИЧНА. Раньше первой стояла ветка «вожак», и тело
         // с запомненной базой >= 1.12 (часто наша же прошлая запись) и размер
         // не получало, и ступень ломало. Теперь под лестницей КАЖДОЕ тело
@@ -1752,7 +2019,7 @@ static void TickOneBody(uintptr_t body, const char* kind)
             // ванильный» (база >= 1.12), и в поле 85.42 половина пачки (6 из 14)
             // печаталась как LEADER — лог выглядел так, будто вернулось
             // убранное правило вожака, хотя размер шёл от ранга.
-            wantH, rec->baseH, ranksOn ? "RANK" : (isLeader ? "LEADER" : "GENE"),
+            wantH, rec->baseH, rankScale ? "RANK" : (isLeader ? "LEADER" : "GENE"),
             kind ? kind : "?",
             (unsigned)body, cur, rec->applies, rec->reverts);
         lstrcpynA(s_status, line, sizeof(s_status));
@@ -1841,6 +2108,25 @@ void Tick()
 const char* StatusLine() { return s_status; }
 
 // Тело под ручным удержанием, 0 если удержания нет. Для индикатора в UI.
+// 85.50: запасы тела на момент вопроса. Поля те же, что пишет ApplyRankToughness:
+// яд 0x054, горение 0x080, сбивание 0x0E4. Читаем ЖИВУЮ память, а не запись,
+// чтобы строка смерти показывала правду, даже если движок что-то вернул назад.
+bool PoolsFor(uintptr_t body, float* poisOut, float* kdownOut, float* burnOut)
+{
+    Touched* rec = FindTouched(body);
+    if (!rec || !rec->charParamSearched || !rec->charParamOff) return false;
+    const uintptr_t base = body + rec->charParamOff;
+    float pois = 0.0f, burn = 0.0f, kd = 0.0f;
+    const bool ok = SafeRead((const void*)(base + 0x054), &pois, 4)
+                 && SafeRead((const void*)(base + 0x080), &burn, 4)
+                 && SafeRead((const void*)(base + kFldKdown), &kd, 4);
+    if (!ok) return false;
+    if (poisOut)  *poisOut  = pois;
+    if (kdownOut) *kdownOut = kd;
+    if (burnOut)  *burnOut  = burn;
+    return true;
+}
+
 uintptr_t HeldBody()  { return s_holdBody; }
 float     HeldValue() { return s_holdValue; }
 int TrackedCount()       { return s_tracked; }

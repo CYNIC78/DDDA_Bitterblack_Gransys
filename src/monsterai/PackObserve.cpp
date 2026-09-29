@@ -5,6 +5,8 @@
 #include "PackObserve.h"
 #include "SpeciesCard.h"
 #include "../CombatBus.h"
+#include "../EnemyTuner.h"
+#include "../runtime/MonsterTempo.h"
 #ifndef DDDA_PACKOBSERVE_PORTABLE
 #include "../runtime/Runtime.h"
 #endif
@@ -478,6 +480,53 @@ static void LogJoin(const Member& m)
 //   DEATH — видели мёртвым (Die/Dead) либо исчез, живя вблизи (< 60 м) и
 //           меньше 0.7 с назад;
 //   LEAVE — иначе (ушёл далеко / выгрузился вместе с видом).
+// 85.51: счётчики событий устойчивости за сессию — итоговая строка при выходе.
+// FALL/STUMBLE проверяют запас, TRIP — просто спотыкание, его держим отдельно,
+// чтобы итог читался как «сколько раз по гоблинам били и как они это снесли».
+static int s_nFalls = 0, s_nStumbles = 0, s_nTrips = 0;
+
+// 85.50: хвост « rank=… pois … kdown … burn …» для строк, где важно, КОМУ это
+// случилось. Ранг берём тем же детерминированным выбором, что и при раздаче
+// (соль сессии внутри захода постоянна), запасы — ИЗ ТЕЛА на момент вопроса,
+// поэтому строка показывает правду, даже если движок что-то вернул назад.
+static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap)
+{
+    out[0] = '\0';
+    int step = -1;
+    float sz = 0.0f, atk = 0.0f;
+    if (!Runtime::Tempo::RankPickFor(kind, body, &step, &sz, &atk)) return;
+    const char* rn = Runtime::Tempo::RankStepName(step);
+    int n = sprintf_s(out, (size_t)cap, " rank=%s", rn ? rn : "?");
+    float pois = 0.0f, kd = 0.0f, burn = 0.0f;
+    if (n > 0 && EnemyTuner::PoolsFor(body, &pois, &kd, &burn))
+        sprintf_s(out + n, (size_t)(cap - n), " pois %.0f kdown %.0f burn %.0f",
+                  pois, kd, burn);
+}
+
+// Семейства действий. ВАЖНО РАЗЛИЧАТЬ — в поле 85.50 первая версия этой
+// классификации смешала их и выдала «отшатывание» там, где гоблин просто
+// споткнулся на бегу.
+//
+//   FALL    — сбит с ног: Tumble* / CFall. Питается от запаса
+//             human_knockdown_endur (лестница Stand).
+//   STUMBLE — отшатнулся ОТ УДАРА: DmgStumble. Питается от
+//             human_flinch_endur (тоже лестница Stand).
+//   TRIP    — спотыкание при беге: RunStumble / SlopeFall. Это ЛОКОМОЦИЯ,
+//             к крепости отношения не имеет и сигналом НЕ считается —
+//             печатаем отдельной меткой, чтобы не путать с сопротивлением.
+static bool ActIsFallFamily(const char* a)
+{
+    return a && (strstr(a, "Tumble") != nullptr || strstr(a, "CFall") != nullptr);
+}
+static bool ActIsStumbleFamily(const char* a)
+{
+    return a && strstr(a, "DmgStumble") != nullptr;
+}
+static bool ActIsTripFamily(const char* a)
+{
+    return a && (strstr(a, "RunStumble") != nullptr || strstr(a, "SlopeFall") != nullptr);
+}
+
 static void LeaveMember(Member& m, uint32_t now)
 {
     const bool actDeath = LooksLikeDeath(m.act);
@@ -485,10 +534,15 @@ static void LeaveMember(Member& m, uint32_t now)
     const bool nearIn   = (m.distM >= 0.0f && m.distM <= kDeathNearM);
     const bool death    = actDeath || (recent && nearIn);
 
+    // 85.50: РАНГ и запасы в строке смерти — зачем и как, см. AppendRankPools.
+    char rankInfo[128];
+    AppendRankPools(m.body, m.kind, rankInfo, (int)sizeof(rankInfo));
+
     logFile << "PackObserve: " << (death ? "DEATH" : "LEAVE")
             << " @0x" << std::hex << m.body << std::dec
             << " kind=" << m.kind
             << " lastAct=" << (m.act[0] ? m.act : "?")
+            << rankInfo
             << " role=" << PackRoleName(m.role)
             << " scaleH=" << (m.scaleValid ? m.scaleH : -1.0f)
             << " dist=" << m.distM << "m"
@@ -510,14 +564,39 @@ static void LeaveMember(Member& m, uint32_t now)
     m.present = false;
 }
 
+
 static void OnAct(Member& m, const char* act, uint32_t now)
 {
+    char prev[64];
+    lstrcpynA(prev, m.act, sizeof(prev));
     const char* nextAct = act ? act : "";
     const bool actChanged = strcmp(m.act, nextAct) != 0;
     if (actChanged) lstrcpynA(m.act, nextAct, sizeof(m.act));
     const int role = ClassifyGoblinAct(m.act);
     m.role = role;
 
+    // 85.50: СБИВАНИЕ И ОТШАТЫВАНИЕ ВИДНЫ В ЛОГЕ.
+    //
+    // До этой сборки событие «гоблина сбили с ног» в логе отсутствовало вовсе,
+    // и вопрос владельца «некоторые кажутся устойчивее к сбиванию» нельзя было
+    // проверить иначе как на глаз. Печатаем ВХОД в семейство (Tumble -> TumbleRun
+    // -> TumbleStand остаётся одним событием) вместе с рангом и запасом на теле.
+    if (actChanged) {
+        const bool fell = ActIsFallFamily(m.act) && !ActIsFallFamily(prev);
+        const bool stag = ActIsStumbleFamily(m.act) && !ActIsStumbleFamily(prev);
+        const bool trip = ActIsTripFamily(m.act) && !ActIsTripFamily(prev);
+        if (fell || stag || trip) {
+            const char* what = fell ? "FALL" : (stag ? "STUMBLE" : "TRIP");
+            if (fell)   ++s_nFalls;
+            if (stag)   ++s_nStumbles;
+            if (trip)   ++s_nTrips;
+            char extra[128];
+            AppendRankPools(m.body, m.kind, extra, (int)sizeof(extra));
+            logFile << "PackObserve: " << what
+                    << " @0x" << std::hex << m.body << std::dec
+                    << " act=" << m.act << extra << std::endl;
+        }
+    }
     if (role == PACK_ROLE_CALLER && actChanged) {
         ++m.hornCount;
         s_hornSeen = true;
@@ -593,6 +672,13 @@ void PackObserveInit()
 
 void PackObserveShutdown()
 {
+    // 85.51: итог по устойчивости. Падение = проверка запаса сбивания,
+    // STUMBLE = проверка запаса отшатывания, TRIP к крепости не относится.
+    logFile << "PackObserve: fall summary falls=" << s_nFalls
+            << " stumbles=" << s_nStumbles
+            << " trips=" << s_nTrips
+            << " (fall=knockdown, stumble=dmg-flinch, trip=locomotion)"
+            << std::endl;
     if (s_live > 0) ResetEncounter("shutdown");
     s_armed = false;
     s_admitted = false;

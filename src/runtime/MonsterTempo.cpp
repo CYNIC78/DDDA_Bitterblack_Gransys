@@ -861,13 +861,45 @@ static const char* kRankNames[kRankSteps] = {
 };
 
 // Встроенные числа: вес / полоса размера / множитель атаки.
-static const float kRankDef[kRankSteps][4] = {
-    { 0.34f, 0.95f, 1.03f, 1.00f },   // новичок: ванильная атака, мелкий
-    { 0.46f, 1.03f, 1.07f, 1.09f },   // солдат: основной боец
-    { 0.13f, 1.07f, 1.12f, 1.20f },   // ветеран: 1-2 на пачку
-    { 0.05f, 1.12f, 1.18f, 1.35f },   // элита
-    { 0.02f, 1.18f, 1.25f, 1.52f },   // мини-босс: редко
+// столбцы: вес, размер min/max, атака, сопротивления, устойчивость к сбиванию.
+//
+// КРЕПОСТЬ ОТКАЛИБРОВАНА ПО ХОБГОБЛИНУ (85.47). Владелец: «мини-босс-гоблин —
+// чемпион в лёгком весе, новичок-хоб — новичок в следующей категории», цель —
+// примерно половина стат хобгоблина. Родные числа: у гоблина горение 300 и
+// сбивание 100, у хобгоблина 2000 и 650. Половина от хоба — это 1000 и 325,
+// то есть ×3.3 к гоблину. По этой же мерке построена вся лестница: ступень N
+// берёт свою долю хобгоблина по САМОМУ СЛАБОМУ полю гоблина — огню (и так же
+// по сбиванию). Новичок остаётся ровно ванильным (правило пилота).
+//
+//   ступень   доля от хоба   Resist   Stand    горение   сбивание
+//   новичок        0%         1.00     1.00       300       100
+//   солдат        20%         1.35     1.30       400       130
+//   ветеран       30%         2.00     1.95       600       195
+//   элита         40%         2.65     2.60       800       260
+//   мини-босс     50%         3.30     3.25       990       325
+//
+// Оговорка, которую владелец сам назвал: у остальных полей соотношение
+// гоблин/хоб другое (яд 3.0, окаменение 3.6, заморозок 4.4), а ручка одна.
+// Поэтому по яду мини-босс догоняет хобгоблина целиком, по огню и сбиванию
+// выходит ровно половина. Точнее — только отдельными ключами на поле, если
+// понадобится.
+static const float kRankDef[kRankSteps][6] = {
+    { 0.34f, 0.95f, 1.03f, 1.00f, 1.00f, 1.00f },   // новичок: ваниль целиком
+    { 0.46f, 1.03f, 1.07f, 1.09f, 1.35f, 1.30f },   // солдат
+    { 0.13f, 1.07f, 1.12f, 1.20f, 2.00f, 1.95f },   // ветеран: 1-2 на пачку
+    { 0.05f, 1.12f, 1.18f, 1.35f, 2.65f, 2.60f },   // элита
+    { 0.02f, 1.18f, 1.25f, 1.52f, 3.30f, 3.25f },   // мини-босс: половина хоба
 };
+
+// Пределы крепости подняты до 3.5 вместе с калибровкой 85.47: мини-боссу нужно
+// дойти до половины хобгоблина, а это ×3.3 по огню и ×3.25 по сбиванию. Потолок
+// 3.5 — ровно под эту цель и ни шагом дальше: выше мини-босс-гоблин перестал бы
+// быть «чемпионом лёгкого веса» и полез бы в категорию хоба целиком.
+// Про «огонь должен работать» — на половине хоба (горение 990 против 2000 у хоба)
+// огонь ещё кусается: гоблин остаётся самой горючей нежитью-роднёй, просто не
+// вспыхивает от одного факела.
+static const float kRankResistMax = 3.5f;
+static const float kRankStandMax  = 3.5f;
 
 struct RanksSlot {
     char          kind[24];
@@ -879,11 +911,20 @@ static RanksSlot s_ranks[kRanksSlots];
 static int        s_ranksUsed = 0;
 static uint32_t   s_ranksSalt = 0;
 
-// Кому лестница разрешена ВООБЩЕ. Гоблин — пилот. Волк в список не входит
-// намеренно: у него другая рука (сопротивления/укус), размер не трогаем.
+// Кому ранги разрешены ВООБЩЕ.
+//
+// 85.52: волк ДОБАВЛЕН — но только благодаря переключателю rankScale (см. ниже).
+// История вопроса: 85.40 показал, почему вид нельзя допускать вслепую — волки
+// получили полосу роста и стали «гигантами», а это владелец отверг. Тогда же
+// было решено: у волка другая рука (сопротивления/укус), размер неприкосновенен.
+// Теперь ранги умеют работать БЕЗ размера, поэтому волк допущен честно: ступень
+// даёт ему атаку и крепость, а рост остаётся ванильным. Список по-прежнему в
+// коде: ini может только выключить вид ([species.<kind>] ranks = off).
 bool RanksSpeciesAllowed(const char* kind)
 {
-    return kind && !strcmp(kind, "uEm0100");
+    if (!kind) return false;
+    return !strcmp(kind, "uEm0100")     // гоблин — пилот
+        || !strcmp(kind, "uEm0200");    // волк — с rankScale = off в ini
 }
 
 uint32_t RanksSessionSalt()
@@ -902,6 +943,13 @@ uint32_t RanksSessionSalt()
 static int s_rankIssued[kRanksSlots][kRankSteps];
 static const char* s_rankKind[kRanksSlots];
 static int s_rankIssuedTotal = 0;
+
+const char* RankStepName(int step)
+{
+    static const char* kNames[kRankSteps] = { "novice", "soldier", "veteran", "elite", "miniboss" };
+    if (step < 0 || step >= kRankSteps) return nullptr;
+    return kNames[step];
+}
 
 void NoteRankIssued(const char* kind, int step)
 {
@@ -964,11 +1012,20 @@ static void RanksSanitize(RanksNumbers& n)
         if (st.sizeMax > 1.40f) st.sizeMax = 1.40f;         // выше — расходится хитбокс
         if (!(st.atk >= 1.0f)) st.atk = 1.0f;               // ниже ванили не бывает
         if (st.atk > 1.80f) st.atk = 1.80f;
+        // крепость: мусор -> ваниль; ниже ванили не бывает; потолки — выше.
+        if (!(st.resist >= 1.0f)) st.resist = 1.0f;
+        if (st.resist > kRankResistMax) st.resist = kRankResistMax;
+        if (!(st.stand >= 1.0f)) st.stand = 1.0f;
+        if (st.stand > kRankStandMax) st.stand = kRankStandMax;
         sum += st.weight;
     }
     if (sum <= 0.0001f) {
-        for (int i = 0; i < kRankSteps; ++i)
+        // все веса нулевые (или мусор) -> возвращаем встроенный набор целиком
+        for (int i = 0; i < kRankSteps; ++i) {
             n.step[i].weight = kRankDef[i][0];
+            n.step[i].resist = kRankDef[i][4];
+            n.step[i].stand  = kRankDef[i][5];
+        }
     }
 }
 
@@ -995,6 +1052,8 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
     //     ini остаются, но ни на что не влияют);
     //   * у включённого вида отсутствие ключа = включено: бэкфилль дописал бы
     //     "off", и пилот не поднялся бы без ручной правки ini.
+    out.scale = true;   // 85.52: умолчание — ранги трогают и размер
+
     if (!speciesKind || !RanksSpeciesAllowed(speciesKind)) {
         out.enabled = false;
         return out;
@@ -1003,6 +1062,12 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
     snprintf(sec, sizeof(sec), "species.%s", speciesKind);
     out.enabled = ini.Bool(sec, "ranks", true);   // ключ может только выключить
     if (!out.enabled) return out;
+
+    // 85.52: трогать ли РАЗМЕР. Ключа нет = да (поведение гоблина не меняется).
+    // off = размер берётся из ванильного коридора вида, а крупные ванильные
+    // вожаки сохраняются как раньше; ступень при этом продолжает давать атаку
+    // и крепость.
+    out.scale = ini.Bool(sec, "rankScale", true);
 
     // Числа рангов: [ranks], по ключу на ранг. Ключа нет = встроенное.
     for (int i = 0; i < kRankSteps; ++i) {
@@ -1015,6 +1080,12 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
         out.step[i].sizeMax = ini.Float("ranks", k, out.step[i].sizeMax);
         snprintf(k, sizeof(k), "rank%dAtk",     i);
         out.step[i].atk     = ini.Float("ranks", k, out.step[i].atk);
+        // 85.44: крепость. Ключ читается как «во сколько раз крепче»:
+        // 1.0 = ваниль (и это же значение по умолчанию), больше = крепче.
+        snprintf(k, sizeof(k), "rank%dResist",  i);
+        out.step[i].resist  = ini.Float("ranks", k, out.step[i].resist);
+        snprintf(k, sizeof(k), "rank%dStand",   i);
+        out.step[i].stand   = ini.Float("ranks", k, out.step[i].stand);
     }
     RanksSanitize(out);
     return out;
@@ -1047,6 +1118,13 @@ bool GetRanks(const char* kind, RanksNumbers* out)
     return false;
 }
 
+bool RankScaleEnabled(const char* kind)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return false;
+    return n.scale;
+}
+
 bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut)
 {
     RanksNumbers n;
@@ -1057,8 +1135,17 @@ bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut)
     return true;
 }
 
+bool RanksBuiltinToughness(int step, float* resistOut, float* standOut)
+{
+    if (step < 0 || step >= kRankSteps) return false;
+    if (resistOut) *resistOut = kRankDef[step][4];
+    if (standOut)  *standOut  = kRankDef[step][5];
+    return true;
+}
+
 bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
-                   float* sizeOut, float* atkOut)
+                   float* sizeOut, float* atkOut, float* resistOut,
+                   float* standOut)
 {
     RanksNumbers n;
     if (!GetRanks(kind, &n)) return false;
@@ -1086,9 +1173,11 @@ bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
     const float u = (float)h2 / 4294967295.0f;
     const RankStep& st = n.step[pick];
 
-    if (stepOut) *stepOut = pick;
-    if (sizeOut) *sizeOut = st.sizeMin + (st.sizeMax - st.sizeMin) * u;
-    if (atkOut)  *atkOut  = st.atk;
+    if (stepOut)  *stepOut  = pick;
+    if (sizeOut)  *sizeOut  = st.sizeMin + (st.sizeMax - st.sizeMin) * u;
+    if (atkOut)   *atkOut   = st.atk;
+    if (resistOut) *resistOut = st.resist;
+    if (standOut)  *standOut  = st.stand;
     return true;
 }
 

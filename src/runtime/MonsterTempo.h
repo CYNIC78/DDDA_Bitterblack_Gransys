@@ -271,12 +271,26 @@ struct RankStep {
     float weight;          // доля особей пачки на этой ступени (сумма = 1)
     float sizeMin, sizeMax;// полоса размера ступени
     float atk;             // множитель атаки (>= 1.0: ниже ванили не бывает)
+    // 85.44: «ВО СКОЛЬКО РАЗ КРЕПЧЕ» — 1.0 = ваниль, больше = крепче.
+    // Знак переводит код, а не игрок: сопротивления наложениям в игре лежат
+    // множителем получаемого эффекта (меньше = крепче), а выносливости к
+    // сбиванию — запасом (больше = крепче). Путать это нельзя, поэтому ключ
+    // всегда читается как «крепче», в какую бы сторону ни лежало поле.
+    float resist;          // сопротивления дебилитациям (горение, яд, сон, ...)
+    float stand;           // отшатывание и сбивание с ног
 };
 
 enum { kRankSteps = 5 };
 
 struct RanksNumbers {
     bool       enabled;              // [species.<kind>] ranks = on/off
+    // 85.52: ранги МОГУТ работать без размера. Волк — ровно такой случай:
+    // владелец принял ранги как инструмент, но рост волка менять нельзя
+    // («волки-гиганты нелепо»), поэтому у вида есть переключатель
+    // [species.<kind>] rankScale = off. Тогда ступень даёт атаку и крепость,
+    // а размер остаётся ванильным: работает родной коридор вида и защита
+    // крупных ванильных вожаков. Умолчание — включено (у гоблина как было).
+    bool       scale;
     RankStep step[kRankSteps];
 };
 
@@ -295,14 +309,29 @@ const char*   RankName(int step);         // "novice".."miniboss", "?"
 void RegisterRanks(const char* kind, const RanksNumbers& n);
 bool GetRanks(const char* kind, RanksNumbers* out);
 
+// 85.52: трогать ли РАЗМЕР особей этого вида. false = ступень работает, но
+// рост остаётся ванильным (коридор вида + сохранение крупных вожаков).
+bool RankScaleEnabled(const char* kind);
+
 // Ступень особи. true = вид под лестницей и ступень выбрана.
 // sizeOut — рост из полосы ступени; atkOut — множитель атаки ступени.
+// 85.48: встроенная (зашитая в код) лестница крепости — для сверки с ini в логе.
+// Поле 85.47 показало, зачем это нужно: ключи rankNResist/rankNStand были
+// автодописаны старым билдом со значениями 1.00 (наш же авто-бэкфилл в iniConfig),
+// и новая лестница из кода до игры не дошла — молча, без единой строки в логе.
+bool RanksBuiltinToughness(int step, float* resistOut, float* standOut);
+
 bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
-                   float* sizeOut, float* atkOut);
+                   float* sizeOut, float* atkOut,
+                   float* resistOut = nullptr, float* standOut = nullptr);
 
 // 85.42: учёт раздачи и итоговая сводка «кто заспавнился за сессию».
 // Зовётся ТОЛЬКО когда ранг реально выдан особи (один раз на тело).
 void NoteRankIssued(const char* kind, int step);
+
+// 85.50: короткое имя ступени для строк других модулей (PackObserve печатает
+// ранг в строке смерти). nullptr вне диапазона.
+const char* RankStepName(int step);
 void RankSummary(char* out, int cap);
 
 // Числа конкретной ступени. Нужно ванильному вожаку (Capcom Native Alpha):

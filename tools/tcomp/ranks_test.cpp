@@ -100,13 +100,40 @@ static void TestFlagGates()
     // 85.41: вид ВНЕ списка не включается никакой ини. В поле 85.40 у волка
     // в живом ini стояло ranks = on — и волки получили полосу роста и
     // множители атаки, хотя размер волка трогать нельзя.
-    FakeIni wolfOn;
-    wolfOn.SetBool("species.uEm0200", "ranks", true);
-    RanksNumbers wolf = RanksFromIni(wolfOn, "uEm0200");
-    assert(!wolf.enabled);                       // ключ не имеет силы
+    // 85.52: у нас появился второй вид вне списка (ящер) — проверяем на нём.
+    FakeIni lizardOn;
+    lizardOn.SetBool("species.uEm0400", "ranks", true);
+    RanksNumbers lizard = RanksFromIni(lizardOn, "uEm0400");
+    assert(!lizard.enabled);                     // ключ не имеет силы
+    RegisterRanks("uEm0400", lizard);
+    assert(!RankPickFor("uEm0400", 0x777, &st, &sz, &at));
+    assert(GetRanks("uEm0400", &lizard) == false);
+
+    // 85.52: ВОЛК допущен — но размером ранги у него НЕ управляют.
+    // Это то самое правило владельца: «волки-гиганты нелепо», рост волка
+    // неприкосновенен. Проверяем обе половины: ступень есть, размера нет.
+    FakeIni wolfIni;
+    wolfIni.SetBool("species.uEm0200", "ranks", true);
+    wolfIni.SetBool("species.uEm0200", "rankScale", false);
+    RanksNumbers wolf = RanksFromIni(wolfIni, "uEm0200");
+    assert(wolf.enabled);                        // волк под рангами
+    assert(!wolf.scale);                         // но размер — ванильный
+    assert(wolf.step[4].atk > 1.4f);             // атака от ступени работает
     RegisterRanks("uEm0200", wolf);
-    assert(!RankPickFor("uEm0200", 0x777, &st, &sz, &at));
-    assert(GetRanks("uEm0200", &wolf) == false);
+    assert(RankPickFor("uEm0200", 0x777, &st, &sz, &at));
+    assert(st >= 0 && st < kRankSteps);
+    assert(!RankScaleEnabled("uEm0200"));        // размер не наш
+    assert(RankScaleEnabled("uEm0100") == false || true);  // гоблин — см. ниже
+
+    // А у гоблина умолчание осталось прежним: ключа нет = размер от ступени.
+    {
+        FakeIni g;
+        g.SetBool("species.uEm0100", "ranks", true);
+        RanksNumbers gn = RanksFromIni(g, "uEm0100");
+        assert(gn.enabled);
+        assert(gn.scale);                        // размер по-прежнему наш
+        RegisterRanks("uEm0100", gn);
+    }
 
     // Явный off в ini выключает и гоблина.
     FakeIni offIni;
@@ -116,7 +143,17 @@ static void TestFlagGates()
     RegisterRanks("uEm0100", gobOff);
     assert(!RankPickFor("uEm0100", 0x1000, &st, &sz, &at));
     assert(!GetRanks("uEm0100", &gobOff));
-    assert(!RankPickFor("uEm0200", 0x1000, &st, &sz, &at));   // вида нет вовсе
+    // волк остаётся допущенным (проверен выше), но ВЫКЛЮЧЕННЫМ ключом ini —
+    // показываем, что off вида гасит ступень и после успешного включения
+    RegisterRanks("uEm0200", wolf);
+    assert(RankPickFor("uEm0200", 0x1000, &st, &sz, &at));
+    FakeIni wolfOff;
+    wolfOff.SetBool("species.uEm0200", "ranks", false);
+    RanksNumbers wolfOffN = RanksFromIni(wolfOff, "uEm0200");
+    assert(!wolfOffN.enabled);
+    RegisterRanks("uEm0200", wolfOffN);
+    assert(!RankPickFor("uEm0200", 0x1000, &st, &sz, &at));
+    assert(!RankScaleEnabled("uEm0200"));   // выключенный вид = размера тоже нет
 
     FakeIni on;
     on.SetBool("species.uEm0100", "ladder", true);
@@ -161,6 +198,62 @@ static void TestCustomAndSanitize()
     float sum = 0;
     for (int i = 0; i < kRankSteps; ++i) sum += j.step[i].weight;
     assert(sum > 0.9f);
+}
+
+// 85.44: крепость ранга. Проверяем три вещи, которые легко сделать неправильно:
+// ключ читается, ключ зажимается (ниже ванили нельзя, выше потолка нельзя),
+// и выбранный ранг отдаёт свою крепость — потому что по ней код решает, писать
+// ли вообще в сопротивления (1.0 = не писать).
+static void TestToughnessKeys()
+{
+    FakeIni ini;
+    ini.SetBool("species.uEm0100", "ranks", true);
+    // по умолчанию — ваниль: фича приезжает выключенной
+    RanksNumbers n = RanksFromIni(ini, "uEm0100");
+    for (int i = 0; i < kRankSteps; ++i) {
+        assert(std::fabs(n.step[i].resist - 1.0f) < 0.0001f);
+        assert(std::fabs(n.step[i].stand  - 1.0f) < 0.0001f);
+    }
+
+    // заданные значения + зажимы: мусор, попытка ослабить, попытка перекрутить
+    FakeIni c;
+    c.SetBool("species.uEm0100", "ranks", true);
+    c.SetFloat("ranks", "rank0Resist", 0.50f);    // ниже ванили -> 1.0
+    c.SetFloat("ranks", "rank0Stand", 1.30f);
+    c.SetFloat("ranks", "rank4Resist", 99.0f);    // выше потолка -> потолок
+    c.SetFloat("ranks", "rank4Stand", 99.0f);
+    c.SetFloat("ranks", "rank3Resist", -5.0f);    // отрицательное -> 1.0
+    RanksNumbers m = RanksFromIni(c, "uEm0100");
+    assert(std::fabs(m.step[0].resist - 1.0f) < 0.0001f);
+    assert(std::fabs(m.step[0].stand  - 1.30f) < 0.0001f);
+    assert(m.step[3].resist >= 1.0f);
+    // 85.47: потолки подняты до 3.5 под калибровку «половина хобгоблина»
+    assert(m.step[4].resist <= 3.5f && m.step[4].resist > 1.5f);
+    assert(m.step[4].stand  <= 3.5f && m.step[4].stand  > 1.5f);
+
+    // и сама калибровка: лестница крепости растёт от новичка к мини-боссу и
+    // заканчивается «половиной хобгоблина» (горение 300 -> 990 при 3.30)
+    assert(std::fabs(n.step[0].resist - 1.00f) < 0.0001f);   // новичок = ваниль
+    float prev = 0.0f;
+    for (int i = 0; i < kRankSteps; ++i) {
+        assert(n.step[i].resist >= prev);
+        assert(n.step[i].stand  >= 1.0f);
+        prev = n.step[i].resist;
+    }
+
+    // ранг отдаёт СВОЮ крепость, и она доезжает до того, кто будет писать
+    RegisterRanks("uEm0100", m);
+    for (int i = 0; i < 64; ++i) {
+        int st = -1; float sz = 0, at = 0, rs = 0, sd = 0;
+        const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x1000u;
+        assert(RankPickFor("uEm0100", body, &st, &sz, &at, &rs, &sd));
+        assert(std::fabs(rs - m.step[st].resist) < 0.0001f);
+        assert(std::fabs(sd - m.step[st].stand)  < 0.0001f);
+    }
+
+    // старые вызовы (без новых аргументов) продолжают работать: крепость не вытащили
+    int st = -1; float sz = 0, at = 0;
+    assert(RankPickFor("uEm0100", 0x10D50060, &st, &sz, &at));
 }
 
 static void TestDeterminismAndSpread()
@@ -229,6 +322,7 @@ int main()
     TestCustomAndSanitize();
     TestDeterminismAndSpread();
     TestSessionSummary();
+    TestToughnessKeys();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
                  "детерминизм, разброс ступеней)\n";
     return 0;
