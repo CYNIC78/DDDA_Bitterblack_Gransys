@@ -1669,6 +1669,12 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             if (v>0 && v<10000) emId = (uint16_t)v;
         }
         SpeciesCombatBase* spb = (emId!=0xFFFF) ? FindSpeciesBase(emId) : nullptr;
+        // 85.59: справочные числа из ФАЙЛА игры (проверены полем 85.57 — в памяти
+        // гоблина лежали ровно эти значения). Только для чтения и только в лог:
+        // нужны как эталон, чтобы «прочитали 400» не выглядело нормой.
+        // em0100 = гоблин: em0100_cmn.prp -> atk 250 / def 75 / matk 80 / mdef 75.
+        float fileAtk = 0.0f;
+        if (emId == 0x0100) fileAtk = 250.0f;
         if (spb && spb->have) {
             // Use species vanilla base, not cur (protects against reload double-mult)
             // If cur is already multiplied (e.g. 512 vs vanilla 250), we will keep want = vanilla*mult*roll = cur, stable.
@@ -1685,18 +1691,51 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             float estVanillaDef = curDef;
             float multAtk = t.attackMult * rec->combatRollAtk;
             float multDef = t.defenseMult * rec->combatRollDef;
+            bool recoveredAtk = false, recoveredDef = false;
             if (multAtk>1.5f && curAtk>350.0f) {
                 float cand = curAtk / multAtk;
-                if (cand>=50.0f && cand<1000.0f) estVanillaAtk = cand;
+                if (cand>=50.0f && cand<1000.0f) { estVanillaAtk = cand; recoveredAtk = true; }
             }
             if (multDef>1.5f && curDef>120.0f) {
                 float cand = curDef / multDef;
-                if (cand>=10.0f && cand<500.0f) estVanillaDef = cand;
+                if (cand>=10.0f && cand<500.0f) { estVanillaDef = cand; recoveredDef = true; }
             }
             rec->baseAtk = estVanillaAtk;
             rec->baseDefC = estVanillaDef;
             rec->baseMAtk = curMAtk; // for magick we keep simple for now
             rec->baseMDefC = curMDef;
+            // 85.59: ЛИНИЯ БАЗЫ ВИДА — один раз на вид за сессию.
+            //
+            // Поле 85.57 прочитало базу 250/75/80/75 (это РОВНО числа файла игры
+            // em0100_cmn.prp), поле 85.58 — 126.2/80/20/20 (такого набора нет ни
+            // в одном файле игры; 126.2 = 400.0 / 3.169). Владелец ини не трогал
+            // много билдов, значит разницу дала не настройка, а ИСТОРИЯ ПРОЦЕССА:
+            // движок держит боевые поля объекта между перезапусками DLL, а
+            // «восстановление ванили» делением работает МОЛЧА. Теперь оно всегда
+            // говорит о себе, и рядом стоит справочное число из файла.
+            {
+                char cb[300];
+                sprintf_s(cb, "combat base %s raw atk %.1f def %.1f matk %.1f mdef %.1f"
+                              " (mult %.2f/%.2f roll %.3f/%.3f) -> base %.1f/%.1f/%.1f/%.1f"
+                              "  from=estimate%s%s",
+                          kind ? kind : "?",
+                          curAtk, curDef, curMAtk, curMDef,
+                          t.attackMult, t.defenseMult,
+                          rec->combatRollAtk, rec->combatRollDef,
+                          rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC,
+                          recoveredAtk ? " RECOVERED-atk" : "",
+                          recoveredDef ? " RECOVERED-def" : "");
+                logFile << "EnemyTuner: " << cb << std::endl;
+                if (fileAtk > 0.0f) {
+                    char rf[190];
+                    sprintf_s(rf, "combat base %s reference from game file:"
+                                  " em0100_cmn.prp atk %.1f def %.1f matk %.1f mdef %.1f"
+                                  " (deviation raw atk x%.3f)",
+                              kind ? kind : "?", fileAtk, 75.0f, 80.0f, 75.0f,
+                              curAtk / fileAtk);
+                    logFile << "EnemyTuner: " << rf << std::endl;
+                }
+            }
             // Store as species base for future bodies
             if (emId!=0xFFFF) {
                 RememberSpeciesBase(emId, rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC);

@@ -361,6 +361,19 @@ if 'NotePackSetBody' not in et:
     bad.append('EnemyTuner: тела не считаются по наборам (сводка будет пустой)')
 if 'PackSetSummary' not in mt or 'pack set summary' not in mt:
     bad.append('MonsterTempo: нет сводки по наборам за сессию')
+# 85.59: база вида говорит о себе. Разница баз между сессиями (250 против 126.2)
+# выяснилась только потому, что мы пошли в файлы игры; в коде же эвристика
+# «восстановления ванили» молчала. Проверяем, что она печатает сырьё, метку
+# восстановления и сверку с файлом — иначе следующий такой случай опять повиснет.
+if 'combat base %s raw atk' not in et:
+    bad.append('EnemyTuner: нет линии базы вида (эвристика снова решает молча)')
+if 'RECOVERED-atk' not in et or 'RECOVERED-def' not in et:
+    bad.append('EnemyTuner: восстановление ванили не помечается в логе')
+if 'reference from game file' not in et or 'fileAtk = 250.0f' not in et:
+    bad.append('EnemyTuner: нет сверки с файлом игры (гоблин 250/75/80/75)')
+if 'recoveredAtk' not in et:
+    bad.append('EnemyTuner: флаг восстановления пропал')
+
 mth = open('src/runtime/MonsterTempo.h', encoding='utf-8').read()
 if 'kPackSets = 12' not in mth:
     bad.append('MonsterTempo.h: слотов наборов не 12 (владельцу обещано 12)')
