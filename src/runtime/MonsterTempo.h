@@ -321,7 +321,19 @@ bool RankScaleEnabled(const char* kind);
 // и новая лестница из кода до игры не дошла — молча, без единой строки в логе.
 bool RanksBuiltinToughness(int step, float* resistOut, float* standOut);
 
-bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
+// 85.56: РОЛЛ СПРАШИВАЕТ ПОКОЛЕНИЕ ЖИЛЬЦА.
+//
+// Третьим аргументом идёт `gen` — номер жильца этого адреса (см. EnemyTuner:
+// record->gen). Адрес движок переиспользует под другого монстра, и хеш от
+// одного адреса выдавал новому жильцу ступень прежнего (поле 85.55: гоблин-
+// ветеран умер, в его слот встала волчица — и получила «ветерана»). Поколение
+// входит в хеш, поэтому каждый жилец роллит своё.
+//
+// gen = 0 означает «старое поведение»: так вызывают фикстуры и любой код без
+// записи тела. Ролл внутри жизни одного жильца обязан быть неизменным —
+// вызывающий ОБЯЗАН запомнить выданное (см. EnemyTuner::EnsureRankIssued):
+// с 85.56 веса читаются на ходу, и пересчёт назвал бы другую ступень.
+bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
                    float* sizeOut, float* atkOut,
                    float* resistOut = nullptr, float* standOut = nullptr);
 

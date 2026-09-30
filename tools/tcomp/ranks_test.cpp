@@ -95,7 +95,7 @@ static void TestFlagGates()
     assert(!other.enabled);
     RegisterRanks("uEm0300", other);
     int st = -1; float sz = 0, at = 0;
-    assert(!RankPickFor("uEm0300", 0x1000, &st, &sz, &at));   // выключено
+    assert(!RankPickFor("uEm0300", 0x1000, 0u, &st, &sz, &at));   // выключено
 
     // 85.41: вид ВНЕ списка не включается никакой ини. В поле 85.40 у волка
     // в живом ini стояло ranks = on — и волки получили полосу роста и
@@ -106,7 +106,7 @@ static void TestFlagGates()
     RanksNumbers lizard = RanksFromIni(lizardOn, "uEm0400");
     assert(!lizard.enabled);                     // ключ не имеет силы
     RegisterRanks("uEm0400", lizard);
-    assert(!RankPickFor("uEm0400", 0x777, &st, &sz, &at));
+    assert(!RankPickFor("uEm0400", 0x777, 0u, &st, &sz, &at));
     assert(GetRanks("uEm0400", &lizard) == false);
 
     // 85.52: ВОЛК допущен — но размером ранги у него НЕ управляют.
@@ -120,7 +120,7 @@ static void TestFlagGates()
     assert(!wolf.scale);                         // но размер — ванильный
     assert(wolf.step[4].atk > 1.4f);             // атака от ступени работает
     RegisterRanks("uEm0200", wolf);
-    assert(RankPickFor("uEm0200", 0x777, &st, &sz, &at));
+    assert(RankPickFor("uEm0200", 0x777, 0u, &st, &sz, &at));
     assert(st >= 0 && st < kRankSteps);
     assert(!RankScaleEnabled("uEm0200"));        // размер не наш
     assert(RankScaleEnabled("uEm0100") == false || true);  // гоблин — см. ниже
@@ -141,18 +141,18 @@ static void TestFlagGates()
     RanksNumbers gobOff = RanksFromIni(offIni, "uEm0100");
     assert(!gobOff.enabled);
     RegisterRanks("uEm0100", gobOff);
-    assert(!RankPickFor("uEm0100", 0x1000, &st, &sz, &at));
+    assert(!RankPickFor("uEm0100", 0x1000, 0u, &st, &sz, &at));
     assert(!GetRanks("uEm0100", &gobOff));
     // волк остаётся допущенным (проверен выше), но ВЫКЛЮЧЕННЫМ ключом ini —
     // показываем, что off вида гасит ступень и после успешного включения
     RegisterRanks("uEm0200", wolf);
-    assert(RankPickFor("uEm0200", 0x1000, &st, &sz, &at));
+    assert(RankPickFor("uEm0200", 0x1000, 0u, &st, &sz, &at));
     FakeIni wolfOff;
     wolfOff.SetBool("species.uEm0200", "ranks", false);
     RanksNumbers wolfOffN = RanksFromIni(wolfOff, "uEm0200");
     assert(!wolfOffN.enabled);
     RegisterRanks("uEm0200", wolfOffN);
-    assert(!RankPickFor("uEm0200", 0x1000, &st, &sz, &at));
+    assert(!RankPickFor("uEm0200", 0x1000, 0u, &st, &sz, &at));
     assert(!RankScaleEnabled("uEm0200"));   // выключенный вид = размера тоже нет
 
     FakeIni on;
@@ -246,14 +246,14 @@ static void TestToughnessKeys()
     for (int i = 0; i < 64; ++i) {
         int st = -1; float sz = 0, at = 0, rs = 0, sd = 0;
         const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x1000u;
-        assert(RankPickFor("uEm0100", body, &st, &sz, &at, &rs, &sd));
+        assert(RankPickFor("uEm0100", body, 0u, &st, &sz, &at, &rs, &sd));
         assert(std::fabs(rs - m.step[st].resist) < 0.0001f);
         assert(std::fabs(sd - m.step[st].stand)  < 0.0001f);
     }
 
     // старые вызовы (без новых аргументов) продолжают работать: крепость не вытащили
     int st = -1; float sz = 0, at = 0;
-    assert(RankPickFor("uEm0100", 0x10D50060, &st, &sz, &at));
+    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &st, &sz, &at));
 }
 
 static void TestDeterminismAndSpread()
@@ -265,8 +265,8 @@ static void TestDeterminismAndSpread()
 
     // детерминированность: два вопроса к одному телу дают одно и то же
     int s1 = -1, s2 = -1; float z1 = 0, z2 = 0, a1 = 0, a2 = 0;
-    assert(RankPickFor("uEm0100", 0x10D50060, &s1, &z1, &a1));
-    assert(RankPickFor("uEm0100", 0x10D50060, &s2, &z2, &a2));
+    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &s1, &z1, &a1));
+    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &s2, &z2, &a2));
     assert(s1 == s2 && std::fabs(z1 - z2) < 0.00001f && std::fabs(a1 - a2) < 0.00001f);
 
     // полоса размера ступени соблюдается: размер не гуляет по всему коридору
@@ -275,7 +275,7 @@ static void TestDeterminismAndSpread()
     for (int i = 0; i < N; ++i) {
         int st = -1; float sz = 0, at = 0;
         const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x1000u;
-        assert(RankPickFor("uEm0100", body, &st, &sz, &at));
+        assert(RankPickFor("uEm0100", body, 0u, &st, &sz, &at));
         assert(st >= 0 && st < kRankSteps);
         assert(sz >= n.step[st].sizeMin - 0.0001f && sz <= n.step[st].sizeMax + 0.0001f);
         assert(std::fabs(at - n.step[st].atk) < 0.0001f);
@@ -393,6 +393,60 @@ static void TestScaleDefaultPerSpecies()
     std::cout << "  scale defaults: goblin=on wolf=off (key overrides)\n";
 }
 
+// 85.56: СТУПЕНЬ ПРИВЯЗАНА К ЖИЛЬЦУ, А НЕ К АДРЕСУ.
+//
+// Поле 85.55: адрес 0x10D57470 отдал «ветерана» гоблину, а следом волчице в
+// том же слоте — снова «ветерана» (вес ветерана 13%, повтор 13% — почти не
+// бывает случайно). Причина: хеш считался от одного адреса. Проверяем, что
+// поколение входит в ролл и при этом ничего не ломает.
+static void TestGeneration()
+{
+    FakeIni ini;
+    ini.SetBool("species.uEm0100", "ranks", true);
+    RanksNumbers n = RanksFromIni(ini, "uEm0100");
+    RegisterRanks("uEm0100", n);
+
+    // 1) внутри жизни одного жильца ступень не мигает
+    for (int i = 0; i < 32; ++i) {
+        const uintptr_t body = 0x10D50060u + (uintptr_t)i * 0x7410u;
+        int a = -1, b = -1; float x = 0, y = 0, c = 0, d = 0;
+        assert(RankPickFor("uEm0100", body, 7u, &a, &x, &c));
+        assert(RankPickFor("uEm0100", body, 7u, &b, &y, &d));
+        assert(a == b && std::fabs(x - y) < 0.00001f && std::fabs(c - d) < 0.00001f);
+    }
+
+    // 2) поколение реально участвует: иначе все пары совпали бы и тест упал
+    int same = 0, changed = 0;
+    for (int i = 0; i < 256; ++i) {
+        const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x7410u;
+        int p1 = -1, p2 = -1; float s1 = 0, s2 = 0, a1 = 0, a2 = 0;
+        assert(RankPickFor("uEm0100", body, 1u, &p1, &s1, &a1));
+        assert(RankPickFor("uEm0100", body, 2u, &p2, &s2, &a2));
+        if (p1 == p2 && std::fabs(s1 - s2) < 0.00001f) ++same; else ++changed;
+    }
+    assert(changed > 0);
+    std::cout << "  generation: unchanged=" << same << " changed=" << changed
+              << " of 256 (address alone would give 0 changed)\n";
+
+    // 3) у одного адреса разные жильцы реально получают разные ступени
+    bool seen[kRankSteps] = {};
+    int distinct = 0;
+    for (uint32_t g = 1; g <= 64; ++g) {
+        int st = -1; float sz = 0, at = 0;
+        assert(RankPickFor("uEm0100", 0x10D57470u, g, &st, &sz, &at));
+        assert(st >= 0 && st < kRankSteps);
+        if (!seen[st]) { seen[st] = true; ++distinct; }
+    }
+    assert(distinct >= 2);          // «всегда ветеран» больше не бывает
+    std::cout << "  generation spread: " << distinct << " tiers over 64 residents\n";
+
+    // 4) gen = 0 — старое поведение (так зовут фикстуры и код без записи тела)
+    int z1 = -1, z2 = -1; float f1 = 0, f2 = 0, q1 = 0, q2 = 0;
+    assert(RankPickFor("uEm0100", 0x10D57470u, 0u, &z1, &f1, &q1));
+    assert(RankPickFor("uEm0100", 0x10D57470u, 0u, &z2, &f2, &q2));
+    assert(z1 == z2 && std::fabs(f1 - f2) < 0.00001f);
+}
+
 int main()
 {
     TestFlagGates();
@@ -402,7 +456,8 @@ int main()
     TestToughnessKeys();
     TestSummaryKeepsKindName();
     TestScaleDefaultPerSpecies();
+    TestGeneration();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
-                 "детерминизм, разброс ступеней)\n";
+                 "детерминизм, разброс ступеней, поколение жильца)\n";
     return 0;
 }

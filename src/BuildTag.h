@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.55-burn-book"
+#define MOD_BUILD_TAG "85.56-ranks-live"

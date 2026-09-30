@@ -17,6 +17,11 @@ public:
 	bool autoBackfill = true;
 	explicit iniConfig(LPCSTR fileName);
 
+	// 85.56: путь к своему файлу. Нужен сторожу живого чтения [ranks]: он обязан
+	// следить за ТЕМ ЖЕ файлом, который читает мод, а не за копией по другому
+	// пути (иначе правка не подхватится, и это будет молчаливый no-op).
+	LPCSTR Path() const { return fileName; }
+
 	void removeKey(LPCSTR section, LPCSTR key) const;
 	std::vector<int> getSectionInts(LPCSTR section);
 

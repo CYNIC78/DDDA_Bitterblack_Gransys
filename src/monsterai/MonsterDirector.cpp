@@ -2062,6 +2062,97 @@ static void ResetRuntimeState(const char* reason)
     ResetDecisionMemory(reason);
 }
 
+// 85.56: ЧТЕНИЕ [ranks] ВЫНЕСЕНО ИЗ Init В ОТДЕЛЬНУЮ ФУНКЦИЮ.
+//
+// ЗАЧЕМ. Раньше числа рангов читались ровно один раз при инициализации мода.
+// Владелец попросил крутить веса на ходу — и это безопасно именно потому, что
+// ступень замораживается в момент выдачи (EnemyTuner::EnsureRankIssued): правка
+// влияет только на тех, кто появится ПОСЛЕ неё. Ту же функцию теперь зовёт
+// сторож по времени изменения файла — тем же способом и с той же защитой от
+// недописанного файла, что уже работает у ddda_entities.ini (EntityConfig::Tick).
+static int RegisterRankSpecies(bool live)
+{
+    if (live)
+        logFile << "Monster Director: ranks RELOADED from ini (live read, 85.56)."
+                   " The numbers below are what NEW arrivals will get; monsters"
+                   " already ranked keep their tier." << std::endl;
+    int nOn = 0;
+    {
+        IniSpeciesReader reader;
+        for (int i = 0; i < SpeciesCardCount(); ++i) {
+            const SpeciesCard* card = &kSpeciesCards[i];
+            const Runtime::Tempo::RanksNumbers ln =
+                Runtime::Tempo::RanksFromIni(reader, card->kind);
+            Runtime::Tempo::RegisterRanks(card->kind, ln);
+            if (!ln.enabled) continue;
+            ++nOn;
+            // 85.42: печатаем и ВЕСА — без них из лога не видно, какая доля
+            // пачки задумана на каждый ранг (в 85.41 именно это мешало понять,
+            // почему в пачке оказалось три мини-босса).
+            char l[420];
+            sprintf_s(l, "Monster Director: ranks %s ON  novice w%.2f %.2f..%.2f x%.2f"
+                         " | soldier w%.2f %.2f..%.2f x%.2f | veteran w%.2f %.2f..%.2f x%.2f"
+                         " | elite w%.2f %.2f..%.2f x%.2f | miniboss w%.2f %.2f..%.2f x%.2f",
+                      card->kind,
+                      ln.step[0].weight, ln.step[0].sizeMin, ln.step[0].sizeMax, ln.step[0].atk,
+                      ln.step[1].weight, ln.step[1].sizeMin, ln.step[1].sizeMax, ln.step[1].atk,
+                      ln.step[2].weight, ln.step[2].sizeMin, ln.step[2].sizeMax, ln.step[2].atk,
+                      ln.step[3].weight, ln.step[3].sizeMin, ln.step[3].sizeMax, ln.step[3].atk,
+                      ln.step[4].weight, ln.step[4].sizeMin, ln.step[4].sizeMax, ln.step[4].atk);
+            logFile << l << std::endl;
+            // 85.44: крепость рангов. Печатаем ВСЕГДА, даже когда всё по 1.0 —
+            // иначе из лога не видно, что ключи вообще существуют и прочитаны
+            // (урок весов 85.42: «задумано» должно быть видно, а не угадываться).
+            char lk[300];
+            // (латиница: в логе кириллицы нет нигде, не заводим)
+            sprintf_s(lk, "Monster Director: ranks %s toughness (times tougher, 1.00 = vanilla)"
+                          " novice res%.2f stand%.2f | soldier res%.2f stand%.2f"
+                          " | veteran res%.2f stand%.2f | elite res%.2f stand%.2f"
+                          " | miniboss res%.2f stand%.2f",
+                      card->kind,
+                      ln.step[0].resist, ln.step[0].stand, ln.step[1].resist, ln.step[1].stand,
+                      ln.step[2].resist, ln.step[2].stand, ln.step[3].resist, ln.step[3].stand,
+                      ln.step[4].resist, ln.step[4].stand);
+            logFile << lk << std::endl;
+            // 85.48: сверка ini со ВСТРОЕННОЙ лестницей. Молчаливый no-op страшнее
+            // ошибки: в поле 85.47 десять ключей были автодописаны старым билдом как
+            // 1.00, и включённая в коде лестница не сработала — в логе не было ни
+            // одной строки, по которой это можно заметить. Теперь видно обе стороны.
+            float bres = 0.0f, bstand = 0.0f;
+            char lb[300];
+            int  nb = 0;
+            nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb,
+                            "Monster Director: ranks %s builtin ladder", card->kind);
+            bool allOne = true;
+            for (int k = 0; k < Runtime::Tempo::kRankSteps; ++k) {
+                if (!Runtime::Tempo::RanksBuiltinToughness(k, &bres, &bstand)) break;
+                nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb, " %s r%.2f s%.2f",
+                                k == 0 ? "novice" : k == 1 ? "soldier" : k == 2 ? "veteran"
+                                : k == 3 ? "elite" : "miniboss", bres, bstand);
+                if (ln.step[k].resist > 1.001f || ln.step[k].stand > 1.001f)
+                    allOne = false;
+            }
+            logFile << lb << std::endl;
+            if (allOne) {
+                Runtime::Tempo::RanksBuiltinToughness(Runtime::Tempo::kRankSteps - 1, &bres, &bstand);
+                if (bres > 1.001f || bstand > 1.001f) {
+                    char lw[320];
+                    sprintf_s(lw, "Monster Director: ranks %s toughness IS OFF - ini keys"
+                                  " all 1.00, while builtin ladder goes up to res%.2f s%.2f."
+                                  " If those 1.00 came from an older build's auto-fill, put"
+                                  " the ladder into [ranks] (see TEST note)",
+                              card->kind, bres, bstand);
+                    logFile << lw << std::endl;
+                }
+            }
+        }
+        if (nOn == 0)
+            logFile << "Monster Director: ranks off (no species allowed/enabled)"
+                    << std::endl;
+    }
+    return nOn;
+}
+
 void Init()
 {
     s_enabled = config.getBool("monsterAI", "enabled", false);
@@ -2156,81 +2247,8 @@ void Init()
     // ddda_ai_overhaul.ini) и отдаём в рантайм-модуль темпа, откуда их берёт
     // тюнер при выдаче размера и статов. Вид допускается списком в коде
     // (сегодня гоблин), ini может только выключить: [species.<kind>] ranks = off.
-    // Числа — секция [ranks], встроенные значения пилота в MonsterTempo.cpp.
-    {
-        IniSpeciesReader reader;
-        int nOn = 0;
-        for (int i = 0; i < SpeciesCardCount(); ++i) {
-            const SpeciesCard* card = &kSpeciesCards[i];
-            const Runtime::Tempo::RanksNumbers ln =
-                Runtime::Tempo::RanksFromIni(reader, card->kind);
-            Runtime::Tempo::RegisterRanks(card->kind, ln);
-            if (!ln.enabled) continue;
-            ++nOn;
-            // 85.42: печатаем и ВЕСА — без них из лога не видно, какая доля
-            // пачки задумана на каждый ранг (в 85.41 именно это мешало понять,
-            // почему в пачке оказалось три мини-босса).
-            char l[420];
-            sprintf_s(l, "Monster Director: ranks %s ON  novice w%.2f %.2f..%.2f x%.2f"
-                         " | soldier w%.2f %.2f..%.2f x%.2f | veteran w%.2f %.2f..%.2f x%.2f"
-                         " | elite w%.2f %.2f..%.2f x%.2f | miniboss w%.2f %.2f..%.2f x%.2f",
-                      card->kind,
-                      ln.step[0].weight, ln.step[0].sizeMin, ln.step[0].sizeMax, ln.step[0].atk,
-                      ln.step[1].weight, ln.step[1].sizeMin, ln.step[1].sizeMax, ln.step[1].atk,
-                      ln.step[2].weight, ln.step[2].sizeMin, ln.step[2].sizeMax, ln.step[2].atk,
-                      ln.step[3].weight, ln.step[3].sizeMin, ln.step[3].sizeMax, ln.step[3].atk,
-                      ln.step[4].weight, ln.step[4].sizeMin, ln.step[4].sizeMax, ln.step[4].atk);
-            logFile << l << std::endl;
-            // 85.44: крепость рангов. Печатаем ВСЕГДА, даже когда всё по 1.0 —
-            // иначе из лога не видно, что ключи вообще существуют и прочитаны
-            // (урок весов 85.42: «задумано» должно быть видно, а не угадываться).
-            char lk[300];
-            // (латиница: в логе кириллицы нет нигде, не заводим)
-            sprintf_s(lk, "Monster Director: ranks %s toughness (times tougher, 1.00 = vanilla)"
-                          " novice res%.2f stand%.2f | soldier res%.2f stand%.2f"
-                          " | veteran res%.2f stand%.2f | elite res%.2f stand%.2f"
-                          " | miniboss res%.2f stand%.2f",
-                      card->kind,
-                      ln.step[0].resist, ln.step[0].stand, ln.step[1].resist, ln.step[1].stand,
-                      ln.step[2].resist, ln.step[2].stand, ln.step[3].resist, ln.step[3].stand,
-                      ln.step[4].resist, ln.step[4].stand);
-            logFile << lk << std::endl;
-            // 85.48: сверка ini со ВСТРОЕННОЙ лестницей. Молчаливый no-op страшнее
-            // ошибки: в поле 85.47 десять ключей были автодописаны старым билдом как
-            // 1.00, и включённая в коде лестница не сработала — в логе не было ни
-            // одной строки, по которой это можно заметить. Теперь видно обе стороны.
-            float bres = 0.0f, bstand = 0.0f;
-            char lb[300];
-            int  nb = 0;
-            nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb,
-                            "Monster Director: ranks %s builtin ladder", card->kind);
-            bool allOne = true;
-            for (int k = 0; k < Runtime::Tempo::kRankSteps; ++k) {
-                if (!Runtime::Tempo::RanksBuiltinToughness(k, &bres, &bstand)) break;
-                nb += sprintf_s(lb + nb, sizeof(lb) - (size_t)nb, " %s r%.2f s%.2f",
-                                k == 0 ? "novice" : k == 1 ? "soldier" : k == 2 ? "veteran"
-                                : k == 3 ? "elite" : "miniboss", bres, bstand);
-                if (ln.step[k].resist > 1.001f || ln.step[k].stand > 1.001f)
-                    allOne = false;
-            }
-            logFile << lb << std::endl;
-            if (allOne) {
-                Runtime::Tempo::RanksBuiltinToughness(Runtime::Tempo::kRankSteps - 1, &bres, &bstand);
-                if (bres > 1.001f || bstand > 1.001f) {
-                    char lw[320];
-                    sprintf_s(lw, "Monster Director: ranks %s toughness IS OFF - ini keys"
-                                  " all 1.00, while builtin ladder goes up to res%.2f s%.2f."
-                                  " If those 1.00 came from an older build's auto-fill, put"
-                                  " the ladder into [ranks] (see TEST note)",
-                              card->kind, bres, bstand);
-                    logFile << lw << std::endl;
-                }
-            }
-        }
-        if (nOn == 0)
-            logFile << "Monster Director: ranks off (no species allowed/enabled)"
-                    << std::endl;
-    }
+    // 85.56: тот же код читается на ходу — см. RanksWatchTick().
+    RegisterRankSpecies(false);
     lstrcpynA(s_status, s_enabled
         ? "Monster Director: PackMark+tactics armed"
         : "Monster Director: disabled", sizeof(s_status));
@@ -2278,8 +2296,57 @@ void OnWorldUnload()
     ResetRuntimeState("world-unload");
 }
 
+// 85.56: ЖИВОЕ ЧТЕНИЕ [ranks].
+//
+// Владелец: «веса — это рантайм, крутить можно на ходу». По правилам проекта
+// рантаймом был только ddda_entities.ini, а главный ини читался один раз — то
+// есть правка весов требовала перезапуска игры, хотя сами веса ни на что, кроме
+// будущих особей, не влияют. Разница принципиальная, поэтому здесь появился
+// сторож — КОПИЯ proven-схемы из EntityConfig::Tick, а не своя выдуманная:
+//   * не чаще 500 мс;
+//   * сравниваем время изменения файла (тот же файл, что читает мод: config.Path());
+//   * после изменения пропускаем один цикл — редакторы пишут неатомарно, и
+//     можно поймать половину файла;
+//   * первый вызов только запоминает время (файл уже прочитан в Init).
+//
+// Живое чтение НЕ трогает уже выданные ступени: они заморожены в записи тела.
+static FILETIME s_ranksMtime   = { 0, 0 };
+static FILETIME s_ranksPending = { 0, 0 };
+static DWORD    s_ranksChecked = 0;
+
+static void RanksWatchTick(DWORD now)
+{
+    if (!now) return;
+    if (s_ranksChecked && now - s_ranksChecked < 500) return;   // не чаще 2 раз в секунду
+    s_ranksChecked = now;
+
+    WIN32_FILE_ATTRIBUTE_DATA fad;
+    if (!GetFileAttributesExA(config.Path(), GetFileExInfoStandard, &fad)) return;
+
+    if (fad.ftLastWriteTime.dwLowDateTime  == s_ranksMtime.dwLowDateTime
+        && fad.ftLastWriteTime.dwHighDateTime == s_ranksMtime.dwHighDateTime)
+        return;   // не менялся
+
+    const bool first = (s_ranksMtime.dwLowDateTime == 0
+                        && s_ranksMtime.dwHighDateTime == 0);
+    s_ranksMtime = fad.ftLastWriteTime;
+    if (first) return;
+
+    if (s_ranksPending.dwLowDateTime != s_ranksMtime.dwLowDateTime
+        || s_ranksPending.dwHighDateTime != s_ranksMtime.dwHighDateTime) {
+        s_ranksPending = s_ranksMtime;
+        return;   // пропускаем цикл — даём файлу дописаться
+    }
+
+    RegisterRankSpecies(true);
+}
+
 void Tick()
 {
+    // 85.56: сторож живого чтения [ranks] идёт ДО проверки s_enabled: ранги
+    // работают и при выключенном директоре (их выдаёт тюнер, не директор).
+    RanksWatchTick(GetTickCount());
+
     if (!s_enabled) return;
 
     const DWORD now = GetTickCount();

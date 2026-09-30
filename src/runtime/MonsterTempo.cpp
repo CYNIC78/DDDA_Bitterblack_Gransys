@@ -1162,7 +1162,7 @@ bool RanksBuiltinToughness(int step, float* resistOut, float* standOut)
     return true;
 }
 
-bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
+bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
                    float* sizeOut, float* atkOut, float* resistOut,
                    float* standOut)
 {
@@ -1170,7 +1170,14 @@ bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
     if (!GetRanks(kind, &n)) return false;
 
     // Один хеш — ступень, второй — место внутри полосы (комплекция).
-    const uint32_t h = HashUnit32(body ^ RanksSessionSalt() ^ 0x1ADDE12u);
+    //
+    // 85.56: в оба хеша входит ПОКОЛЕНИЕ ЖИЛЬЦА. Причина полевая: в 85.55 адрес
+    // 0x10D57470 отдал «ветерана» гоблину, а следом волчице в том же слоте —
+    // снова «ветерана» (13% веса, повтор случайным быть почти не может). Хеш
+    // считался от адреса, а адрес — не личность: движок отдаёт освободившийся
+    // слот следующему монстру. gen=0 сохраняет прежние числа для фикстур.
+    const uint32_t g = gen * 2654435761u;   // Knuth: разносим поколения по хешу
+    const uint32_t h = HashUnit32(body ^ g ^ RanksSessionSalt() ^ 0x1ADDE12u);
 
     float sum = 0.0f;
     for (int i = 0; i < kRankSteps; ++i) sum += n.step[i].weight;
@@ -1188,7 +1195,8 @@ bool RankPickFor(const char* kind, uintptr_t body, int* stepOut,
         if (t <= acc / sum) { pick = i; break; }
     }
 
-    const uint32_t h2 = HashUnit32((body >> 4) ^ RanksSessionSalt() ^ 0x57A7E5u);
+    const uint32_t h2 = HashUnit32((body >> 4) ^ (g * 3u)
+                                   ^ RanksSessionSalt() ^ 0x57A7E5u);
     const float u = (float)h2 / 4294967295.0f;
     const RankStep& st = n.step[pick];
 

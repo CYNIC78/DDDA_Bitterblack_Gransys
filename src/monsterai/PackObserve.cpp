@@ -9,11 +9,27 @@
 #include "../runtime/MonsterTempo.h"
 #ifndef DDDA_PACKOBSERVE_PORTABLE
 #include "../runtime/Runtime.h"
+#include "../runtime/MemProbe.h"   // 85.56: класс живого объекта (проверка «то ли это тело»)
 #endif
 #include <math.h>
 #include <string.h>
 
 namespace MonsterAI {
+
+// 85.56: КЛАСС ЖИВОГО ОБЪЕКТА — через обёртку.
+//
+// Зачем обёртка, а не прямой вызов: PackObserve собирается ещё и как проба
+// (DDDA_PACKOBSERVE_PORTABLE) — там доступа к памяти игры нет вовсе, и тот же
+// приём уже применён к чтению масштаба. В пробе считаем, что личность
+// проверить нельзя.
+#ifndef DDDA_PACKOBSERVE_PORTABLE
+static bool LiveKindOf(uintptr_t body, char* out, int cap)
+{
+    return Runtime::Mem::NameOfLiveObject(body, out, cap);
+}
+#else
+static bool LiveKindOf(uintptr_t, char*, int) { return false; }
+#endif
 
 static const int    kMaxMembers     = 16;
 static const DWORD  kTickMs         = 150;
@@ -497,15 +513,50 @@ static int s_nBurnBodies = 0;   // 85.55: тела, что загорались 
 static int s_nBurnLeft   = 0;   // ушли из вида, ничего не доказывая ни в одну сторону
 
 // 85.50: хвост « rank=… pois … kdown … burn …» для строк, где важно, КОМУ это
-// случилось. Ранг берём тем же детерминированным выбором, что и при раздаче
-// (соль сессии внутри захода постоянна), запасы — ИЗ ТЕЛА на момент вопроса,
-// поэтому строка показывает правду, даже если движок что-то вернул назад.
+// случилось. Запасы берём ИЗ ТЕЛА на момент вопроса, поэтому строка показывает
+// правду, даже если движок что-то вернул назад.
+//
+// 85.56: ЗДЕСЬ ПЕРЕСТАЛИ ВРАТЬ ДВАЖДЫ.
+//
+// Первое. Поле 85.55 поймало живьём: гоблин-ветеран умер, а в строке стояли
+// ЧУЖИЕ числа — pois 600 kdown 100 burn 400, то есть ванильные числа волка, и
+// строкой ниже честное «slot reuse: kind uEm0100 -> uEm0200». Адрес уже занял
+// другой монстр, мы же читали память по адресу и печатали как его. Теперь
+// сначала спрашиваем у живого объекта его класс: сменился — числа не печатаем
+// вовсе. Нет числа лучше, чем чужое число.
+//
+// Второе. Раньше ранг здесь ПЕРЕСЧИТЫВАЛСЯ тем же роллом, что при выдаче. Пока
+// веса читались только при запуске, это давало то же число. С 85.56 веса
+// читаются на ходу — пересчёт мог бы назвать другую ступень, чем та, по которой
+// особь живёт. Теперь спрашиваем у тюнера ФАКТ выдачи.
+static bool SameSpeciesBase(const char* a, const char* b)
+{
+    if (!a || !b) return false;
+    // Сравниваем «uEmXXXX» до подчёркивания: у полного тела имя точное, но
+    // компоненты вида (uEm0100_20) не должны считаться «другим видом».
+    for (int i = 0; i < 7; ++i) {
+        char ca = a[i], cb = b[i];
+        if (ca == '_' || cb == '_') return true;
+        if (ca != cb) return false;
+        if (!ca) return true;
+    }
+    return true;
+}
+
 static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap)
 {
     out[0] = '\0';
+
+    char live[32] = { 0 };
+    if (LiveKindOf(body, live, (int)sizeof(live))
+        && !SameSpeciesBase(live, kind)) {
+        sprintf_s(out, (size_t)cap, " rank=? pools=stale(now %s)", live);
+        return;
+    }
+
     int step = -1;
-    float sz = 0.0f, atk = 0.0f;
-    if (!Runtime::Tempo::RankPickFor(kind, body, &step, &sz, &atk)) return;
+    uint32_t gen = 0;
+    if (!EnemyTuner::RankIssuedFor(body, &step, &gen)) return;
     const char* rn = Runtime::Tempo::RankStepName(step);
     int n = sprintf_s(out, (size_t)cap, " rank=%s", rn ? rn : "?");
     float pois = 0.0f, kd = 0.0f, burn = 0.0f;
@@ -759,7 +810,8 @@ void PackObserveShutdown()
             << " left=" << s_nBurnLeft
             << " (bodies=how many monsters caught fire, starts=ignitions incl."
                " re-ignitions, survived=came out of the fire alive,"
-               " died=burned to death, left=left view before the outcome)"
+               " died=died WHILE BURNING (the killing blow may have been a"
+               " pawn's, not the fire's), left=left view before the outcome)"
             << std::endl;
     if (s_live > 0) ResetEncounter("shutdown");
     s_armed = false;

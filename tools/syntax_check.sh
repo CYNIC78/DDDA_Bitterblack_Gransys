@@ -301,6 +301,41 @@ for b in bad: print(' ', b)
 sys.exit(1 if bad else 0)
 PYCHK
 
+echo "== 10b/10 Ранги: ступень выдаётся один раз (85.56) =="
+# ЗАЧЕМ. Живое чтение [ranks] безопасно РОВНО ПОТОМУ, что ступень замораживается
+# при выдаче. Если кто-нибудь вернёт ролл в боевой путь (или в строку лога),
+# сборка соберётся, фикстуры пройдут, а в поле живого монстра начнёт переобувать
+# прямо в бою. Это не ловится поведенческим тестом — только формой кода.
+python3 - <<'PYCHK'
+import sys
+et = open('src/EnemyTuner.cpp', encoding='utf-8').read()
+po = open('src/monsterai/PackObserve.cpp', encoding='utf-8').read()
+mt = open('src/runtime/MonsterTempo.cpp', encoding='utf-8').read()
+md = open('src/monsterai/MonsterDirector.cpp', encoding='utf-8').read()
+bad = []
+if 'EnsureRankIssued' not in et:
+    bad.append('EnemyTuner: нет выдачи ступени (EnsureRankIssued)')
+n = et.count('Runtime::Tempo::RankPickFor')
+if n != 1:
+    bad.append('EnemyTuner: ролл зовётся из %d мест, а должен из одного (выдача)' % n)
+if 'RankPickFor' in po:
+    bad.append('PackObserve: ранг ПЕРЕСЧИТЫВАЕТСЯ вместо чтения выданного')
+if 'RankIssuedFor' not in po:
+    bad.append('PackObserve: не спрашивает выданную ступень у тюнера')
+if 'gen * 2654435761u' not in mt:
+    bad.append('MonsterTempo: поколение жильца не входит в хеш')
+if 'rec0->gen = ++s_bodyGenSeq;' not in et:
+    bad.append('EnemyTuner: смена жильца не даёт нового поколения')
+if 'rankStep = -1' not in et:
+    bad.append('EnemyTuner: ступень не сбрасывается в -1 (ноль - законная ступень)')
+if 'RanksWatchTick' not in md:
+    bad.append('MonsterDirector: нет сторожа живого чтения [ranks]')
+if 'config.Path()' not in md:
+    bad.append('MonsterDirector: сторож следит не за тем файлом, что читает мод')
+for b in bad: print(' ', b)
+sys.exit(1 if bad else 0)
+PYCHK
+
 echo "== 9/10 ASCII in UI strings =="
 python3 - <<'PY'
 import re, glob, sys

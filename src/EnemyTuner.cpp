@@ -429,6 +429,25 @@ struct Touched {
     int   rankLogged;  // 85.40: одна строка про ступень на особь
     int   rankCounted; // 85.43: ранг уже попал в сводку сессии (отдельно от печати)
 
+    // 85.56: СТУПЕНЬ ВЫДАЁТСЯ ОДИН РАЗ И ЗАМОРАЖИВАЕТСЯ.
+    //
+    // Раньше ступень пересчитывалась каждый тик из весов ini. Пока веса читались
+    // только при запуске, это было безобидно; с живым чтением [ranks] правка
+    // посреди боя переобула бы ЖИВОГО монстра — поехали бы рост, множитель
+    // атаки и крепость. Теперь всё, что относится к ступени, берётся в первый
+    // тик жизни особи и живёт в записи: ролл снаружи влияет только на тех, кто
+    // появится ПОСЛЕ правки.
+    //
+    // gen — номер жильца адреса. Растёт, когда слот заняло другое тело: ступень
+    // привязана к существу, а не к адресу (поле 85.55).
+    uint32_t gen;
+    int   rankStep;        // -1 = ступень не выдавали (нулевая ступень = новичок!)
+    float rankSize;        // рост по ступени (если ступень управляет ростом)
+    float rankAtk;
+    float rankResist;
+    float rankStand;
+    bool  rankUseScale;    // решено В МОМЕНТ ВЫДАЧИ: ступень задаёт рост или нет
+
     // 85.44: крепость ранга. Ванильные значения читаем ОДИН раз (иначе после
     // нашей же правки прочитаем её же и будем делить вечно), затем каждый тик
     // сверяем текущее с желаемым — как со статами и размером.
@@ -449,6 +468,9 @@ struct Touched {
 static const int kMaxTouched = 128;
 static Touched s_touched[kMaxTouched];
 static int     s_nTouched = 0;
+// 85.56: поколения жильцов. Ноль — «поколения нет» (старое поведение ролла),
+// поэтому первый жилец получает 1.
+static uint32_t s_bodyGenSeq = 0;
 
 // Species-level vanilla combat base (audit fix for reload double-mult).
 // Per-body base is vulnerable to mid-session reload: body memory already has
@@ -568,6 +590,16 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->spikeLogged = 0;
     t->rankLogged = 0;
     t->rankCounted = 0;
+    // 85.56: новая запись = новый жилец. Поколение растёт, ступень сбрасывается
+    // именно в -1: ноль — это ЗАКОННАЯ ступень («новичок»), и забыть про это
+    // легко (поймано бы в поле как «у новичка чужая ступень»).
+    t->gen = ++s_bodyGenSeq;
+    t->rankStep = -1;
+    t->rankSize = 0.0f;
+    t->rankAtk = 1.0f;
+    t->rankResist = 1.0f;
+    t->rankStand = 1.0f;
+    t->rankUseScale = false;
     t->haveRes = false;
     t->resRejected = false;
     t->resTries = 0;
@@ -580,6 +612,31 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->charParamOff = 0;
     t->charParamSearched = false;
     return t;
+}
+
+// 85.56: ВЫДАТЬ СТУПЕНЬ РОВНО ОДИН РАЗ НА ЖИЗНЬ ОСОБИ.
+//
+// Здесь же и счёт в сводку сессии (перенесён из блока печати строки: печать —
+// это печать, а факт выдачи — это факт; в 85.43 их уже разводили, и вот почему:
+// лимит строк на особь не должен влиять на сводку).
+static void EnsureRankIssued(Touched* rec, const char* kind, uintptr_t body)
+{
+    if (!rec || rec->rankStep >= 0) return;
+    int   step = -1;
+    float sz = 0.0f, atk = 1.0f, res = 1.0f, stand = 1.0f;
+    if (!Runtime::Tempo::RankPickFor(kind, body, rec->gen, &step, &sz, &atk,
+                                     &res, &stand))
+        return;                           // вид не под лестницей или она выключена
+    rec->rankStep    = step;
+    rec->rankSize    = sz;
+    rec->rankAtk     = atk;
+    rec->rankResist  = res;
+    rec->rankStand   = stand;
+    rec->rankUseScale = Runtime::Tempo::RankScaleEnabled(kind);
+    if (!rec->rankCounted) {
+        rec->rankCounted = 1;
+        Runtime::Tempo::NoteRankIssued(kind, step);
+    }
 }
 
 // Детерминированный разброс: одна и та же особь получает один и тот же
@@ -1591,12 +1648,10 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     }
     // 85.40: ступень лестницы. Статичный множитель особи, поэтому порядок с
     // адреналином не важен (умножение), но ставим ДО него: «всплеск — последний».
-    int   rankStep = -1;
-    float rankSize = 0.0f, rankAtk = 1.0f;
-    float rankResist = 1.0f, rankStand = 1.0f;
-    bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
-                                                  &rankSize, &rankAtk,
-                                                  &rankResist, &rankStand);
+    // 85.56: числа ступени берём ИЗ ЗАПИСИ ТЕЛА (выдано один раз, см. выше).
+    EnsureRankIssued(rec, kind, body);
+    const bool  ranksOn = (rec->rankStep >= 0);
+    const float rankAtk = ranksOn ? rec->rankAtk : 1.0f;
     // 85.41: спецправило «ванильный вожак получает старшую ступень» УБРАНО.
     // Поле 85.40 показало, почему его нельзя оставлять: порог «крупный = вожак»
     // сравнивает ЗАПОМНЕННУЮ базу роста с 1.12, а база после загрузки сейва
@@ -1604,30 +1659,28 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     // из десяти получили ×1.52 случайно — у одного рост остался 1.12, у двух
     // 0.96, то есть «элита» с ростом новичка. Урок тот же, что и с числами:
     // если признак неотличим — не угадываем, а даём ступень по хешу.
-    if (ranksOn) {
-        // 85.43: сводка сессии считает выдачу ПРИ НАЗНАЧЕНИИ, а не при печати
-        // строки. Раньше счёт жил внутри условий печати, и всё, что мешало
-        // строке (лимит «две на особь», грязный счётчик из чужого слота),
-        // автоматически портило и сводку — а сводка это единственный способ
-        // ответить «кто заспавнился», не вычитывая лог глазами.
-        if (!rec->rankCounted) {
-            rec->rankCounted = 1;
-            Runtime::Tempo::NoteRankIssued(kind, rankStep);
-        }
-        if (rec->rankLogged < 2) {
+    if (ranksOn && rec->rankLogged < 2) {
+        // 85.43: сводка сессии считает выдачу ПРИ НАЗНАЧЕНИИ — это по-прежнему
+        // так, просто назначение переехало в EnsureRankIssued. Здесь только
+        // строка в лог, и лимит «две на особь» её не касается.
+        {
             ++rec->rankLogged;
             char ll[190];
             // 85.52: у видов с rankScale = off размер ступенью НЕ задаётся —
             // печатаем это прямо, иначе в логе «size 1.190» читалось бы как
             // выданный рангом рост, которого на самом деле нет.
-            if (Runtime::Tempo::RankScaleEnabled(kind))
-                sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f -> 0x%08X",
-                          kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
-                          rankStep, rankSize, rankAtk, (unsigned)body);
+            // 85.56: печатаем И ПОКОЛЕНИЕ — по нему видно, что слот сменил
+            // жильца (иначе в поле не проверить, что ступень больше не
+            // «переезжает» на нового монстра вместе с адресом).
+            if (rec->rankUseScale)
+                sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f gen=%u -> 0x%08X",
+                          kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
+                          rec->rankStep, rec->rankSize, rec->rankAtk,
+                          rec->gen, (unsigned)body);
             else
-                sprintf_s(ll, "rank %s %s(%d) size off (vanilla) atk x%.2f -> 0x%08X",
-                          kind ? kind : "?", Runtime::Tempo::RankName(rankStep),
-                          rankStep, rankAtk, (unsigned)body);
+                sprintf_s(ll, "rank %s %s(%d) size off (vanilla) atk x%.2f gen=%u -> 0x%08X",
+                          kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
+                          rec->rankStep, rec->rankAtk, rec->gen, (unsigned)body);
             logFile << "EnemyTuner: " << ll << std::endl;
             lstrcpynA(s_status, ll, sizeof(s_status));
         }
@@ -1635,7 +1688,7 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
 
     // 85.44: крепость ранга. По умолчанию ручки = 1.0, то есть НИЧЕГО не
     // пишется — сборка только читает родные сопротивления и говорит их в лог.
-    if (ranksOn) ApplyRankToughness(body, rec, base, kind, rankResist, rankStand);
+    if (ranksOn) ApplyRankToughness(body, rec, base, kind, rec->rankResist, rec->rankStand);
 
     float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk  * adrAtk
                    * (ranksOn ? rankAtk : 1.0f);
@@ -1905,9 +1958,15 @@ static void TickOneBody(uintptr_t body, const char* kind)
         const uint16_t was = rec0->species;
         memset(rec0, 0, sizeof(*rec0));
         rec0->body = body;
-        char ls[160];
-        sprintf_s(ls, "0x%08X slot reuse: kind uEm%04u -> uEm%04u, body record reset",
-                  (unsigned)body, (unsigned)was, (unsigned)emId);
+        // 85.56: у адреса новый жилец — новое поколение и никакой ступени.
+        // Раньше ступень считалась от одного адреса, и новый монстр получал
+        // ступень прежнего (поле 85.55: волчица в слот гоблина — «ветеран»).
+        rec0->gen = ++s_bodyGenSeq;
+        rec0->rankStep = -1;
+        char ls[176];
+        sprintf_s(ls, "0x%08X slot reuse: kind uEm%04u -> uEm%04u, body record reset"
+                      " (gen %u)",
+                  (unsigned)body, (unsigned)was, (unsigned)emId, rec0->gen);
         logFile << "EnemyTuner: " << ls << std::endl;
         lstrcpynA(s_status, ls, sizeof(s_status));
     }
@@ -1996,18 +2055,22 @@ static void TickOneBody(uintptr_t body, const char* kind)
     // 85.40: лестница. Если вид под ней — размер берётся из полосы ступени,
     // а не из равномерного коридора, и ранний выход «масштаб выключен»
     // (коридор 1.0..1.0) больше не мешает: полосу задаёт ступень.
-    int   rankStep = -1;
-    float rankSize = 0.0f, rankAtk = 1.0f;
-    const bool ranksOn = Runtime::Tempo::RankPickFor(kind, body, &rankStep,
-                                                        &rankSize, &rankAtk);
+    // 85.56: ступень НЕ спрашиваем заново — берём ту, что уже выдана этой особи.
+    // Обе дороги (боевые статы и рост) идут через один и тот же EnsureRankIssued,
+    // поэтому кто первый в тике, тот и бросает; второй читает запись. Иначе
+    // живое чтение [ranks] двигало бы рост уже стоящего в бою монстра.
+    Touched* rec = rec0;      // запись получена выше (блок поводка)
+    if (!rec) return;
+    EnsureRankIssued(rec, kind, body);
+
     // 85.52: ранги могут работать без размера (волк). Если вид просил не
     // трогать рост — идём обычной дорогой: коридор вида для рядовых и
     // сохранение крупных ванильных вожаков.
-    const bool rankScale = ranksOn && Runtime::Tempo::RankScaleEnabled(kind);
+    const bool  ranksOn   = (rec->rankStep >= 0);
+    const bool  rankScale = ranksOn && rec->rankUseScale;
+    const float rankSize  = rankScale ? rec->rankSize : 0.0f;
 
     if (!rankScale && NearlyEq(scaleLo, 1.0f) && NearlyEq(scaleHi, 1.0f)) return;
-
-    Touched* rec = rec0;      // запись уже получена выше (блок поводка)
 
     // Что сейчас реально лежит в location-структуре?
     float cw = 0, ch = 0, cd = 0;
@@ -2198,6 +2261,17 @@ const char* StatusLine() { return s_status; }
 // 85.50: запасы тела на момент вопроса. Поля те же, что пишет ApplyRankToughness:
 // яд 0x054, горение 0x080, сбивание 0x0E4. Читаем ЖИВУЮ память, а не запись,
 // чтобы строка смерти показывала правду, даже если движок что-то вернул назад.
+// 85.56: что за ступень живёт в этом теле. Отдаём ЗАМОРОЖЕННОЕ — то, по чему
+// особь реально живёт, а не то, что получилось бы при нынешних весах.
+bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut)
+{
+    Touched* rec = FindTouched(body);
+    if (!rec || rec->rankStep < 0) return false;
+    if (stepOut) *stepOut = rec->rankStep;
+    if (genOut)  *genOut  = rec->gen;
+    return true;
+}
+
 bool PoolsFor(uintptr_t body, float* poisOut, float* kdownOut, float* burnOut)
 {
     Touched* rec = FindTouched(body);
