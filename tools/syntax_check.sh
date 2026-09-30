@@ -194,6 +194,16 @@ g++ -std=c++11 -Wall -Wextra -Werror -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" 
     "$T/ranks_test.cpp" -Wl,--gc-sections -o /tmp/synchk_ranks
 /tmp/synchk_ranks
 
+echo "== 2i3/10 FileBase BEHAVIOR (85.60: база вида из файлов игры) =="
+# ЗАЧЕМ. С 85.60 база боевых статов берётся из таблицы, сгенерированной из файлов
+# игры, и умножается. Ошибка в таблице меняет бой у всех видов сразу, а владелец
+# увидит только «стало легко/тяжело» — без игры это не отладить. Поэтому проверяем
+# таблицу здесь: числа гоблина совпадают с полем, крупные бойцы не отсеяны,
+# «иммунные» маркеры и нули отсеяны, дублей emId нет (дубль = неоднозначный вид).
+g++ -std=c++11 -Wall -Wextra -Werror -I"$ROOT" \
+    "$T/filebase_test.cpp" -o /tmp/synchk_filebase
+/tmp/synchk_filebase
+
 echo "== 2j/10 Все .cpp проекта включают stdafx.h (C1010) =="
 # ЗАЧЕМ. 85.37 уехал с ошибкой C1010: новый файл SpeciesTuning.cpp не включал
 # "stdafx.h", а в студии включены предкомпилированные заголовки. g++ этого НЕ
@@ -369,8 +379,22 @@ if 'combat base %s raw atk' not in et:
     bad.append('EnemyTuner: нет линии базы вида (эвристика снова решает молча)')
 if 'RECOVERED-atk' not in et or 'RECOVERED-def' not in et:
     bad.append('EnemyTuner: восстановление ванили не помечается в логе')
-if 'reference from game file' not in et or 'fileAtk = 250.0f' not in et:
-    bad.append('EnemyTuner: нет сверки с файлом игры (гоблин 250/75/80/75)')
+# 85.60: база вида берётся из файлов игры, а не угадывается.
+if 'FindSpeciesFileBase' not in et or 'SpeciesFileBaseSane' not in et:
+    bad.append('EnemyTuner: нет пути «база из файлов игры» (владелец решил: берём из файлов)')
+if 'source=FILE' not in et and 'useFileBase ? "FILE"' not in et:
+    bad.append('EnemyTuner: источник базы не подписывается в логе')
+if 'RAW MISMATCH' not in et:
+    bad.append('EnemyTuner: расхождение чтения с файлом не печатается')
+if 'fileAtk' in et:
+    bad.append('EnemyTuner: остался старый однобокий эталон fileAtk (только гоблин)')
+fbase_h = open('src/runtime/EnemyFileBase.h', encoding='utf-8').read()
+if '// em0100' not in fbase_h or '{ 0x0064,' not in fbase_h:
+    bad.append('EnemyFileBase.h: таблица баз повреждена (нет гоблина)')
+if '{ 0x00C8,' not in fbase_h or '{ 0x0258,' not in fbase_h:
+    bad.append('EnemyFileBase.h: в таблице нет волка (em0200) или харпии (em0600)')
+if 'SpeciesFileBaseSane' not in fbase_h:
+    bad.append('EnemyFileBase.h: нет отсева небоевых чисел (нули/иммунные тысячи)')
 if 'recoveredAtk' not in et:
     bad.append('EnemyTuner: флаг восстановления пропал')
 

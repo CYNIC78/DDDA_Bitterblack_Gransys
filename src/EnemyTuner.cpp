@@ -7,6 +7,7 @@
 #include "EntityConfig.h"
 #include "monsterai/SpeciesCard.h"
 #include "TypeAtlas.Generated.h"
+#include "runtime/EnemyFileBase.h"   // 85.60: база вида из файлов игры (автогенерация)
 #include <math.h>   // 85.57: floorf для ячейки места
 
 /**
@@ -1669,29 +1670,42 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             if (v>0 && v<10000) emId = (uint16_t)v;
         }
         SpeciesCombatBase* spb = (emId!=0xFFFF) ? FindSpeciesBase(emId) : nullptr;
-        // 85.59: справочные числа из ФАЙЛА игры (проверены полем 85.57 — в памяти
-        // гоблина лежали ровно эти значения). Только для чтения и только в лог:
-        // нужны как эталон, чтобы «прочитали 400» не выглядело нормой.
-        // em0100 = гоблин: em0100_cmn.prp -> atk 250 / def 75 / matk 80 / mdef 75.
-        float fileAtk = 0.0f;
-        if (emId == 0x0100) fileAtk = 250.0f;
-        if (spb && spb->have) {
-            // Use species vanilla base, not cur (protects against reload double-mult)
-            // If cur is already multiplied (e.g. 512 vs vanilla 250), we will keep want = vanilla*mult*roll = cur, stable.
+        // 85.60: БАЗА ИЗ ФАЙЛОВ ИГРЫ — первый и главный путь.
+        //
+        // Решение владельца: «можно брать базу из файлов игры и множить их».
+        // Числа лежат в charparam/em/*_cmn.prp (смещения 0x0C64/0x0C6C/0x0C74/
+        // 0x0C7C), таблица сгенерирована из этих файлов и лежит в
+        // runtime/EnemyFileBase.h. Проверено полем: в логе 85.57 из памяти
+        // гоблина прочитаны ровно числа файла (250/75/80/75).
+        //
+        // У пяти видов в файле стоят не боевые числа (нули, «иммунные» тысячи) —
+        // SpeciesFileBaseSane их отсекает, и тогда работает прежний путь: таблица
+        // видов, заполненная в этой сессии, затем оценка. Оба аварийных пути
+        // ГРОМКИЕ: и выбор источника, и расхождение с файлом печатаются в лог.
+        const SpeciesFileBase* fbase = (emId!=0xFFFF) ? FindSpeciesFileBase(emId) : nullptr;
+        const bool useFileBase = SpeciesFileBaseSane(fbase);
+        bool recoveredAtk = false, recoveredDef = false;
+
+        if (useFileBase) {
+            rec->baseAtk  = fbase->atk;
+            rec->baseDefC = fbase->defC;
+            rec->baseMAtk = fbase->mAtk;
+            rec->baseMDefC= fbase->mDefC;
+        } else if (spb && spb->have) {
+            // Таблица видов, заполненная в этой сессии (аварийный путь).
             rec->baseAtk = spb->atk;
             rec->baseDefC = spb->defC;
             rec->baseMAtk = spb->mAtk;
             rec->baseMDefC = spb->mDefC;
         } else {
-            // First time we see this species — cur should be vanilla (game start).
-            // If cur looks already multiplied (e.g. >1.8x of what we would expect? we don't know),
-            // we try to reverse: if cur / (mult*roll) is plausible, use that as vanilla.
-            // Heuristic: if cur > 400 and mult>=1.5, assume cur is already multiplied and recover vanilla.
+            // Вида нет ни в файловой таблице, ни в таблице сессии — оценка.
+            // Порог абсолютный (атака > 350, защита > 120), а числа видов
+            // различаются в сорок раз: путь ненадёжен по своей природе, поэтому
+            // он и стоит последним, и говорит о себе словом RECOVERED.
             float estVanillaAtk = curAtk;
             float estVanillaDef = curDef;
             float multAtk = t.attackMult * rec->combatRollAtk;
             float multDef = t.defenseMult * rec->combatRollDef;
-            bool recoveredAtk = false, recoveredDef = false;
             if (multAtk>1.5f && curAtk>350.0f) {
                 float cand = curAtk / multAtk;
                 if (cand>=50.0f && cand<1000.0f) { estVanillaAtk = cand; recoveredAtk = true; }
@@ -1702,45 +1716,63 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             }
             rec->baseAtk = estVanillaAtk;
             rec->baseDefC = estVanillaDef;
-            rec->baseMAtk = curMAtk; // for magick we keep simple for now
+            rec->baseMAtk = curMAtk; // магия пока как прочитана
             rec->baseMDefC = curMDef;
-            // 85.59: ЛИНИЯ БАЗЫ ВИДА — один раз на вид за сессию.
-            //
-            // Поле 85.57 прочитало базу 250/75/80/75 (это РОВНО числа файла игры
-            // em0100_cmn.prp), поле 85.58 — 126.2/80/20/20 (такого набора нет ни
-            // в одном файле игры; 126.2 = 400.0 / 3.169). Владелец ини не трогал
-            // много билдов, значит разницу дала не настройка, а ИСТОРИЯ ПРОЦЕССА:
-            // движок держит боевые поля объекта между перезапусками DLL, а
-            // «восстановление ванили» делением работает МОЛЧА. Теперь оно всегда
-            // говорит о себе, и рядом стоит справочное число из файла.
-            {
-                char cb[300];
-                sprintf_s(cb, "combat base %s raw atk %.1f def %.1f matk %.1f mdef %.1f"
-                              " (mult %.2f/%.2f roll %.3f/%.3f) -> base %.1f/%.1f/%.1f/%.1f"
-                              "  from=estimate%s%s",
-                          kind ? kind : "?",
-                          curAtk, curDef, curMAtk, curMDef,
-                          t.attackMult, t.defenseMult,
-                          rec->combatRollAtk, rec->combatRollDef,
-                          rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC,
-                          recoveredAtk ? " RECOVERED-atk" : "",
-                          recoveredDef ? " RECOVERED-def" : "");
-                logFile << "EnemyTuner: " << cb << std::endl;
-                if (fileAtk > 0.0f) {
-                    char rf[190];
-                    sprintf_s(rf, "combat base %s reference from game file:"
-                                  " em0100_cmn.prp atk %.1f def %.1f matk %.1f mdef %.1f"
-                                  " (deviation raw atk x%.3f)",
-                              kind ? kind : "?", fileAtk, 75.0f, 80.0f, 75.0f,
-                              curAtk / fileAtk);
-                    logFile << "EnemyTuner: " << rf << std::endl;
-                }
-            }
-            // Store as species base for future bodies
             if (emId!=0xFFFF) {
-                RememberSpeciesBase(emId, rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC);
+                RememberSpeciesBase(emId, rec->baseAtk, rec->baseDefC,
+                                    rec->baseMAtk, rec->baseMDefC);
             }
         }
+
+        // ── ЛИНИЯ БАЗЫ ВИДА (85.59/85.60) ─────────────────────────────────
+        // Печатается для ЛЮБОГО пути, включая основной: раньше выбор базы был
+        // молчаливым, и разница «250 против 126.2» между сессиями обсуждалась
+        // вслепую. Формат:
+        //   combat base uEm0100 raw atk 400.0 def 253.3 ... -> base 250.0/75.0/...
+        //   combat base uEm0100 source=FILE file atk 250.0 def 75.0 matk 80.0 mdef 75.0
+        {
+            char cb[300];
+            sprintf_s(cb, "combat base %s raw atk %.1f def %.1f matk %.1f mdef %.1f"
+                          " (mult %.2f/%.2f roll %.3f/%.3f) -> base %.1f/%.1f/%.1f/%.1f"
+                          "  from=%s%s%s",
+                      kind ? kind : "?",
+                      curAtk, curDef, curMAtk, curMDef,
+                      t.attackMult, t.defenseMult,
+                      rec->combatRollAtk, rec->combatRollDef,
+                      rec->baseAtk, rec->baseDefC, rec->baseMAtk, rec->baseMDefC,
+                      useFileBase ? "FILE" : (spb && spb->have ? "species" : "estimate"),
+                      recoveredAtk ? " RECOVERED-atk" : "",
+                      recoveredDef ? " RECOVERED-def" : "");
+            logFile << "EnemyTuner: " << cb << std::endl;
+
+            char sv[230];
+            sprintf_s(sv, "combat base %s source=%s file atk %.1f def %.1f matk %.1f mdef %.1f",
+                      kind ? kind : "?",
+                      useFileBase ? "FILE" : (spb && spb->have ? "species" : "estimate"),
+                      fbase ? fbase->atk   : 0.0f,
+                      fbase ? fbase->defC  : 0.0f,
+                      fbase ? fbase->mAtk  : 0.0f,
+                      fbase ? fbase->mDefC : 0.0f);
+            logFile << "EnemyTuner: " << sv << std::endl;
+        }
+
+        // ── СВЕРКА С ФАЙЛОМ ───────────────────────────────────────────────
+        // Печатается ТОЛЬКО при заметном расхождении (>3%): в норме строки нет,
+        // чтобы лог не пух. Расхождение означает одно из двух: движок держит
+        // значение от прошлой сессии, либо у вида своя шкала. И то и другое
+        // надо видеть — именно тут родилась история «250 против 126.2».
+        if (fbase && fbase->atk > 0.0f) {
+            const float dev = curAtk / fbase->atk;
+            if (dev < 0.97f || dev > 1.03f) {
+                char rf[240];
+                sprintf_s(rf, "combat base %s RAW MISMATCH: read atk %.1f vs file %.1f"
+                              " (x%.3f) - base taken %s",
+                          kind ? kind : "?", curAtk, fbase->atk, dev,
+                          useFileBase ? "from FILE, raw ignored" : "as estimate");
+                logFile << "EnemyTuner: " << rf << std::endl;
+            }
+        }
+
         rec->haveCombat = true;
     }
 
