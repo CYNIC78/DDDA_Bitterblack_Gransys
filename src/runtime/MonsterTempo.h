@@ -299,6 +299,76 @@ struct RanksIniReader {
     virtual ~RanksIniReader() {}
     virtual float Float(const char* section, const char* key, float defValue) = 0;
     virtual bool  Bool (const char* section, const char* key, bool  defValue) = 0;
+    // 85.57: имена наборов пачек. Не чисто виртуальный: наборы работают и без
+    // имён (встроенные), а ломать уже собранные читатели из-за строки не хочется.
+    virtual bool  Text (const char* section, const char* key, char* out, int cap)
+    { (void)section; (void)key; (void)out; (void)cap; return false; }
+};
+
+// ── 85.57: НАБОРЫ (СЕТЫ) ПАЧЕК ПО МЕСТУ ────────────────────────────────────
+//
+// Владелец: «если все пачки в сессии будут одинаковыми по рангам, весь смысл
+// теряется; в этой зоне такой сет, в следующей — другой».
+//
+// Так и было: каждая особь роллила ступень НЕЗАВИСИМО из общих весов, поэтому
+// любая пачка выглядела статистически одинаково — три-четыре новичка, четыре-
+// пять солдат, ветеран. Разница между пачками возникала только случайно.
+//
+// Ключ места — из ENCOUNTER_MEMORY_DESIGN §1: хеш ячейки карты
+// (floor(x/cell), floor(z/cell)), высота не берётся (в подземельях этажи
+// наложатся, но лучше объединить два боя в одной точке, чем считать их разными).
+//
+// Набор задаёт ОТНОСИТЕЛЬНЫЕ ВЕСА ступеней внутри пачки, а НЕ новые ступени:
+// полосы размера, множитель атаки и крепость по-прежнему берутся из [ranks].
+// То есть набор меняет СОСТАВ, а не силу отдельной особи.
+const int kPackSets = 6;
+
+struct PackSet {
+    char  name[16];
+    float weight;                 // как часто этот набор выпадает месту
+    float rank[kRankSteps];       // относительные веса ступеней внутри набора
+};
+
+struct PackSetsConfig {
+    bool   enabled;
+    float  cellMeters;            // размер ячейки места
+    float  inheritMeters;         // радиус наследования (пачка не рвётся на границе)
+    int    minibossPerPack;       // 0 = без предела
+    int    count;                 // сколько наборов живых (остальные выключены нулём)
+    PackSet set[kPackSets];
+};
+
+PackSetsConfig PackSetsFromIni(RanksIniReader& ini);
+void          RegisterPackSets(const PackSetsConfig& c);
+bool          PackSetsEnabled();
+float         PackCellMeters();
+float         PackInheritMeters();
+int           PackMinibossPerPack();
+int           PackSetCount();
+const char*   PackSetName(int idx);       // nullptr, если индекса нет
+
+// Набор для ячейки карты. -1 = наборов нет (работают веса [ranks]).
+// Первое обращение к месту печатает строку в лог: видно, какое место какой
+// набор получило. Кеш на 256 мест.
+int           PackSetForCell(int cx, int cz);
+
+// «Один мини-босс на место». С наборами двойной мини-босс перестал быть
+// лотереей 2%: набор hunt даёт мини-боссу 10% веса, и два на пачку стали бы
+// обычным делом. Счётчик по ячейке, сбрасывается на разгрузке мира.
+int           CellMinibossCount(int cx, int cz);
+void          NoteCellMiniboss(int cx, int cz);
+void          ResetPackMemory(const char* reason);
+
+// Всё, что нужно роллу, одним запросом: вид, тело, поколение жильца и место.
+// Место передаётся отдельно от тела, потому что позиция читается в выдаче
+// ступени (EnemyTuner), а сам ролл живёт здесь и памяти игры не трогает.
+struct RankQuery {
+    const char* kind;
+    uintptr_t   body;
+    uint32_t    gen;        // поколение жильца адреса (85.56)
+    int         setIndex;   // -1 = наборов нет -> веса [ranks]
+    int         cellX, cellZ;
+    bool        hasCell;
 };
 
 // Вид разрешён, а секции [ranks] нет -> встроенные числа пилота, чтобы
@@ -333,9 +403,8 @@ bool RanksBuiltinToughness(int step, float* resistOut, float* standOut);
 // записи тела. Ролл внутри жизни одного жильца обязан быть неизменным —
 // вызывающий ОБЯЗАН запомнить выданное (см. EnemyTuner::EnsureRankIssued):
 // с 85.56 веса читаются на ходу, и пересчёт назвал бы другую ступень.
-bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
-                   float* sizeOut, float* atkOut,
-                   float* resistOut = nullptr, float* standOut = nullptr);
+bool RankPickFor(const RankQuery& q, int* stepOut, float* sizeOut, float* atkOut,
+                 float* resistOut = nullptr, float* standOut = nullptr);
 
 // 85.42: учёт раздачи и итоговая сводка «кто заспавнился за сессию».
 // Зовётся ТОЛЬКО когда ранг реально выдан особи (один раз на тело).
@@ -349,7 +418,11 @@ void RankSummary(char* out, int cap);
 // Числа конкретной ступени. Нужно ванильному вожаку (Capcom Native Alpha):
 // он сохраняет СВОЙ размер, но не должен получать случайную ступень атаки —
 // иначе корона била бы как новичок, а рядом стоящий ветеран сильнее его.
-bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut);
+// 85.57: числа ступени. resist/stand добавлены для понижения ступени
+// (предел «один мини-босс на место» опускает особь на ступень ниже, и ей нужны
+// числа НОВОЙ ступени из того же [ranks], а не выдуманные).
+bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut,
+                 float* resistOut = nullptr, float* standOut = nullptr);
 uint32_t RanksSessionSalt();
 
 // Наблюдение за рядом у одного тела: пять чисел рядом с текущим

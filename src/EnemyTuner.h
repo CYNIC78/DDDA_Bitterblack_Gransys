@@ -90,7 +90,8 @@ bool PoolsFor(uintptr_t body, float* poisOut, float* kdownOut, float* burnOut);
 // а не пересчитываем заново: с 85.56 веса рангов читаются на ходу, и пересчёт
 // мог бы назвать другую ступень, чем та, по которой особь живёт. Именно этим
 // пользуется строка смерти в PackObserve.
-bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut);
+bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut,
+                   int* setIndexOut = nullptr);
 
 float     HeldValue();
 

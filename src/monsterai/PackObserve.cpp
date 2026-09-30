@@ -556,9 +556,14 @@ static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap
 
     int step = -1;
     uint32_t gen = 0;
-    if (!EnemyTuner::RankIssuedFor(body, &step, &gen)) return;
+    int setIdx = -1;
+    if (!EnemyTuner::RankIssuedFor(body, &step, &gen, &setIdx)) return;
     const char* rn = Runtime::Tempo::RankStepName(step);
     int n = sprintf_s(out, (size_t)cap, " rank=%s", rn ? rn : "?");
+    // 85.57: и НАБОР этого места. По нему в бою видно, с каким сетом пачка
+    // пришла («в этой зоне такой набор»), а не только ступень одной особи.
+    const char* sn = (setIdx >= 0) ? Runtime::Tempo::PackSetName(setIdx) : nullptr;
+    if (sn && n > 0) n += sprintf_s(out + n, (size_t)(cap - n), " set=%s", sn);
     float pois = 0.0f, kd = 0.0f, burn = 0.0f;
     if (n > 0 && EnemyTuner::PoolsFor(body, &pois, &kd, &burn))
         sprintf_s(out + n, (size_t)(cap - n), " pois %.0f kdown %.0f burn %.0f",

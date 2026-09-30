@@ -32,6 +32,7 @@
 | Размер и разброс вида | `ddda_entities.ini` `scaleMin/scaleMax/scaleJitter` | сразу |
 | Разброс особей по рангам (веса, полосы размера, множители урона) | `ddda_ai_overhaul.ini` `[ranks]` | **сразу** (85.56), для новых особей |
 | Крепость к эффектам (яд, огонь, стан) по рангам | `ddda_ai_overhaul.ini` `[ranks]` `rankNResist` / `rankNStand` | перезапуск |
+| Наборы пачек по месту (какой сет где выпадает, ячейка, предел мини-боссов) | `ddda_ai_overhaul.ini` `[packs]` | **сразу** (85.57), для новых особей и мест |
 | Разрешён ли вид под рангами, трогаем ли размер | `ddda_ai_overhaul.ini` `[species.<вид>]` | перезапуск |
 | Темп, ярость, поведение вида | `ddda_ai_overhaul.ini` `[species.<вид>]`, `[monsterTempo]`, `[monsterAI]`, `[aggro]` | перезапуск |
 | Горячие клавиши, панель | `ddda_ai_overhaul.ini` `[hotkeys]`, `[inGameUI]` | перезапуск |
@@ -52,3 +53,5 @@
 | какие веса задуманы на сессию | `Monster Director: ranks uEm0100 ON  novice w0.34 ...` |
 | сработала ли крепость | `EnemyTuner: resist applied uEm0100 ... readback pois 2000 froz 1600 burn 600` |
 | перечитались ли веса на ходу | `Monster Director: ranks RELOADED from ini (live read, 85.56)` |
+| какой набор у места | `Tempo: pack set warband (cell 53,-12, first time here)` |
+| набор конкретной особи | `EnemyTuner: rank uEm0100 veteran(2) ... gen=7 set=warband -> 0x10D57470` |

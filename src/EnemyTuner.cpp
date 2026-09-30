@@ -7,6 +7,7 @@
 #include "EntityConfig.h"
 #include "monsterai/SpeciesCard.h"
 #include "TypeAtlas.Generated.h"
+#include <math.h>   // 85.57: floorf для ячейки места
 
 /**
  * Первый шаг применения конфига: РАЗВЕДКА, а не запись.
@@ -448,6 +449,14 @@ struct Touched {
     float rankStand;
     bool  rankUseScale;    // решено В МОМЕНТ ВЫДАЧИ: ступень задаёт рост или нет
 
+    // 85.57: МЕСТО. Набор пачки выбирается по ячейке карты, и позицию читаем
+    // ОДИН раз, при выдаче ступени: тело может уйти в другой конец карты, а
+    // ступень и набор остаются теми, что выпали здесь.
+    int   setIndex;        // -1 = наборов нет (работают веса [ranks])
+    float setX, setZ;      // позиция в момент выдачи — нужна соседям для наследования
+    bool  haveSetPos;
+    bool  rankCapped;      // мини-босс понижен пределом «один на место»
+
     // 85.44: крепость ранга. Ванильные значения читаем ОДИН раз (иначе после
     // нашей же правки прочитаем её же и будем делить вечно), затем каждый тик
     // сверяем текущее с желаемым — как со статами и размером.
@@ -600,6 +609,10 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->rankResist = 1.0f;
     t->rankStand = 1.0f;
     t->rankUseScale = false;
+    t->setIndex = -1;          // минус один, а не ноль: ноль — ЗАКОННЫЙ индекс набора
+    t->setX = t->setZ = 0.0f;
+    t->haveSetPos = false;
+    t->rankCapped = false;
     t->haveRes = false;
     t->resRejected = false;
     t->resTries = 0;
@@ -622,11 +635,82 @@ static Touched* RememberTouched(uintptr_t body, float scale)
 static void EnsureRankIssued(Touched* rec, const char* kind, uintptr_t body)
 {
     if (!rec || rec->rankStep >= 0) return;
+
+    // ── МЕСТО (85.57) ─────────────────────────────────────────────────────
+    // Позицию читаем только здесь и только пока ступень не выдана. Координаты
+    // тела лежат по +0x40/+0x44/+0x48 (универсальные поля, см. ANATOMY_EM0100).
+    // Ячейка — из ENCOUNTER_MEMORY_DESIGN §1: floor(x/cell), floor(z/cell),
+    // высоту не берём.
+    float xyz[3] = { 0.0f, 0.0f, 0.0f };
+    const bool hasPos = SafeRead((const void*)(body + 0x40), xyz, 12);
+    int cx = 0, cz = 0;
+    const float cellCm = 100.0f * Runtime::Tempo::PackCellMeters();
+    if (hasPos && cellCm > 0.5f) {
+        cx = (int)floorf(xyz[0] / cellCm);
+        cz = (int)floorf(xyz[2] / cellCm);
+    }
+    rec->haveSetPos = hasPos;
+    rec->setX = hasPos ? xyz[0] : 0.0f;
+    rec->setZ = hasPos ? xyz[2] : 0.0f;
+
+    // НАСЛЕДОВАНИЕ НАБОРА. Пачка — это тела, стоящие рядом, а ячейка карты —
+    // прямоугольник: пачка на границе получила бы два разных набора и
+    // рассыпалась бы на «сброд + ватагу» в одном бою. Поэтому тело, рядом с
+    // которым уже есть ОСОБЬ С НАБОРОМ, берёт её набор. Ячейка нужна только
+    // для мест, где мы ещё никого не видели.
+    int setIdx = -1;
+    if (Runtime::Tempo::PackSetsEnabled() && hasPos) {
+        const float inh = Runtime::Tempo::PackInheritMeters() * 100.0f;
+        float best = inh * inh + 1.0f;
+        for (int i = 0; i < s_nTouched; ++i) {
+            const Touched& o = s_touched[i];
+            if (&o == rec || o.rankStep < 0 || o.setIndex < 0 || !o.haveSetPos) continue;
+            const float dx = o.setX - xyz[0], dz = o.setZ - xyz[2];
+            const float d2 = dx * dx + dz * dz;
+            if (d2 <= best) { best = d2; setIdx = o.setIndex; }
+        }
+        if (setIdx < 0) setIdx = Runtime::Tempo::PackSetForCell(cx, cz);
+    }
+    rec->setIndex = setIdx;
+
+    Runtime::Tempo::RankQuery q;
+    memset(&q, 0, sizeof(q));
+    q.kind     = kind;
+    q.body     = body;
+    q.gen      = rec->gen;
+    q.setIndex = setIdx;
+    q.cellX    = cx;
+    q.cellZ    = cz;
+    q.hasCell  = hasPos;
+
     int   step = -1;
     float sz = 0.0f, atk = 1.0f, res = 1.0f, stand = 1.0f;
-    if (!Runtime::Tempo::RankPickFor(kind, body, rec->gen, &step, &sz, &atk,
-                                     &res, &stand))
+    if (!Runtime::Tempo::RankPickFor(q, &step, &sz, &atk, &res, &stand))
         return;                           // вид не под лестницей или она выключена
+
+    // ── ПРЕДЕЛ «ОДИН МИНИ-БОСС НА МЕСТО» (85.57) ──────────────────────────
+    // До наборов двойной мини-босс был лотереей 2% и почти не встречался. С
+    // наборами у места может стоять «охота», где мини-боссу отдано 10% веса, —
+    // и два мини-босса в одной пачке стали бы обычным делом. Понижаем особь на
+    // ступень (не отменяем): место остаётся опасным, но не «два босса в кустах».
+    if (hasPos && step == Runtime::Tempo::kRankSteps - 1) {
+        const int limit = Runtime::Tempo::PackMinibossPerPack();
+        if (limit > 0 && Runtime::Tempo::CellMinibossCount(cx, cz) >= limit) {
+            float s2 = 0.0f, a2 = 1.0f, r2 = 1.0f, st2 = 1.0f;
+            if (Runtime::Tempo::RankNumbers(kind, step - 1, &s2, &a2, &r2, &st2)) {
+                step = step - 1;
+                sz = s2; atk = a2; res = r2; stand = st2;
+                rec->rankCapped = true;
+                logFile << "EnemyTuner: miniboss capped at cell " << cx << "," << cz
+                        << " (limit " << limit << ") -> " << Runtime::Tempo::RankName(step)
+                        << " for 0x" << std::hex << (unsigned)body << std::dec
+                        << std::endl;
+            }
+        } else {
+            Runtime::Tempo::NoteCellMiniboss(cx, cz);
+        }
+    }
+
     rec->rankStep    = step;
     rec->rankSize    = sz;
     rec->rankAtk     = atk;
@@ -1665,22 +1749,27 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
         // строка в лог, и лимит «две на особь» её не касается.
         {
             ++rec->rankLogged;
-            char ll[190];
+            char ll[230];
             // 85.52: у видов с rankScale = off размер ступенью НЕ задаётся —
             // печатаем это прямо, иначе в логе «size 1.190» читалось бы как
             // выданный рангом рост, которого на самом деле нет.
             // 85.56: печатаем И ПОКОЛЕНИЕ — по нему видно, что слот сменил
             // жильца (иначе в поле не проверить, что ступень больше не
             // «переезжает» на нового монстра вместе с адресом).
-            if (rec->rankUseScale)
-                sprintf_s(ll, "rank %s %s(%d) size %.3f atk x%.2f gen=%u -> 0x%08X",
-                          kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
-                          rec->rankStep, rec->rankSize, rec->rankAtk,
-                          rec->gen, (unsigned)body);
-            else
-                sprintf_s(ll, "rank %s %s(%d) size off (vanilla) atk x%.2f gen=%u -> 0x%08X",
-                          kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
-                          rec->rankStep, rec->rankAtk, rec->gen, (unsigned)body);
+            // 85.57: печатаем НАБОР места — по этой строке видно, какое место
+            // какой сет получило («в этой зоне такой набор, в следующей другой»).
+            char spart[40], setpart[40], cappart[26];
+            if (rec->rankUseScale) sprintf_s(spart, "size %.3f", rec->rankSize);
+            else                   lstrcpynA(spart, "size off (vanilla)", sizeof(spart));
+            setpart[0] = 0; cappart[0] = 0;
+            const char* setn = (rec->setIndex >= 0)
+                             ? Runtime::Tempo::PackSetName(rec->setIndex) : nullptr;
+            if (setn) sprintf_s(setpart, " set=%s", setn);
+            if (rec->rankCapped) lstrcpynA(cappart, " miniboss-capped", sizeof(cappart));
+            sprintf_s(ll, "rank %s %s(%d) %s atk x%.2f gen=%u%s%s -> 0x%08X",
+                      kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
+                      rec->rankStep, spart, rec->rankAtk, rec->gen,
+                      setpart, cappart, (unsigned)body);
             logFile << "EnemyTuner: " << ll << std::endl;
             lstrcpynA(s_status, ll, sizeof(s_status));
         }
@@ -1963,6 +2052,8 @@ static void TickOneBody(uintptr_t body, const char* kind)
         // ступень прежнего (поле 85.55: волчица в слот гоблина — «ветеран»).
         rec0->gen = ++s_bodyGenSeq;
         rec0->rankStep = -1;
+        rec0->setIndex = -1;      // у нового жильца своё место
+        rec0->rankCapped = false;
         char ls[176];
         sprintf_s(ls, "0x%08X slot reuse: kind uEm%04u -> uEm%04u, body record reset"
                       " (gen %u)",
@@ -2263,12 +2354,13 @@ const char* StatusLine() { return s_status; }
 // чтобы строка смерти показывала правду, даже если движок что-то вернул назад.
 // 85.56: что за ступень живёт в этом теле. Отдаём ЗАМОРОЖЕННОЕ — то, по чему
 // особь реально живёт, а не то, что получилось бы при нынешних весах.
-bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut)
+bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut, int* setIndexOut)
 {
     Touched* rec = FindTouched(body);
     if (!rec || rec->rankStep < 0) return false;
-    if (stepOut) *stepOut = rec->rankStep;
-    if (genOut)  *genOut  = rec->gen;
+    if (stepOut)     *stepOut     = rec->rankStep;
+    if (genOut)      *genOut      = rec->gen;
+    if (setIndexOut) *setIndexOut = rec->setIndex;
     return true;
 }
 

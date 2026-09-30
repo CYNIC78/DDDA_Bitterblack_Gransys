@@ -1144,13 +1144,16 @@ bool RankScaleEnabled(const char* kind)
     return n.scale;
 }
 
-bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut)
+bool RankNumbers(const char* kind, int step, float* sizeOut, float* atkOut,
+                 float* resistOut, float* standOut)
 {
     RanksNumbers n;
     if (!GetRanks(kind, &n)) return false;
     if (step < 0 || step >= kRankSteps) return false;
-    if (sizeOut) *sizeOut = 0.5f * (n.step[step].sizeMin + n.step[step].sizeMax);
-    if (atkOut)  *atkOut  = n.step[step].atk;
+    if (sizeOut)  *sizeOut  = 0.5f * (n.step[step].sizeMin + n.step[step].sizeMax);
+    if (atkOut)   *atkOut   = n.step[step].atk;
+    if (resistOut) *resistOut = n.step[step].resist;
+    if (standOut)  *standOut  = n.step[step].stand;
     return true;
 }
 
@@ -1162,10 +1165,189 @@ bool RanksBuiltinToughness(int step, float* resistOut, float* standOut)
     return true;
 }
 
-bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
-                   float* sizeOut, float* atkOut, float* resistOut,
-                   float* standOut)
+// ── 85.57: НАБОРЫ ПАЧЕК ПО МЕСТУ ─────────────────────────────────────────
+//
+// Встроенный список. Числа — компромисс: среднее по наборам держится около
+// прежних весов [ranks], но КАЖДОЕ МЕСТО получает свой характер, и это видно
+// глазом — сброд, патруль, ватага, охота.
+//
+// Почему встроенный список, а не «пусто, пока владелец не напишет»: система
+// должна включаться одной строкой и не должна молча ничего не делать. Если
+// наборов в ini нет — работают эти числа (и об этом есть строка в логе).
+static const PackSet kPackSetDef[kPackSets] = {
+    { "rabble",  0.30f, { 8.00f, 2.00f, 0.00f, 0.00f, 0.00f } },
+    { "patrol",  0.40f, { 0.34f, 0.46f, 0.13f, 0.05f, 0.02f } },
+    { "warband", 0.20f, { 0.10f, 0.45f, 0.35f, 0.10f, 0.00f } },
+    { "hunt",    0.10f, { 0.05f, 0.30f, 0.35f, 0.20f, 0.10f } },
+    { "",        0.00f, { 0.00f, 0.00f, 0.00f, 0.00f, 0.00f } },
+    { "",        0.00f, { 0.00f, 0.00f, 0.00f, 0.00f, 0.00f } },
+};
+
+static PackSetsConfig s_packSets;
+static bool           s_packSetsReady = false;
+
+struct PackCellRec { int cx, cz, set; };
+static const int kPackCells = 256;
+static PackCellRec s_packCell[kPackCells];
+static int         s_nPackCell = 0;
+static int         s_packCellNext = 0;   // для вытеснения по кругу
+
+struct PackBossRec { int cx, cz, count; };
+static const int kPackBossCells = 64;
+static PackBossRec s_packBoss[kPackBossCells];
+static int         s_nPackBoss = 0;
+
+void ResetPackMemory(const char* reason)
 {
+    const int cells = s_nPackCell, bosses = s_nPackBoss;
+    memset(s_packCell, 0, sizeof(s_packCell));
+    memset(s_packBoss, 0, sizeof(s_packBoss));
+    s_nPackCell = 0; s_packCellNext = 0; s_nPackBoss = 0;
+    if (cells || bosses)
+        logFile << "Tempo: pack memory reset (" << (reason ? reason : "?")
+                << "): places=" << cells << " minibossPlaces=" << bosses << std::endl;
+}
+
+PackSetsConfig PackSetsFromIni(RanksIniReader& ini)
+{
+    PackSetsConfig c;
+    memset(&c, 0, sizeof(c));
+    c.enabled         = ini.Bool ("packs", "enabled", true);
+    c.cellMeters      = ini.Float("packs", "cellMeters", 40.0f);
+    c.inheritMeters   = ini.Float("packs", "inheritMeters", 25.0f);
+    c.minibossPerPack = (int)(ini.Float("packs", "minibossPerPack", 1.0f) + 0.5f);
+    c.count = 0;
+    for (int i = 0; i < kPackSets; ++i) {
+        PackSet s;
+        memset(&s, 0, sizeof(s));
+        lstrcpynA(s.name, kPackSetDef[i].name, sizeof(s.name));
+        char key[32], nm[16];
+        snprintf(key, sizeof(key), "set%dName", i);
+        if (ini.Text("packs", key, nm, (int)sizeof(nm)) && nm[0])
+            lstrcpynA(s.name, nm, sizeof(s.name));
+        snprintf(key, sizeof(key), "set%dWeight", i);
+        s.weight = ini.Float("packs", key, kPackSetDef[i].weight);
+        for (int r = 0; r < kRankSteps; ++r) {
+            snprintf(key, sizeof(key), "set%dr%d", i, r);
+            s.rank[r] = ini.Float("packs", key, kPackSetDef[i].rank[r]);
+        }
+        // Санитизация. Мусор не должен превращаться в «набор без ступеней»:
+        // такой набор отнимал бы долю у живых и ронял бы ролл в последнюю
+        // ступень (так уже было с [ladder] в 85.42).
+        float sum = 0.0f;
+        for (int r = 0; r < kRankSteps; ++r) {
+            if (!(s.rank[r] >= 0.0f)) s.rank[r] = 0.0f;   // NaN и минус -> 0
+            sum += s.rank[r];
+        }
+        if (!(s.weight >= 0.0f)) s.weight = 0.0f;
+        // Ноль в весе набора ИЛИ нулевая сумма ступеней = набор выключен.
+        // Это законный способ владельца убрать набор («сброда тут не будет»),
+        // поэтому молча, а не «починим к встроенному».
+        if (s.weight <= 0.0f || sum <= 0.0001f) continue;
+        c.set[c.count++] = s;
+    }
+    // Все наборы выключены нулями: не подсовываем встроенные (владелец явно
+    // сказал своё), а честно выключаем систему — в логе это будет видно.
+    if (c.count == 0) c.enabled = false;
+    return c;
+}
+
+void RegisterPackSets(const PackSetsConfig& c)
+{
+    s_packSets = c;
+    if (!(s_packSets.cellMeters >= 10.0f)) s_packSets.cellMeters = 10.0f;
+    if (s_packSets.cellMeters > 400.0f)    s_packSets.cellMeters = 400.0f;
+    if (!(s_packSets.inheritMeters >= 0.0f)) s_packSets.inheritMeters = 0.0f;
+    if (s_packSets.inheritMeters > s_packSets.cellMeters)
+        s_packSets.inheritMeters = s_packSets.cellMeters;
+    if (s_packSets.minibossPerPack < 0) s_packSets.minibossPerPack = 0;
+    if (s_packSets.minibossPerPack > 4) s_packSets.minibossPerPack = 4;
+    s_packSetsReady = true;
+    // Место -> набор считаем заново: правка весов на ходу должна менять и
+    // раздачу по местам. Уже выданные особи при этом не меняются — их набор
+    // заморожен в записи тела, как и ступень.
+    memset(s_packCell, 0, sizeof(s_packCell));
+    s_nPackCell = 0; s_packCellNext = 0;
+}
+
+bool  PackSetsEnabled()     { return s_packSetsReady && s_packSets.enabled; }
+float PackCellMeters()      { return s_packSetsReady ? s_packSets.cellMeters : 0.0f; }
+float PackInheritMeters()   { return s_packSetsReady ? s_packSets.inheritMeters : 0.0f; }
+int   PackMinibossPerPack() { return s_packSetsReady ? s_packSets.minibossPerPack : 0; }
+int   PackSetCount()        { return s_packSetsReady ? s_packSets.count : 0; }
+
+const char* PackSetName(int idx)
+{
+    if (!s_packSetsReady || idx < 0 || idx >= s_packSets.count) return nullptr;
+    return s_packSets.set[idx].name;
+}
+
+int PackSetForCell(int cx, int cz)
+{
+    if (!PackSetsEnabled() || s_packSets.count <= 0) return -1;
+    for (int i = 0; i < s_nPackCell; ++i)
+        if (s_packCell[i].cx == cx && s_packCell[i].cz == cz) return s_packCell[i].set;
+
+    float sum = 0.0f;
+    for (int i = 0; i < s_packSets.count; ++i) sum += s_packSets.set[i].weight;
+    if (sum <= 0.0001f) return -1;
+
+    const uint32_t h = HashUnit32(((uint32_t)cx * 73856093u)
+                                  ^ ((uint32_t)cz * 19349663u)
+                                  ^ RanksSessionSalt() ^ 0x5E7B01u);
+    const float t = (float)h / 4294967295.0f;
+    float acc = 0.0f;
+    int pick = s_packSets.count - 1;
+    for (int i = 0; i < s_packSets.count; ++i) {
+        acc += s_packSets.set[i].weight;
+        if (t <= acc / sum) { pick = i; break; }
+    }
+
+    int slot = -1;
+    if (s_nPackCell < kPackCells) slot = s_nPackCell++;
+    else { slot = s_packCellNext; s_packCellNext = (s_packCellNext + 1) % kPackCells; }
+    s_packCell[slot].cx = cx;
+    s_packCell[slot].cz = cz;
+    s_packCell[slot].set = pick;
+
+    // Строка на каждое НОВОЕ место: именно по ней видно, что наборы работают
+    // («в этой зоне такой сет, в следующей — другой»). Оговорка: кеш на 256
+    // мест, и если за сессию мест больше, дальнее место может «показаться»
+    // новым второй раз — это только лишняя строка в логе, не ошибка боя.
+    logFile << "Tempo: pack set " << s_packSets.set[pick].name
+            << " (cell " << cx << "," << cz << ", first time here)" << std::endl;
+    return pick;
+}
+
+static PackBossRec* FindBossCell(int cx, int cz)
+{
+    for (int i = 0; i < s_nPackBoss; ++i)
+        if (s_packBoss[i].cx == cx && s_packBoss[i].cz == cz) return &s_packBoss[i];
+    return nullptr;
+}
+
+int CellMinibossCount(int cx, int cz)
+{
+    const PackBossRec* r = FindBossCell(cx, cz);
+    return r ? r->count : 0;
+}
+
+void NoteCellMiniboss(int cx, int cz)
+{
+    if (PackBossRec* r = FindBossCell(cx, cz)) { ++r->count; return; }
+    if (s_nPackBoss >= kPackBossCells) return;     // старые места не вытесняем
+    s_packBoss[s_nPackBoss].cx = cx;
+    s_packBoss[s_nPackBoss].cz = cz;
+    s_packBoss[s_nPackBoss].count = 1;
+    ++s_nPackBoss;
+}
+
+bool RankPickFor(const RankQuery& q, int* stepOut, float* sizeOut, float* atkOut,
+                 float* resistOut, float* standOut)
+{
+    // 85.57: вид берём из запроса — роллу больше не нужны ни адрес, ни ячейка
+    // по отдельности: всё уже собрано в RankQuery.
+    const char* kind = q.kind;
     RanksNumbers n;
     if (!GetRanks(kind, &n)) return false;
 
@@ -1176,11 +1358,19 @@ bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
     // снова «ветерана» (13% веса, повтор случайным быть почти не может). Хеш
     // считался от адреса, а адрес — не личность: движок отдаёт освободившийся
     // слот следующему монстру. gen=0 сохраняет прежние числа для фикстур.
-    const uint32_t g = gen * 2654435761u;   // Knuth: разносим поколения по хешу
-    const uint32_t h = HashUnit32(body ^ g ^ RanksSessionSalt() ^ 0x1ADDE12u);
+    const uint32_t g = q.gen * 2654435761u;   // Knuth: разносим поколения по хешу
+    const uint32_t h = HashUnit32(q.body ^ g ^ RanksSessionSalt() ^ 0x1ADDE12u);
+
+    // 85.57: веса ступеней берём у НАБОРА этого места, если он выпал; иначе —
+    // общие [ranks]. Сами ступени (полосы размера, атака, крепость) не меняются:
+    // набор двигает СОСТАВ пачки, а не силу отдельной особи.
+    float w[kRankSteps];
+    for (int i = 0; i < kRankSteps; ++i) w[i] = n.step[i].weight;
+    if (q.setIndex >= 0 && PackSetsEnabled() && q.setIndex < s_packSets.count)
+        for (int i = 0; i < kRankSteps; ++i) w[i] = s_packSets.set[q.setIndex].rank[i];
 
     float sum = 0.0f;
-    for (int i = 0; i < kRankSteps; ++i) sum += n.step[i].weight;
+    for (int i = 0; i < kRankSteps; ++i) sum += w[i];
     if (sum <= 0.0001f) return false;
 
     // 85.42: берём ВСЕ 32 бита, а не младшие 16. Адреса тел в пачке идут с
@@ -1191,11 +1381,11 @@ bool RankPickFor(const char* kind, uintptr_t body, uint32_t gen, int* stepOut,
     float acc = 0.0f;
     int   pick = kRankSteps - 1;
     for (int i = 0; i < kRankSteps; ++i) {
-        acc += n.step[i].weight;
+        acc += w[i];
         if (t <= acc / sum) { pick = i; break; }
     }
 
-    const uint32_t h2 = HashUnit32((body >> 4) ^ (g * 3u)
+    const uint32_t h2 = HashUnit32((q.body >> 4) ^ (g * 3u)
                                    ^ RanksSessionSalt() ^ 0x57A7E5u);
     const float u = (float)h2 / 4294967295.0f;
     const RankStep& st = n.step[pick];
@@ -2094,6 +2284,9 @@ void OnWorldUnload()
     memset(g_animTrack, 0, sizeof(g_animTrack));
     // Override'ы (PawnHaste) держат те же мёртвые указатели.
     ClearAllOverrides();
+    // 85.57: место -> набор и счётчики мини-боссов живут в пределах ЗАГРУЖЕННОГО
+    // МИРА. Новая загрузка — новые места; держать старую раздачу нельзя.
+    ResetPackMemory("world-unload");
 }
 
 int DirectorMobilizationCount() { return g_nDirectorMob; }

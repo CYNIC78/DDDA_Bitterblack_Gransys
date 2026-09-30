@@ -17,6 +17,7 @@
 #include <assert.h>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <iostream>
 #include <string>
 
@@ -24,6 +25,10 @@ BYTE* codeBase = 0;
 BYTE* codeEnd = 0;
 DWORD g_tempoTestNow = 0;
 IniConfigStub config;
+// 85.57: наборы по месту печатают строку на каждое НОВОЕ место, поэтому
+// фикстуре понадобился logFile (до этого он не линковался: сборка с
+// gc-sections выбрасывала функции, которые в него пишут).
+std::ofstream logFile("/tmp/ranks_test.log");
 
 namespace Runtime {
 ActorDump g_act[32] = {};
@@ -47,22 +52,33 @@ bool NameOfLiveObject(uintptr_t, char* out, int cap)
 
 // ── читатель ini для фикстуры: маленькая таблица ключей ────────────────────
 struct FakeIni : Runtime::Tempo::RanksIniReader {
-    struct Row { const char* sec; const char* key; float f; bool b; bool isBool; };
+    // 85.57: ИМЯ КЛЮЧА ХРАНИМ КОПИЕЙ, а не указателем.
+    // Тест строит имя ключа в переиспользуемом буфере (set0Weight, set1Weight...),
+    // и с указателями все записи указывали на ОДИН буфер: фикстура видела четыре
+    // копии «set3Weight». Тот же класс ошибки, что ловили в 85.53 в сводке рангов.
+    struct Row { char sec[24]; char key[32]; float f; bool b; bool isBool; };
     enum { kMax = 24 };
     Row rows[kMax];
     int n = 0;
 
+    static void Copy(char* dst, const char* src, int cap)
+    {
+        int i = 0;
+        if (src) for (; src[i] && i < cap - 1; ++i) dst[i] = src[i];
+        dst[i] = 0;
+    }
+
     void SetFloat(const char* sec, const char* key, float v)
     {
         if (n >= kMax) return;
-        rows[n].sec = sec; rows[n].key = key; rows[n].f = v;
-        rows[n].b = false; rows[n].isBool = false; ++n;
+        Copy(rows[n].sec, sec, 24); Copy(rows[n].key, key, 32);
+        rows[n].f = v; rows[n].b = false; rows[n].isBool = false; ++n;
     }
     void SetBool(const char* sec, const char* key, bool v)
     {
         if (n >= kMax) return;
-        rows[n].sec = sec; rows[n].key = key; rows[n].f = 0.0f;
-        rows[n].b = v; rows[n].isBool = true; ++n;
+        Copy(rows[n].sec, sec, 24); Copy(rows[n].key, key, 32);
+        rows[n].f = 0.0f; rows[n].b = v; rows[n].isBool = true; ++n;
     }
     float Float(const char* sec, const char* key, float defValue)
     {
@@ -80,9 +96,54 @@ struct FakeIni : Runtime::Tempo::RanksIniReader {
                 return rows[i].b;
         return defValue;
     }
+    // 85.57: имена наборов. Строк в фикстуре мало, держим отдельным списком.
+    struct TextRow { char sec[24]; char key[32]; char val[24]; };
+    enum { kMaxText = 8 };
+    TextRow texts[kMaxText];
+    int nText = 0;
+    void SetText(const char* sec, const char* key, const char* val)
+    {
+        if (nText >= kMaxText) return;
+        Copy(texts[nText].sec, sec, 24);
+        Copy(texts[nText].key, key, 32);
+        Copy(texts[nText].val, val, 24);
+        ++nText;
+    }
+    bool Text(const char* sec, const char* key, char* out, int cap)
+    {
+        for (int i = 0; i < nText; ++i)
+            if (!std::strcmp(texts[i].sec, sec) && !std::strcmp(texts[i].key, key)) {
+                int j = 0;
+                for (; texts[i].val[j] && j < cap - 1; ++j) out[j] = texts[i].val[j];
+                out[j] = 0;
+                return j > 0;
+            }
+        return false;
+    }
 };
 
 using namespace Runtime::Tempo;
+
+// 85.57: ролл принимает ЗАПРОС (вид + тело + поколение + место). Помощник
+// держит тесты читаемыми: место по умолчанию не задано, то есть работают общие
+// веса [ranks] — ровно как до наборов.
+static RankQuery Q(const char* kind, uintptr_t body, uint32_t gen = 0u)
+{
+    RankQuery q;
+    std::memset(&q, 0, sizeof(q));
+    q.kind = kind; q.body = body; q.gen = gen; q.setIndex = -1;
+    return q;
+}
+
+// Тот же запрос, но с местом: набор берём у самого модуля — как это делает
+// тюнер в бою (он только читает ячейку и спрашивает набор).
+static RankQuery QC(const char* kind, uintptr_t body, int cx, int cz, uint32_t gen = 0u)
+{
+    RankQuery q = Q(kind, body, gen);
+    q.cellX = cx; q.cellZ = cz; q.hasCell = true;
+    q.setIndex = PackSetForCell(cx, cz);
+    return q;
+}
 
 static void TestFlagGates()
 {
@@ -95,7 +156,7 @@ static void TestFlagGates()
     assert(!other.enabled);
     RegisterRanks("uEm0300", other);
     int st = -1; float sz = 0, at = 0;
-    assert(!RankPickFor("uEm0300", 0x1000, 0u, &st, &sz, &at));   // выключено
+    assert(!RankPickFor(Q("uEm0300", 0x1000, 0u), &st, &sz, &at));   // выключено
 
     // 85.41: вид ВНЕ списка не включается никакой ини. В поле 85.40 у волка
     // в живом ini стояло ranks = on — и волки получили полосу роста и
@@ -106,7 +167,7 @@ static void TestFlagGates()
     RanksNumbers lizard = RanksFromIni(lizardOn, "uEm0400");
     assert(!lizard.enabled);                     // ключ не имеет силы
     RegisterRanks("uEm0400", lizard);
-    assert(!RankPickFor("uEm0400", 0x777, 0u, &st, &sz, &at));
+    assert(!RankPickFor(Q("uEm0400", 0x777, 0u), &st, &sz, &at));
     assert(GetRanks("uEm0400", &lizard) == false);
 
     // 85.52: ВОЛК допущен — но размером ранги у него НЕ управляют.
@@ -120,7 +181,7 @@ static void TestFlagGates()
     assert(!wolf.scale);                         // но размер — ванильный
     assert(wolf.step[4].atk > 1.4f);             // атака от ступени работает
     RegisterRanks("uEm0200", wolf);
-    assert(RankPickFor("uEm0200", 0x777, 0u, &st, &sz, &at));
+    assert(RankPickFor(Q("uEm0200", 0x777, 0u), &st, &sz, &at));
     assert(st >= 0 && st < kRankSteps);
     assert(!RankScaleEnabled("uEm0200"));        // размер не наш
     assert(RankScaleEnabled("uEm0100") == false || true);  // гоблин — см. ниже
@@ -141,18 +202,18 @@ static void TestFlagGates()
     RanksNumbers gobOff = RanksFromIni(offIni, "uEm0100");
     assert(!gobOff.enabled);
     RegisterRanks("uEm0100", gobOff);
-    assert(!RankPickFor("uEm0100", 0x1000, 0u, &st, &sz, &at));
+    assert(!RankPickFor(Q("uEm0100", 0x1000, 0u), &st, &sz, &at));
     assert(!GetRanks("uEm0100", &gobOff));
     // волк остаётся допущенным (проверен выше), но ВЫКЛЮЧЕННЫМ ключом ini —
     // показываем, что off вида гасит ступень и после успешного включения
     RegisterRanks("uEm0200", wolf);
-    assert(RankPickFor("uEm0200", 0x1000, 0u, &st, &sz, &at));
+    assert(RankPickFor(Q("uEm0200", 0x1000, 0u), &st, &sz, &at));
     FakeIni wolfOff;
     wolfOff.SetBool("species.uEm0200", "ranks", false);
     RanksNumbers wolfOffN = RanksFromIni(wolfOff, "uEm0200");
     assert(!wolfOffN.enabled);
     RegisterRanks("uEm0200", wolfOffN);
-    assert(!RankPickFor("uEm0200", 0x1000, 0u, &st, &sz, &at));
+    assert(!RankPickFor(Q("uEm0200", 0x1000, 0u), &st, &sz, &at));
     assert(!RankScaleEnabled("uEm0200"));   // выключенный вид = размера тоже нет
 
     FakeIni on;
@@ -246,14 +307,14 @@ static void TestToughnessKeys()
     for (int i = 0; i < 64; ++i) {
         int st = -1; float sz = 0, at = 0, rs = 0, sd = 0;
         const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x1000u;
-        assert(RankPickFor("uEm0100", body, 0u, &st, &sz, &at, &rs, &sd));
+        assert(RankPickFor(Q("uEm0100", body, 0u), &st, &sz, &at, &rs, &sd));
         assert(std::fabs(rs - m.step[st].resist) < 0.0001f);
         assert(std::fabs(sd - m.step[st].stand)  < 0.0001f);
     }
 
     // старые вызовы (без новых аргументов) продолжают работать: крепость не вытащили
     int st = -1; float sz = 0, at = 0;
-    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &st, &sz, &at));
+    assert(RankPickFor(Q("uEm0100", 0x10D50060, 0u), &st, &sz, &at));
 }
 
 static void TestDeterminismAndSpread()
@@ -265,8 +326,8 @@ static void TestDeterminismAndSpread()
 
     // детерминированность: два вопроса к одному телу дают одно и то же
     int s1 = -1, s2 = -1; float z1 = 0, z2 = 0, a1 = 0, a2 = 0;
-    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &s1, &z1, &a1));
-    assert(RankPickFor("uEm0100", 0x10D50060, 0u, &s2, &z2, &a2));
+    assert(RankPickFor(Q("uEm0100", 0x10D50060, 0u), &s1, &z1, &a1));
+    assert(RankPickFor(Q("uEm0100", 0x10D50060, 0u), &s2, &z2, &a2));
     assert(s1 == s2 && std::fabs(z1 - z2) < 0.00001f && std::fabs(a1 - a2) < 0.00001f);
 
     // полоса размера ступени соблюдается: размер не гуляет по всему коридору
@@ -275,7 +336,7 @@ static void TestDeterminismAndSpread()
     for (int i = 0; i < N; ++i) {
         int st = -1; float sz = 0, at = 0;
         const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x1000u;
-        assert(RankPickFor("uEm0100", body, 0u, &st, &sz, &at));
+        assert(RankPickFor(Q("uEm0100", body, 0u), &st, &sz, &at));
         assert(st >= 0 && st < kRankSteps);
         assert(sz >= n.step[st].sizeMin - 0.0001f && sz <= n.step[st].sizeMax + 0.0001f);
         assert(std::fabs(at - n.step[st].atk) < 0.0001f);
@@ -410,8 +471,8 @@ static void TestGeneration()
     for (int i = 0; i < 32; ++i) {
         const uintptr_t body = 0x10D50060u + (uintptr_t)i * 0x7410u;
         int a = -1, b = -1; float x = 0, y = 0, c = 0, d = 0;
-        assert(RankPickFor("uEm0100", body, 7u, &a, &x, &c));
-        assert(RankPickFor("uEm0100", body, 7u, &b, &y, &d));
+        assert(RankPickFor(Q("uEm0100", body, 7u), &a, &x, &c));
+        assert(RankPickFor(Q("uEm0100", body, 7u), &b, &y, &d));
         assert(a == b && std::fabs(x - y) < 0.00001f && std::fabs(c - d) < 0.00001f);
     }
 
@@ -420,8 +481,8 @@ static void TestGeneration()
     for (int i = 0; i < 256; ++i) {
         const uintptr_t body = 0x10D00000u + (uintptr_t)i * 0x7410u;
         int p1 = -1, p2 = -1; float s1 = 0, s2 = 0, a1 = 0, a2 = 0;
-        assert(RankPickFor("uEm0100", body, 1u, &p1, &s1, &a1));
-        assert(RankPickFor("uEm0100", body, 2u, &p2, &s2, &a2));
+        assert(RankPickFor(Q("uEm0100", body, 1u), &p1, &s1, &a1));
+        assert(RankPickFor(Q("uEm0100", body, 2u), &p2, &s2, &a2));
         if (p1 == p2 && std::fabs(s1 - s2) < 0.00001f) ++same; else ++changed;
     }
     assert(changed > 0);
@@ -433,7 +494,7 @@ static void TestGeneration()
     int distinct = 0;
     for (uint32_t g = 1; g <= 64; ++g) {
         int st = -1; float sz = 0, at = 0;
-        assert(RankPickFor("uEm0100", 0x10D57470u, g, &st, &sz, &at));
+        assert(RankPickFor(Q("uEm0100", 0x10D57470u, g), &st, &sz, &at));
         assert(st >= 0 && st < kRankSteps);
         if (!seen[st]) { seen[st] = true; ++distinct; }
     }
@@ -442,9 +503,134 @@ static void TestGeneration()
 
     // 4) gen = 0 — старое поведение (так зовут фикстуры и код без записи тела)
     int z1 = -1, z2 = -1; float f1 = 0, f2 = 0, q1 = 0, q2 = 0;
-    assert(RankPickFor("uEm0100", 0x10D57470u, 0u, &z1, &f1, &q1));
-    assert(RankPickFor("uEm0100", 0x10D57470u, 0u, &z2, &f2, &q2));
+    assert(RankPickFor(Q("uEm0100", 0x10D57470u, 0u), &z1, &f1, &q1));
+    assert(RankPickFor(Q("uEm0100", 0x10D57470u, 0u), &z2, &f2, &q2));
     assert(z1 == z2 && std::fabs(f1 - f2) < 0.00001f);
+}
+
+// 85.57: НАБОРЫ ПАЧЕК ПО МЕСТУ.
+//
+// Владелец: «если все пачки в сессии одинаковыми по рангам — весь смысл
+// теряется; в этой зоне такой сет, в следующей другой». Проверяем ровно это:
+// (1) без ini работают встроенные наборы; (2) место детерминировано — одна
+// ячейка всегда даёт один набор, но РАЗНЫЕ места дают разные; (3) доли наборов
+// соответствуют весам; (4) состав пачки внутри одного места отличается от
+// другого места; (5) мусор и выключение наборов не ломают ролл.
+static void TestPackSets()
+{
+    // (1) пустая ini: встроенные наборы и включённые наборы
+    FakeIni empty;
+    PackSetsConfig def = PackSetsFromIni(empty);
+    assert(def.enabled);
+    assert(def.count == 4);
+    assert(!std::strcmp(def.set[0].name, "rabble"));
+    assert(!std::strcmp(def.set[3].name, "hunt"));
+    RegisterPackSets(def);
+
+    // (2) детерминизм и разброс по местам
+    bool seen[8] = {};
+    int  bySet[8] = {};
+    const int CELLS = 2048;
+    for (int i = 0; i < CELLS; ++i) {
+        const int cx = (i % 64) - 32;
+        const int cz = (i / 64) - 16;
+        const int s1 = PackSetForCell(cx, cz);
+        const int s2 = PackSetForCell(cx, cz);
+        assert(s1 == s2);                         // одно место — один набор
+        assert(s1 >= 0 && s1 < def.count);
+        seen[s1] = true;
+        ++bySet[s1];
+    }
+    int distinct = 0;
+    for (int i = 0; i < def.count; ++i) if (seen[i]) ++distinct;
+    assert(distinct == def.count);                // все четыре набора живые
+    // доли: patrol (0.40) должен быть самым частым, hunt (0.10) — редким
+    assert(bySet[1] > bySet[2]);                   // был очень осторожен: patrol > warband
+    assert(bySet[2] > 0 && bySet[3] > 0);
+    std::cout << "  pack sets over " << CELLS << " cells: rabble=" << bySet[0]
+              << " patrol=" << bySet[1] << " warband=" << bySet[2]
+              << " hunt=" << bySet[3] << "\n";
+
+    // (3) КЛЮЧЕВОЕ: состав пачки в РАЗНЫХ местах разный. Берём пачку из 12 тел
+    // в одном месте и такую же в другом — наборы должны дать разный уклон.
+    RegisterRanks("uEm0100", RanksFromIni(empty, "uEm0100"));
+    int rabbleHeavy = 0, veteranHeavy = 0;
+    for (int c = 0; c < 256; ++c) {
+        int nov = 0, vet = 0;
+        for (int b = 0; b < 12; ++b) {
+            int st = -1; float sz = 0, at = 0;
+            assert(RankPickFor(QC("uEm0100", 0x10D00000u + (uintptr_t)b * 0x7410u,
+                                  c * 7, -c * 5), &st, &sz, &at));
+            if (st == 0) ++nov;
+            if (st >= 2) ++vet;
+        }
+        if (nov >= 8) ++rabbleHeavy;
+        if (vet >= 4) ++veteranHeavy;
+    }
+    assert(rabbleHeavy > 0);      // где-то пачка почти целиком из новичков
+    assert(veteranHeavy > 0);     // а где-то — из ветеранов
+    std::cout << "  pack character: rabble-heavy=" << rabbleHeavy
+              << " veteran-heavy=" << veteranHeavy << " of 256 places\n";
+
+    // (4) выключенные наборы = прежнее поведение (общие веса [ranks])
+    FakeIni off;
+    off.SetBool("packs", "enabled", false);
+    PackSetsConfig cfgOff = PackSetsFromIni(off);
+    assert(!cfgOff.enabled);
+    RegisterPackSets(cfgOff);
+    assert(PackSetForCell(10, 10) == -1);
+    int st = -1; float sz = 0, at = 0;
+    assert(RankPickFor(Q("uEm0100", 0x10D50060u), &st, &sz, &at));   // ролл жив
+
+    // (5) мусор: отрицательные веса и нулевая сумма ступеней -> набор выключен,
+    // система не остаётся без наборов молча (здесь: два живы, два мусорные)
+    FakeIni junk;
+    junk.SetFloat("packs", "set0Weight", -1.0f);
+    junk.SetFloat("packs", "set1r0", -5.0f);
+    junk.SetFloat("packs", "set1r1", -5.0f);
+    junk.SetFloat("packs", "set1r2", -5.0f);
+    junk.SetFloat("packs", "set1r3", -5.0f);
+    junk.SetFloat("packs", "set1r4", -5.0f);
+    PackSetsConfig cfgJunk = PackSetsFromIni(junk);
+    assert(cfgJunk.count == 2);                 // выжили warband и hunt
+    for (int i = 0; i < cfgJunk.count; ++i) {
+        float sum = 0;
+        for (int r = 0; r < kRankSteps; ++r) sum += cfgJunk.set[i].rank[r];
+        assert(sum > 0.0f);
+    }
+    // имена наборов читаются из ini
+    FakeIni named;
+    named.SetText("packs", "set0Name", "besiegers");
+    PackSetsConfig cfgNamed = PackSetsFromIni(named);
+    assert(!std::strcmp(cfgNamed.set[0].name, "besiegers"));
+    // всё выключено нулями -> система выключается, а не подсовывает встроенные
+    FakeIni allZero;
+    for (int i = 0; i < 4; ++i) {
+        char k[32];
+        snprintf(k, sizeof(k), "set%dWeight", i);
+        allZero.SetFloat("packs", k, 0.0f);
+    }
+    assert(!PackSetsFromIni(allZero).enabled);
+
+    // ставим рабочие наборы обратно, чтобы не влиять на другие тесты
+    RegisterPackSets(def);
+    std::cout << "  pack sets: builtin, off, junk and names ok\n";
+}
+
+// 85.57: «один мини-босс на место». С наборами (набор hunt = 10% мини-боссу)
+// двойной мини-босс перестал быть лотереей 2%, поэтому у места есть счётчик.
+static void TestMinibossPerCell()
+{
+    ResetPackMemory("test");
+    assert(CellMinibossCount(3, -7) == 0);
+    NoteCellMiniboss(3, -7);
+    assert(CellMinibossCount(3, -7) == 1);
+    assert(CellMinibossCount(4, -7) == 0);      // соседнее место не задето
+    NoteCellMiniboss(3, -7);
+    assert(CellMinibossCount(3, -7) == 2);      // счётчик не врёт: он счётчик
+    ResetPackMemory("test-2");
+    assert(CellMinibossCount(3, -7) == 0);      // разгрузка мира чистит место
+    std::cout << "  miniboss per cell: counts and reset ok\n";
 }
 
 int main()
@@ -457,7 +643,9 @@ int main()
     TestSummaryKeepsKindName();
     TestScaleDefaultPerSpecies();
     TestGeneration();
+    TestPackSets();
+    TestMinibossPerCell();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
-                 "детерминизм, разброс ступеней, поколение жильца)\n";
+                 "детерминизм, разброс ступеней, поколение жильца, наборы по месту)\n";
     return 0;
 }

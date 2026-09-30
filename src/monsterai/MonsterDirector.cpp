@@ -2150,6 +2150,36 @@ static int RegisterRankSpecies(bool live)
             logFile << "Monster Director: ranks off (no species allowed/enabled)"
                     << std::endl;
     }
+
+    // 85.57: НАБОРЫ ПАЧЕК ПО МЕСТУ. Одна настройка на все виды, поэтому читаем
+    // её один раз, а не в цикле по видам. Печатаем и переключатели, и числа
+    // наборов: без этой строки «какой сет выпал этому месту» из лога не
+    // восстановить, а именно этим система и живёт.
+    {
+        IniSpeciesReader reader;
+        const Runtime::Tempo::PackSetsConfig pn =
+            Runtime::Tempo::PackSetsFromIni(reader);
+        Runtime::Tempo::RegisterPackSets(pn);
+        if (!pn.enabled) {
+            logFile << "Monster Director: pack sets OFF (weights = per-body [ranks],"
+                       " as before)" << std::endl;
+        } else {
+            char ls[220];
+            sprintf_s(ls, "Monster Director: pack sets ON cell=%.0fm inherit=%.0fm"
+                          " minibossPerPlace=%d liveSets=%d",
+                      pn.cellMeters, pn.inheritMeters, pn.minibossPerPack, pn.count);
+            logFile << ls << std::endl;
+            for (int i = 0; i < pn.count; ++i) {
+                char lbl[220];
+                sprintf_s(lbl, "Monster Director: pack set %s weight %.2f ranks"
+                               " [%.2f %.2f %.2f %.2f %.2f]",
+                          pn.set[i].name, pn.set[i].weight,
+                          pn.set[i].rank[0], pn.set[i].rank[1], pn.set[i].rank[2],
+                          pn.set[i].rank[3], pn.set[i].rank[4]);
+                logFile << lbl << std::endl;
+            }
+        }
+    }
     return nOn;
 }
 

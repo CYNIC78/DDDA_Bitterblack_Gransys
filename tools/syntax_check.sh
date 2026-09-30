@@ -330,6 +330,24 @@ if 'rankStep = -1' not in et:
     bad.append('EnemyTuner: ступень не сбрасывается в -1 (ноль - законная ступень)')
 if 'RanksWatchTick' not in md:
     bad.append('MonsterDirector: нет сторожа живого чтения [ranks]')
+# 85.57: наборы пачек по месту. Ключевое, что нельзя потерять при рефакторинге:
+# НАБОР СПРАШИВАЕТСЯ ТОЛЬКО В ВЫДАЧЕ СТУПЕНИ. Если его начнут спрашивать в бою
+# (в наблюдателе или в строке лога), место начнёт «переигрывать» набор у уже
+# живущей особи — сборка соберётся, тесты пройдут, а в поле поедет бой.
+if 'PackSetsFromIni' not in md:
+    bad.append('MonsterDirector: не читает [packs] и не печатает наборы')
+if 'PackSetForCell' not in et:
+    bad.append('EnemyTuner: не спрашивает набор у места')
+if 'PackSetForCell' in po or 'PackSetForCell' in md:
+    bad.append('набор спрашивают НЕ из выдачи ступени (место переиграет живую особь)')
+if 'CellMinibossCount' not in et or 'NoteCellMiniboss' not in et:
+    bad.append('EnemyTuner: нет предела «один мини-босс на место»')
+if 'RankQuery q' not in et:
+    bad.append('EnemyTuner: ролл зовут не через запрос с местом')
+if 'PackSetsEnabled' not in mt:
+    bad.append('MonsterTempo: нет переключателя наборов')
+if 'pack memory reset' not in mt:
+    bad.append('MonsterTempo: память мест не чистится на разгрузке мира')
 if 'config.Path()' not in md:
     bad.append('MonsterDirector: сторож следит не за тем файлом, что читает мод')
 for b in bad: print(' ', b)
