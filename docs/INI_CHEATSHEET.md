@@ -55,3 +55,5 @@
 | перечитались ли веса на ходу | `Monster Director: ranks RELOADED from ini (live read, 85.56)` |
 | какой набор у места | `Tempo: pack set warband (cell 53,-12, first time here)` |
 | набор конкретной особи | `EnemyTuner: rank uEm0100 veteran(2) ... gen=7 set=warband -> 0x10D57470` |
+| раздача наборов за сессию | `Tempo: pack set summary places: rabble 1 patrol 2 warband 1 hunt 0 | bodies: rabble 6 patrol 24 warband 21 hunt 0` |
+| сколько слотов наборов свободно | `Monster Director: pack sets ON ... liveSets=4/12 (free slots = 8)` |

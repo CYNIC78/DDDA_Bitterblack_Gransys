@@ -720,6 +720,9 @@ static void EnsureRankIssued(Touched* rec, const char* kind, uintptr_t body)
     if (!rec->rankCounted) {
         rec->rankCounted = 1;
         Runtime::Tempo::NoteRankIssued(kind, step);
+        // 85.58: и счёт по наборам — иначе в итоге сессии видно только ступени,
+        // а «какой сет где стоял» приходится вычитывать из строк ранга.
+        if (rec->setIndex >= 0) Runtime::Tempo::NotePackSetBody(rec->setIndex);
     }
 }
 

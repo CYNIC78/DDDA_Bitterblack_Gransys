@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.57-zone-sets"
+#define MOD_BUILD_TAG "85.58-log-truth"

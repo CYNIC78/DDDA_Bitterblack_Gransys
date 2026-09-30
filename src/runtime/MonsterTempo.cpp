@@ -1192,10 +1192,37 @@ static PackCellRec s_packCell[kPackCells];
 static int         s_nPackCell = 0;
 static int         s_packCellNext = 0;   // для вытеснения по кругу
 
+// 85.58: счётчики раздачи наборов за СЕССИЮ (не за мир): их не чистит
+// разгрузка мира, иначе сводка показывала бы только последнюю локацию.
+static int s_setPlaces[kPackSets];
+static int s_setBodies[kPackSets];
+
 struct PackBossRec { int cx, cz, count; };
 static const int kPackBossCells = 64;
 static PackBossRec s_packBoss[kPackBossCells];
 static int         s_nPackBoss = 0;
+
+void NotePackSetBody(int idx)
+{
+    if (idx < 0 || idx >= kPackSets) return;
+    ++s_setBodies[idx];
+}
+
+void PackSetSummary(char* out, int cap)
+{
+    if (!out || cap <= 0) return;
+    out[0] = 0;
+    if (!s_packSetsReady || s_packSets.count <= 0) { snprintf(out, cap, "none"); return; }
+    int used = snprintf(out, (size_t)cap, "places:");
+    for (int i = 0; i < s_packSets.count && used < cap; ++i)
+        used += snprintf(out + used, (size_t)(cap - used), " %s %d",
+                         s_packSets.set[i].name, s_setPlaces[i]);
+    if (used < cap)
+        used += snprintf(out + used, (size_t)(cap - used), " | bodies:");
+    for (int i = 0; i < s_packSets.count && used < cap; ++i)
+        used += snprintf(out + used, (size_t)(cap - used), " %s %d",
+                         s_packSets.set[i].name, s_setBodies[i]);
+}
 
 void ResetPackMemory(const char* reason)
 {
@@ -1254,6 +1281,20 @@ PackSetsConfig PackSetsFromIni(RanksIniReader& ini)
 
 void RegisterPackSets(const PackSetsConfig& c)
 {
+    // 85.58: если список наборов ИЗМЕНИЛСЯ (живое чтение на ходу), счётчики
+    // сбрасываем: иначе тела, выданные до правки, приписались бы новым именам.
+    int changed = (s_packSets.count != c.count) ? 1 : 0;
+    for (int i = 0; !changed && i < c.count; ++i)
+        if (strcmp(s_packSets.set[i].name, c.set[i].name)) changed = 1;
+    if (changed) {
+        memset(s_setPlaces, 0, sizeof(s_setPlaces));
+        memset(s_setBodies, 0, sizeof(s_setBodies));
+        if (s_packSetsReady)
+            logFile << "Tempo: pack set counters reset (set list changed:"
+                    << " was " << s_packSets.count << ", now " << c.count << ")"
+                    << std::endl;
+    }
+
     s_packSets = c;
     if (!(s_packSets.cellMeters >= 10.0f)) s_packSets.cellMeters = 10.0f;
     if (s_packSets.cellMeters > 400.0f)    s_packSets.cellMeters = 400.0f;
@@ -1314,6 +1355,7 @@ int PackSetForCell(int cx, int cz)
     // («в этой зоне такой сет, в следующей — другой»). Оговорка: кеш на 256
     // мест, и если за сессию мест больше, дальнее место может «показаться»
     // новым второй раз — это только лишняя строка в логе, не ошибка боя.
+    if (pick >= 0 && pick < kPackSets) ++s_setPlaces[pick];
     logFile << "Tempo: pack set " << s_packSets.set[pick].name
             << " (cell " << cx << "," << cz << ", first time here)" << std::endl;
     return pick;
@@ -2050,6 +2092,17 @@ void Shutdown()
                       s_rankIssuedTotal, rs);
             logFile << l << std::endl;
         }
+    }
+
+    // 85.58: раздача НАБОРОВ за сессию. Отдельным блоком, а не внутри ветки
+    // диагностики: набор может не выпасть ни разу (тогда цифры будут нулями,
+    // но строка всё равно нужна — по ней видно, что система жива).
+    if (s_packSetsReady && s_packSets.count > 0) {
+        char ps[420];
+        PackSetSummary(ps, sizeof(ps));
+        char lp[460];
+        sprintf_s(lp, "Tempo: pack set summary %s", ps);
+        logFile << lp << std::endl;
     }
 
     // Снимаем множители до отцепления хуков: если кто-то из монстров

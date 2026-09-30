@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <cstdlib>   // atoi в тесте счётчиков
 #include <iostream>
 #include <string>
 
@@ -633,6 +634,79 @@ static void TestMinibossPerCell()
     std::cout << "  miniboss per cell: counts and reset ok\n";
 }
 
+// 85.58: СВОДКА ПО НАБОРАМ ЗА СЕССИЮ.
+//
+// Зачем тест: сводка — единственное место, где видно раздачу наборов без
+// вычитывания лога, и она же может соврать (как врала сводка по огню в 85.54).
+// Проверяем три вещи: счёт тел и мест идёт по индексам, сумма сходится, и при
+// СМЕНЕ СПИСКА наборов на ходу счётчики обнуляются (иначе тела, выданные до
+// правки, приписались бы новым именам).
+// Ищем ТОЛЬКО в разделе «bodies»: в сводке два раздела с одинаковыми именами
+// (places и bodies), и поиск с начала строки вернул бы число мест.
+static int CountAfter(const std::string& s, const char* name)
+{
+    const size_t b = s.find("bodies:");
+    const std::string key = std::string(" ") + name + " ";
+    size_t at = (b == std::string::npos) ? std::string::npos : s.find(key, b);
+    if (at == std::string::npos) return -1;
+    at += key.size();
+    return std::atoi(s.c_str() + at);
+}
+
+static void TestPackSetBookkeeping()
+{
+    FakeIni empty;
+    PackSetsConfig def = PackSetsFromIni(empty);
+    RegisterPackSets(def);
+    ResetPackMemory("test-bookkeeping");
+
+    // места: четыре разные ячейки (набор каждой узнаём у модуля)
+    const int c1 = PackSetForCell(10, 10);
+    const int c2 = PackSetForCell(-4, 7);
+    const int c3 = PackSetForCell(33, -8);
+    const int c4 = PackSetForCell(0, 0);
+    assert(c1 >= 0 && c2 >= 0 && c3 >= 0 && c4 >= 0);
+
+    // тела: пишем 7 в индекс 0 и 5 в индекс 2 — числа нечётные, чтобы не
+    // спутать разделы «places» и «bodies» при поиске в строке
+    for (int i = 0; i < 7; ++i) NotePackSetBody(0);
+    for (int i = 0; i < 5; ++i) NotePackSetBody(2);
+    NotePackSetBody(-1);          // мусорный индекс не должен ничего испортить
+    NotePackSetBody(9999);
+
+    char buf[420];
+    PackSetSummary(buf, sizeof(buf));
+    const std::string s(buf);
+    assert(s.find("places:") != std::string::npos);
+    assert(s.find("bodies:") != std::string::npos);
+    assert(CountAfter(s, "rabble") == 7);     // тела по индексу 0
+    assert(CountAfter(s, "warband") == 5);    // тела по индексу 2
+    for (int i = 0; i < def.count; ++i)
+        assert(s.find(def.set[i].name) != std::string::npos);   // все имена на месте
+
+    // смена СПИСКА наборов на ходу -> счётчики обнуляются и об этом есть строка
+    FakeIni five;
+    five.SetFloat("packs", "set4Weight", 0.25f);
+    five.SetFloat("packs", "set4r0", 0.2f);
+    five.SetFloat("packs", "set4r1", 0.4f);
+    five.SetFloat("packs", "set4r2", 0.3f);
+    five.SetFloat("packs", "set4r3", 0.1f);
+    five.SetFloat("packs", "set4r4", 0.0f);
+    five.SetText("packs", "set4Name", "beastwave");
+    PackSetsConfig cfg5 = PackSetsFromIni(five);
+    assert(cfg5.count == 5);
+    RegisterPackSets(cfg5);
+    PackSetSummary(buf, sizeof(buf));
+    const std::string s2(buf);
+    assert(s2.find("beastwave") != std::string::npos);   // новый набор в сводке
+    assert(CountAfter(s2, "rabble") == 0);               // старый счёт сброшен
+
+    std::cout << "  pack set bookkeeping: counters, reset on change ok\n";
+
+    // возвращаем рабочие четыре набора, чтобы не влиять на другие тесты
+    RegisterPackSets(def);
+}
+
 int main()
 {
     TestFlagGates();
@@ -645,6 +719,7 @@ int main()
     TestGeneration();
     TestPackSets();
     TestMinibossPerCell();
+    TestPackSetBookkeeping();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
                  "детерминизм, разброс ступеней, поколение жильца, наборы по месту)\n";
     return 0;

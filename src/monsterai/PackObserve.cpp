@@ -548,8 +548,24 @@ static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap
     out[0] = '\0';
 
     char live[32] = { 0 };
-    if (LiveKindOf(body, live, (int)sizeof(live))
-        && !SameSpeciesBase(live, kind)) {
+    // 85.58: «stale» — только когда в слоте КОНКРЕТНЫЙ чужой монстр.
+    //
+    // В поле 85.57 три строки ухода из вида показали «pools=stale(now MtObject)»:
+    // тела были в 112–131 м, память к тому моменту освободили, и резолвер имени
+    // вернул БАЗОВЫЙ класс игры (MtObject), а не другой вид. Раньше это выглядело
+    // как «слот занял другой монстр», и верные данные прятались. Уточняем:
+    //   * конкретный чужой класс (uEm0200, uHumanEnemy…) -> stale, числа не печатаем;
+    //   * имя не разрешилось (базовый класс, пусто)      -> ранг наш, а запасы
+    //     помечаем unverified: читать их сейчас небезопасно, но и врать нечем.
+    bool staleSlot = false, unverified = false;
+    if (LiveKindOf(body, live, (int)sizeof(live))) {
+        const bool concrete = (live[0] == 'u' && live[1] != 0);
+        if (concrete && !SameSpeciesBase(live, kind)) staleSlot = true;
+        else if (!concrete) unverified = true;
+    } else {
+        unverified = true;      // имени нет вовсе — тоже не улика
+    }
+    if (staleSlot) {
         sprintf_s(out, (size_t)cap, " rank=? pools=stale(now %s)", live);
         return;
     }
@@ -564,6 +580,10 @@ static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap
     // пришла («в этой зоне такой набор»), а не только ступень одной особи.
     const char* sn = (setIdx >= 0) ? Runtime::Tempo::PackSetName(setIdx) : nullptr;
     if (sn && n > 0) n += sprintf_s(out + n, (size_t)(cap - n), " set=%s", sn);
+    if (unverified) {
+        if (n > 0) sprintf_s(out + n, (size_t)(cap - n), " pools=unverified");
+        return;
+    }
     float pois = 0.0f, kd = 0.0f, burn = 0.0f;
     if (n > 0 && EnemyTuner::PoolsFor(body, &pois, &kd, &burn))
         sprintf_s(out + n, (size_t)(cap - n), " pois %.0f kdown %.0f burn %.0f",
@@ -626,7 +646,18 @@ static void LeaveMember(Member& m, uint32_t now)
     // после огня (значит огонь пережил), либо уход из вида.
     if (m.everBurned && !m.burnCounted) {
         m.burnCounted = true;
-        if (death && ActIsBurnFamily(m.act))      ++s_nBurnDeaths;
+        // 85.58: ПЕРЕЖИЛ ОГОНЬ — ЭТО НЕ «СГОРЕЛ».
+        //
+        // Поле 85.57 поймало обратную ошибку: ветеран 0x114d0060 вышел из огня
+        // (живое событие BURN-SURVIVED, последнее действие DmgBurnEnd), тут же
+        // получил удар от пешек на 3.2 м и упал — с тем же DmgBurnEnd в качестве
+        // последнего действия. Книга посчитала его сгоревшим, а огонь он как раз
+        // ПЕРЕЖИЛ. Отличие «горю» от «вышел из огня» у нас уже есть и печатается
+        // живьём: DmgBurnEnd — выход. Значит смерть с End-действием относится к
+        // «огонь пережил, умер от другого», а не к «умер, пока горел».
+        const bool stillOnFire = death && ActIsBurnFamily(m.act)
+                                        && !ActIsBurnEnd(m.act);
+        if (stillOnFire)                           ++s_nBurnDeaths;
         else if (death)                            ++s_nBurnSurvived;
         else                                       ++s_nBurnLeft;
     }
@@ -815,8 +846,9 @@ void PackObserveShutdown()
             << " left=" << s_nBurnLeft
             << " (bodies=how many monsters caught fire, starts=ignitions incl."
                " re-ignitions, survived=came out of the fire alive,"
-               " died=died WHILE BURNING (the killing blow may have been a"
-               " pawn's, not the fire's), left=left view before the outcome)"
+               " died=went down while STILL ON FIRE (act not an end-of-burn;"
+               " the killing blow may have been a pawn's, not the fire's),"
+               " left=left view before the outcome)"
             << std::endl;
     if (s_live > 0) ResetEncounter("shutdown");
     s_armed = false;

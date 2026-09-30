@@ -348,6 +348,28 @@ if 'PackSetsEnabled' not in mt:
     bad.append('MonsterTempo: нет переключателя наборов')
 if 'pack memory reset' not in mt:
     bad.append('MonsterTempo: память мест не чистится на разгрузке мира')
+# 85.58: книга по огню. Смерть с ДЕЙСТВИЕМ-ВЫХОДОМ из огня (DmgBurnEnd) — это
+# «пережил огонь, умер от другого», а не «сгорел». В поле 85.57 без этой
+# проверки ветеран, вышедший из огня и убитый пешками, был посчитан сгоревшим.
+if 'stillOnFire' not in po or '!ActIsBurnEnd(m.act)' not in po:
+    bad.append('PackObserve: книга по огню снова считает выход из огня смертью в огне')
+# 85.58: «stale» только по КОНКРЕТНОМУ чужому классу. В поле 85.57 освобождённые
+# тела давали имя базового класса (MtObject) и прятали верный ранг.
+if 'pools=unverified' not in po or 'const bool concrete' not in po:
+    bad.append('PackObserve: stale срабатывает не только на конкретный чужой класс')
+if 'NotePackSetBody' not in et:
+    bad.append('EnemyTuner: тела не считаются по наборам (сводка будет пустой)')
+if 'PackSetSummary' not in mt or 'pack set summary' not in mt:
+    bad.append('MonsterTempo: нет сводки по наборам за сессию')
+mth = open('src/runtime/MonsterTempo.h', encoding='utf-8').read()
+if 'kPackSets = 12' not in mth:
+    bad.append('MonsterTempo.h: слотов наборов не 12 (владельцу обещано 12)')
+for ini_path in ('ddda_ai_overhaul.ini', 'ddda_ai_overhaul.default.ini'):
+    ini_txt = open(ini_path, encoding='utf-8').read()
+    if 'set11' not in ini_txt:
+        bad.append('в ' + ini_path + ' не описаны свободные слоты до set11')
+    if '[packs]' not in ini_txt:
+        bad.append('в ' + ini_path + ' нет секции [packs]')
 if 'config.Path()' not in md:
     bad.append('MonsterDirector: сторож следит не за тем файлом, что читает мод')
 for b in bad: print(' ', b)

@@ -2166,8 +2166,10 @@ static int RegisterRankSpecies(bool live)
         } else {
             char ls[220];
             sprintf_s(ls, "Monster Director: pack sets ON cell=%.0fm inherit=%.0fm"
-                          " minibossPerPlace=%d liveSets=%d",
-                      pn.cellMeters, pn.inheritMeters, pn.minibossPerPack, pn.count);
+                          " minibossPerPlace=%d liveSets=%d/%d (free slots = %d)",
+                      pn.cellMeters, pn.inheritMeters, pn.minibossPerPack, pn.count,
+                      Runtime::Tempo::kPackSets,
+                      Runtime::Tempo::kPackSets - pn.count);
             logFile << ls << std::endl;
             for (int i = 0; i < pn.count; ++i) {
                 char lbl[220];
