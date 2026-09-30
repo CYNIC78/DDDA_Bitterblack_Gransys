@@ -1222,20 +1222,27 @@ static uint16_t EmIdFromKind(const char* k)
 //
 // 3. Эффект не виден глазом мгновенно: надо отойти и ждать. Поэтому
 //    значения пишем в лог — проверять будем по нему, а не "на глаз".
-static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kind)
+// ─────────────────────── БЛОК КАРТОЧКИ В ТЕЛЕ (85.61) ─────────────────────
+//
+// Одна дорога вместо трёх копий. Раньше этот поиск был скопирован в ApplyLeash,
+// ApplyCombatStats и ApplyReturnSanctuary: правка в одной копии молча не попадала
+// в две другие. Теперь копия одна, и она же говорит, КАКИМ путём нашла блок —
+// это нужно для разбора «в памяти не те числа, что в файле»:
+//   fixed  — блок по известному смещению (нормальный путь);
+//   cached — смещение помнится с прошлого тика этого тела;
+//   scan   — смещение потеряно, блок найден сканом по якорям.
+static uintptr_t CharParamBase(Touched* rec, uintptr_t body, const char* kind, const char** srcOut)
 {
-    if (!rec) return 0;
-    // Исключаем подчасти боссов (например uEm5200_00 голова козла, uEm5200_01 хвост змеи)
-    if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
-        return 0;
-
     uintptr_t base = 0;
+    const char* src = "?";
     if (rec->charParamSearched && rec->charParamOff) {
         base = body + rec->charParamOff;
         if (!LooksLikeCharParam(base)) {
             // stale cache (body reallocated or not ready) — re-search
             rec->charParamOff = 0;
             base = 0;
+        } else {
+            src = "cached";
         }
     }
     if (!base) {
@@ -1244,15 +1251,31 @@ static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kin
         if (LooksLikeCharParam(cand)) {
             base = cand;
             rec->charParamOff = kCharParamOff;
+            src = "fixed";
         } else {
             const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
             const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
             base = FindCharParam(body, bSize);
             rec->charParamOff = base ? (uint32_t)(base - body) : 0;
+            src = "scan";
         }
         rec->charParamSearched = true;
-        if (!base) return 0;
     }
+    if (srcOut) *srcOut = src;
+    return base;
+}
+
+static int ApplyLeash(uintptr_t body, Touched* rec, float scale, const char* kind)
+{
+    if (!rec) return 0;
+    // Исключаем подчасти боссов (например uEm5200_00 голова козла, uEm5200_01 хвост змеи)
+    if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
+        return 0;
+
+    // 85.61: одна дорога к блоку карточки на весь файл (было три копии).
+    const char* paramSrc = "?";
+    uintptr_t base = CharParamBase(rec, body, kind, &paramSrc);
+    if (!base) return 0;
 
     float act = 0, dur = 0;
     if (!SafeRead((const void*)(base + kFldReturnActivate), &act, 4)) return 0;
@@ -1603,30 +1626,10 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     // Нет: нужен per-body roll даже при 1.0, чтобы мобы не были клонами.
     // Поэтому проверяем только что не нули.
 
-    uintptr_t base = 0;
-    if (rec->charParamSearched && rec->charParamOff) {
-        base = body + rec->charParamOff;
-        if (!LooksLikeCharParam(base)) {
-            // stale cache (body reallocated or not ready) — re-search
-            rec->charParamOff = 0;
-            base = 0;
-        }
-    }
-    if (!base) {
-        // first time or previous search failed — try to find
-        uintptr_t cand = body + kCharParamOff;
-        if (LooksLikeCharParam(cand)) {
-            base = cand;
-            rec->charParamOff = kCharParamOff;
-        } else {
-            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
-            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
-            base = FindCharParam(body, bSize);
-            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
-        }
-        rec->charParamSearched = true;
-        if (!base) return 0;
-    }
+    // 85.61: одна дорога к блоку карточки на весь файл (было три копии).
+    const char* paramSrc = "?";
+    uintptr_t base = CharParamBase(rec, body, kind, &paramSrc);
+    if (!base) return 0;
 
     float curAtk=0, curDef=0, curMAtk=0, curMDef=0;
     if (!SafeRead((const void*)(base + kFldAttack), &curAtk, 4)) return 0;
@@ -1756,18 +1759,32 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             logFile << "EnemyTuner: " << sv << std::endl;
         }
 
-        // ── СВЕРКА С ФАЙЛОМ ───────────────────────────────────────────────
-        // Печатается ТОЛЬКО при заметном расхождении (>3%): в норме строки нет,
-        // чтобы лог не пух. Расхождение означает одно из двух: движок держит
-        // значение от прошлой сессии, либо у вида своя шкала. И то и другое
-        // надо видеть — именно тут родилась история «250 против 126.2».
+        // ── СВЕРКА С ФАЙЛОМ: УЛИКИ, А НЕ ТОЛЬКО ФАКТ (85.61) ───────────────
+        // Печатается при заметном расхождении любого из четырёх полей (>3%).
+        // Улики: hp из ТОГО ЖЕ блока (у гоблина 1000 — значит блок наш, а числа
+        // в нём изменил кто-то другой), путь поиска блока и «что мы записали бы
+        // сейчас» (файл × множители × ролл): если сырьё равно этому числу, в
+        // памяти лежит наша же прошлая запись.
         if (fbase && fbase->atk > 0.0f) {
-            const float dev = curAtk / fbase->atk;
-            if (dev < 0.97f || dev > 1.03f) {
-                char rf[240];
-                sprintf_s(rf, "combat base %s RAW MISMATCH: read atk %.1f vs file %.1f"
-                              " (x%.3f) - base taken %s",
-                          kind ? kind : "?", curAtk, fbase->atk, dev,
+            const float dev    = curAtk / fbase->atk;
+            const float devDef = (fbase->defC > 0.0f) ? curDef / fbase->defC : 0.0f;
+            const float devMA  = (fbase->mAtk > 0.0f) ? curMAtk / fbase->mAtk : 0.0f;
+            const float devMD  = (fbase->mDefC > 0.0f) ? curMDef / fbase->mDefC : 0.0f;
+            if (dev < 0.97f || dev > 1.03f || devDef < 0.97f || devDef > 1.03f ||
+                devMA < 0.97f || devMA > 1.03f || devMD < 0.97f || devMD > 1.03f) {
+                float hpNow = 0.0f;
+                SafeRead((const void*)(base + kFldHumanHp), &hpNow, 4);
+                const float ourWrite = fbase->atk * t.attackMult * rec->combatRollAtk;
+                char rf[330];
+                sprintf_s(rf, "combat base %s RAW MISMATCH: read %.1f/%.1f/%.1f/%.1f"
+                              " vs file %.1f/%.1f/%.1f/%.1f"
+                              " (x%.3f/x%.3f/x%.3f/x%.3f) hp %.0f ourWriteWouldBe %.1f"
+                              " param=%s(+0x%04X) body 0x%08X - base taken %s",
+                          kind ? kind : "?",
+                          curAtk, curDef, curMAtk, curMDef,
+                          fbase->atk, fbase->defC, fbase->mAtk, fbase->mDefC,
+                          dev, devDef, devMA, devMD, hpNow, ourWrite,
+                          paramSrc, (unsigned)rec->charParamOff, (unsigned)body,
                           useFileBase ? "from FILE, raw ignored" : "as estimate");
                 logFile << "EnemyTuner: " << rf << std::endl;
             }
@@ -1969,30 +1986,10 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
     if (kind && (strstr(kind, "_00") || strstr(kind, "_01") || strstr(kind, "_02") || strstr(kind, "_03")))
         return 0;
 
-    uintptr_t base = 0;
-    if (rec->charParamSearched && rec->charParamOff) {
-        base = body + rec->charParamOff;
-        if (!LooksLikeCharParam(base)) {
-            // stale cache (body reallocated or not ready) — re-search
-            rec->charParamOff = 0;
-            base = 0;
-        }
-    }
-    if (!base) {
-        // first time or previous search failed — try to find
-        uintptr_t cand = body + kCharParamOff;
-        if (LooksLikeCharParam(cand)) {
-            base = cand;
-            rec->charParamOff = kCharParamOff;
-        } else {
-            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
-            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
-            base = FindCharParam(body, bSize);
-            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
-        }
-        rec->charParamSearched = true;
-        if (!base) return 0;
-    }
+    // 85.61: одна дорога к блоку карточки на весь файл (было три копии).
+    const char* paramSrc = "?";
+    uintptr_t base = CharParamBase(rec, body, kind, &paramSrc);
+    if (!base) return 0;
 
     float curDef = 0, curMDef = 0;
     if (!SafeRead((const void*)(base + kFldDefense), &curDef, 4)) return 0;

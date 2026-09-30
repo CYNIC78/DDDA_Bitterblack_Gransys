@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.60-file-base"
+#define MOD_BUILD_TAG "85.61-base-diag"

@@ -386,6 +386,16 @@ if 'source=FILE' not in et and 'useFileBase ? "FILE"' not in et:
     bad.append('EnemyTuner: источник базы не подписывается в логе')
 if 'RAW MISMATCH' not in et:
     bad.append('EnemyTuner: расхождение чтения с файлом не печатается')
+# 85.61: в строке расхождения должны быть улики, иначе вопрос «почему память
+# показывает не то, что в файле» опять повиснет: hp из того же блока, путь
+# поиска блока и «что мы записали бы сейчас».
+if 'param=%s(+0x%04X)' not in et or 'ourWriteWouldBe' not in et or 'paramSrc' not in et:
+    bad.append('EnemyTuner: в RAW MISMATCH нет улик (hp/путь поиска/наша запись)')
+# 85.61: поиск блока карточки — ОДНА дорога. Он был скопирован в трёх местах
+# (Leash, боевые статы, Sanctuary), и правка в одной копии молча не попадала
+# в другие. Если копий снова станет три — вернётся та же ловушка.
+if et.count('CharParamBase(') != 4:   # 1 определение + 3 вызова
+    bad.append('EnemyTuner: поиск блока карточки снова размножился (ожидается одна функция + три вызова)')
 if 'fileAtk' in et:
     bad.append('EnemyTuner: остался старый однобокий эталон fileAtk (только гоблин)')
 fbase_h = open('src/runtime/EnemyFileBase.h', encoding='utf-8').read()
