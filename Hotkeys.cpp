@@ -76,7 +76,9 @@ void Hooks::HotkeysAdd(LPCSTR name, WORD defKey, void(*func)())
 void Hooks::HotkeysHandler(WNDPROC proc) { wndProcHandler = proc; }
 void Hooks::Hotkeys()
 {
-	if (config.getBool("hotkeys", "enabled", false))
+	// 85.67: умолчание приведено к эталону ([hotkeys] enabled = on, "must be ON").
+	// Ключа нет — горячие клавиши живы: без них молча пропадает вся оболочка.
+	if (config.getBool("hotkeys", "enabled", true))
 	{
 		borderlessFullscreen = config.getBool("main", "borderlessFullscreen", false);
 		menuPause = config.getUInt("hotkeys", "menuPause", 500);

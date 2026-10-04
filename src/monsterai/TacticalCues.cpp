@@ -143,7 +143,7 @@ struct TacticalRule {
 static bool s_nearestPairFallback = false;
 
 // 85.28: см. SetFallenGuardRadius в заголовке.
-static float s_fallenGuardRadius = 10.0f;
+static float s_fallenGuardRadius = 14.0f;
 // 85.30: добивание лежащей пешки в сознании. Включено по умолчанию: это прямое
 // указание владельца по полю 85.29. Ключ `pawnFinish = 0` выключает без сборки.
 static bool  s_pawnFinishEnabled = true;
@@ -417,7 +417,9 @@ static const TacticalRule kRules[] = {
         0, 0,
         false,
         15.00f,
-        4000,
+        // 85.91: аренда 4 с -> 7 с. За четыре секунды толпа от тела
+        // до игрока не успевала добежать: приказ истекал по дороге.
+        7000,
         false,
         true, false, true, false
     },
@@ -434,7 +436,9 @@ static const TacticalRule kRules[] = {
         0, 0,
         false,
         15.00f,
-        4000,
+        // 85.91: аренда 4 с -> 7 с. За четыре секунды толпа от тела
+        // до игрока не успевала добежать: приказ истекал по дороге.
+        7000,
         false,
         true, false, true, false
     },
@@ -451,7 +455,9 @@ static const TacticalRule kRules[] = {
         0, 0,
         false,
         15.00f,
-        4000,
+        // 85.91: аренда 4 с -> 7 с. За четыре секунды толпа от тела
+        // до игрока не успевала добежать: приказ истекал по дороге.
+        7000,
         false,
         true, false, true, false
     },
@@ -468,24 +474,40 @@ static const TacticalRule kRules[] = {
         0, 0,
         false,
         15.00f,
-        4000,
+        // 85.91: аренда 4 с -> 7 с. За четыре секунды толпа от тела
+        // до игрока не успевала добежать: приказ истекал по дороге.
+        7000,
         false,
         true, false, true, false
     },
     {
+    // 85.92: ДОБИВАНИЕ СТАЛО ТИРОМ ALARM.
+    //
+    // Наблюдение владельца (поле 85.91): «хоб сбил пешку с ног и отступил
+    // назад — такую добычу надо добивать активно, а не пятиться».
+    //
+    // Разница тиров лежит в AggroWatch: ALARM включает suppress (подавление
+    // прочего восприятия), ALERT — нет. Без suppress монстр, сбивший пешку,
+    // тут же видел другую цель и отходил по своей ванильной логике. Фейк-удар
+    // хобу и гоблину выдавался и раньше (hobLease/goblinLease), а вот
+    // «прилипание» к цели — только в ALARM.
+    //
+    // Заодно: ярость 0.85 -> 1.00 (лежащая пешка — лучшая цель на поле),
+    // аренда 4 с -> 7 с (подъём занимает около 2.4 с, за 4 с приказ истекал
+    // ровно к моменту вставания) и круг исполнителей 10 -> 12 м.
         TACTICAL_SITUATION_PAWN_FINISH,
         "PAWN-FINISH",
         "tactical-pawn-finish",
         70,
-        TACTICAL_RESPONSE_ALERT,
-        0.85f,
+        TACTICAL_RESPONSE_ALARM,
+        1.00f,
         "uEm0100",
         kPawnKnockdownActs,
         (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
         0, 0,
         false,
-        10.00f,
-        4000,
+        12.00f,
+        7000,
         false,
         false, false, false, false
     },
@@ -494,15 +516,15 @@ static const TacticalRule kRules[] = {
         "PAWN-FINISH",
         "tactical-pawn-finish",
         69,
-        TACTICAL_RESPONSE_ALERT,
-        0.85f,
+        TACTICAL_RESPONSE_ALARM,
+        1.00f,
         "uEm0101",
         kPawnKnockdownActs,
         (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
         0, 0,
         false,
-        10.00f,
-        4000,
+        12.00f,
+        7000,
         false,
         false, false, false, false
     },
@@ -511,15 +533,15 @@ static const TacticalRule kRules[] = {
         "PAWN-FINISH",
         "tactical-pawn-finish",
         68,
-        TACTICAL_RESPONSE_ALERT,
-        0.85f,
+        TACTICAL_RESPONSE_ALARM,
+        1.00f,
         "uEm0200",
         kPawnKnockdownActs,
         (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
         0, 0,
         false,
-        10.00f,
-        4000,
+        12.00f,
+        7000,
         false,
         false, false, false, false
     },
@@ -528,15 +550,15 @@ static const TacticalRule kRules[] = {
         "PAWN-FINISH",
         "tactical-pawn-finish",
         67,
-        TACTICAL_RESPONSE_ALERT,
-        0.85f,
+        TACTICAL_RESPONSE_ALARM,
+        1.00f,
         "uEm0400",
         kPawnKnockdownActs,
         (int)(sizeof(kPawnKnockdownActs) / sizeof(kPawnKnockdownActs[0])),
         0, 0,
         false,
-        10.00f,
-        4000,
+        12.00f,
+        7000,
         false,
         false, false, false, false
     },
@@ -847,7 +869,24 @@ static void MatchFallenGuard(const TacticalRule& rule,
     diag->match.policyReason = rule.policyReason;
     diag->match.priority = rule.priority;
     diag->match.response = rule.response;
-    diag->match.urgency = rule.urgency;
+    // 85.91: МОТИВАЦИЯ ЗАВИСИТ ОТ БЛИЗОСТИ.
+    //
+    // Наблюдение владельца (поле 85.90): «я пешком хожу мимо них и поднимаю
+    // пешек, а они меня не выцеливают». Механизм работал как выключатель:
+    // внутри радиуса ровно 0.70, снаружи ничего. Подошедший вплотную игрок
+    // был для толпы не опаснее стоящего на краю круга.
+    //
+    // Теперь ярость растёт по мере подхода: у самого тела 1.00, на границе
+    // радиуса 0.60, линейно между ними.
+    {
+        const float r = (s_fallenGuardRadius > 0.01f) ? s_fallenGuardRadius : 1.0f;
+        float near01 = 1.0f - (pawnDist / r);      // 1 у тела, 0 на границе
+        if (near01 < 0.0f) near01 = 0.0f;
+        if (near01 > 1.0f) near01 = 1.0f;
+        float u = 0.60f + 0.40f * near01;
+        if (u > 1.0f) u = 1.0f;
+        diag->match.urgency = u;
+    }
     diag->match.targetSlot = arisen->slot;
     diag->match.targetBody = arisen->body;
     diag->match.evidenceBody = nearest->body;

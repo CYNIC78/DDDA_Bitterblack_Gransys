@@ -100,7 +100,9 @@ LRESULT CALLBACK inGameUIInit(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 
 bool Hooks::InGameUI()
 {
-	if (!config.getBool("inGameUI", "enabled", false))
+	// 85.67: умолчание = on, как в эталоне ([inGameUI] enabled = on): оверлей —
+	// единственное окно мода; с умолчанием off на чистой установке F12 пуст.
+	if (!config.getBool("inGameUI", "enabled", true))
 	{
 		logFile << "InGameUI: disabled" << std::endl;
 		return false;

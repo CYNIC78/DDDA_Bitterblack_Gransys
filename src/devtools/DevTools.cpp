@@ -4247,6 +4247,12 @@ static void SetInspect(uintptr_t a)
     sprintf_s(g_inspectBuf, "%08X", (unsigned)a);
 }
 
+// Сэмплер зонда, живущий вне оверлея: F12 можно закрыть и спокойно драться.
+static void AnimProbeAlwaysTick(bool /*getsInput*/)
+{
+    AnimProbe::Tick();
+}
+
 static void RenderDevToolsUI()
 {
     // Покадровый сэмплер масштаба.
@@ -4254,8 +4260,13 @@ static void RenderDevToolsUI()
     // прекращается, стоит свернуть панель, а мерить надо как раз тогда,
     // когда игрок дерётся с гоблином и не смотрит в UI.
     EnemyTuner::SampleTick();
-    AnimProbe::Tick();   // покадровый сэмпл поиска часов анимации
     GoapProbe::Tick();   // слежение за кодом приоритета пешки
+
+    // AnimProbe::Tick() ЗДЕСЬ БОЛЬШЕ НЕ ВЫЗЫВАЕТСЯ — см. AlwaysTick ниже.
+    // Поле 85.74: прибор не ловил ничего, потому что весь список content[]
+    // выполняется только при ОТКРЫТОМ оверлее (renderDDDAFixUI выходит сразу
+    // при !getsInput). Игрок закрывает панель, чтобы драться, — и замер
+    // останавливается ровно тогда, когда он нужен.
 
     if (!ImGui::CollapsingHeader("DevTools - Type Atlas")) return;
     ImGui::PushID("DT");
@@ -4390,7 +4401,38 @@ static void RenderDevToolsUI()
 
         // ---------- ШАГ 1: замер --------------------------------------------
         if (!AnimProbe::Active()) {
-            ImGui::TextDisabled("STEP 1. Stand next to the goblin, press Start.");
+            ImGui::TextDisabled("STEP 1. In a crowd use ARM - no aiming needed.");
+            if (ImGui::Button("0. ARM: auto-lock on whoever gets hit"))
+                AnimProbe::Arm(nullptr);
+            ImGui::SameLine();
+            ImGui::TextDisabled("(?)");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The probe waits, then locks onto the first\n"
+                                  "enemy that staggers or gets knocked flying.\n"
+                                  "If that one dies it re-arms by itself.");
+            if (ImGui::Button("0b. ARM: hobgoblins only"))
+                AnimProbe::Arm("uEm0101");
+            ImGui::SameLine();
+            if (ImGui::Button("0c. ARM: saurians only"))
+                AnimProbe::Arm("uEm0400");
+            ImGui::SameLine();
+            if (ImGui::Button("Reset evidence"))
+                AnimProbe::ResetEvidence();
+
+            // Проверка кандидатов в запас ЗАПИСЬЮ. Читать больше нечего:
+            // поле 85.82 при 11 уликах не нашло ни одного постоянного
+            // виновника, зато дало два адреса по числам хоба.
+            ImGui::TextDisabled("Pool test (hob): freeze a candidate, then hit it");
+            if (ImGui::Button("Freeze +0x6128 = 65000 (int)"))
+                AnimProbe::PoolFreeze(0x6128, 65000.0f, true);
+            ImGui::SameLine();
+            if (ImGui::Button("Freeze +0x5F84 = 65000 (float)"))
+                AnimProbe::PoolFreeze(0x5F84, 65000.0f, false);
+            if (AnimProbe::PoolFrozen()) {
+                ImGui::SameLine();
+                if (ImGui::Button("Release"))
+                    AnimProbe::PoolRelease();
+            }
             if (ImGui::Button("1. Start on goblin")) AnimProbe::Start("uEm0100");
             ImGui::SameLine();
             if (ImGui::Button("Start on any enemy")) AnimProbe::Start(nullptr);
@@ -5144,6 +5186,11 @@ void Hooks::DevTools()
             << std::endl;
 
     InGameUIAdd(RenderDevToolsUI);
+
+    // Покадровый сэмпл ВНЕ зависимости от оверлея. Список windows[]
+    // вызывается каждый кадр из onEndScene, с флагом «есть ли ввод»;
+    // нам флаг не нужен, нам нужен сам кадр.
+    InGameUIAddWindow(AnimProbeAlwaysTick);
 }
 
 void Hooks::DevTools_Shutdown()

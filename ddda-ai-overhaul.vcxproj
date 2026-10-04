@@ -199,10 +199,10 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\GuardianDoctrine.h" />
     <ClInclude Include="src\pawnai\NexusDoctrine.h" />
     <ClInclude Include="src\pawnai\NexusPolicy.h" />
+    <ClInclude Include="src\pawnai\DoctrineAnnounce.h" />
     <ClInclude Include="src\pawnai\OrderWatch.h" />
     <ClInclude Include="src\pawnai\PresetManager.h" />
     <ClInclude Include="src\pawnai\PawnAI_Common.h" />
-    <ClInclude Include="src\pawnai\FieldMap.h" />
     <ClInclude Include="src\BestiaryData.h" />
     <ClInclude Include="src\Bestiary.Generated.h" />
     <ClInclude Include="src\EnemyTypes.Generated.h" />
@@ -237,6 +237,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\DefaultEntitiesIni.h" />
     <ClInclude Include="src\ModPaths.h" />
     <ClInclude Include="src\runtime\LogMem.h" />
+    <ClInclude Include="src\runtime\LogMemSession.h" />
     <ClInclude Include="src\runtime\Runtime.h" />
     <ClInclude Include="src\runtime\MemProbe.h" />
     <ClInclude Include="src\runtime\AggroWatch.h" />

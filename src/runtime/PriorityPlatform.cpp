@@ -4,6 +4,7 @@
 
 #include "stdafx.h"
 #include "RuntimeInternal.h"
+#include "LogMemSession.h"   // 85.64: откаты — в подраздел пакета
 #include "../ModPaths.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,6 +347,14 @@ bool PartyPriorityProfileRestoreAll(const char* reason)
     g_priorityProfileConverged = false;
     logFile << "PartyRecon: priority profile restored reason="
             << (reason ? reason : "unknown") << std::endl;
+    // 85.64: и в подраздел ROLLBACKS — там видно, что перед выгрузкой профиль
+    // вернули к ванили (и с какой причиной).
+    {
+        char rb[200];
+        sprintf_s(rb, "PartyRecon: priority profile restored reason=%s",
+                  reason ? reason : "unknown");
+        LogMem::SessionNoteRollback(rb);
+    }
     return true;
 }
 
@@ -822,6 +831,15 @@ static void ErrataLogState(int g)
     lstrcpynA(prev[g], g_errataStatus[g], sizeof(prev[g]));
     logFile << "Errata[" << (g ? "nexus-magic" : "dagger-ban") << "]: "
             << g_errataStatus[g] << std::endl;
+    // 85.64: откат запоминаем отдельно — в конце сессии он попадёт в подраздел
+    // ROLLBACKS. Строка печатается как печаталась: откат бывает и в середине
+    // игры (смена правила), и тогда он важен ровно на своём месте.
+    {
+        char rb[260];
+        sprintf_s(rb, "Errata[%s]: %s", g ? "nexus-magic" : "dagger-ban",
+                  g_errataStatus[g]);
+        LogMem::SessionNoteRollback(rb);
+    }
 }
 
 // cAIPriorityThink главной пешки. Дёшево, без census.

@@ -5,6 +5,8 @@
 #include "runtime/MonsterTempo.h"
 #include <math.h>
 #include "GuardianDoctrine.h"
+#include "DoctrineAnnounce.h"           // 85.63: окно тишины на объявление цели
+#include "../runtime/LogMemSession.h"   // 85.63: сводка — в полевой пакет
 #include "PawnPersona.h"
 #include "OrderWatch.h"
 #include "PartyRescueProtocol.h"
@@ -17,6 +19,15 @@ namespace PawnAI {
 using Runtime::Mem::Rd;
 using Runtime::Mem::RdPtr;
 using Runtime::Mem::WrSafe;
+
+// 85.63: СЧЁТЧИКИ СЕССИИ. Лежат на уровне файла, а не в состоянии слота: слот
+// сбрасывается при выходе из боя и при выгрузке мира, а сессия — нет. Нужны для
+// сводки в полевом пакете: сколько раз объявляли цель и сколько объявлений
+// свернули окном тишины — чтобы подавленный шум был виден числом, а не на слово.
+static int s_probesStarted   = 0;
+static int s_probesCompleted = 0;
+static int s_targetAnnounces = 0;
+static int s_targetMuted     = 0;
 
 // ================= Статичные контракты =================
 
@@ -536,6 +547,21 @@ void GuardianLeverRestore()
 
 bool GuardianLeverIsActive() { return g_inclLeverActive; }
 
+// 85.63: СВОДКА ДЛЯ ПОЛЕВОГО ПАКЕТА. Зовётся из PawnAI_Shutdown — то есть до
+// печати пакета в Unitialize(); счётчики к этому моменту уже не меняются.
+// Строка отвечает на вопрос «что при этом осталось за кадром»: сколько замеров
+// начато и не завершено (выгрузка мира, конец боя) и сколько объявлений цели
+// свернуло окно тишины.
+void GuardianSessionSummary()
+{
+    char l[220];
+    sprintf_s(l, "GuardianDoctrine: session summary probes=%d completed=%d unpaired=%d"
+                 " announces=%d muted=%d",
+              s_probesStarted, s_probesCompleted,
+              s_probesStarted - s_probesCompleted, s_targetAnnounces, s_targetMuted);
+    LogMem::SessionNote(l);
+}
+
 // У ОДНОГО ПРАВИЛА ОДИН ХОЗЯИН.
 //
 // Приборы, которые сами пишут в строку code 54 (развёртка по вёдрам),
@@ -600,6 +626,11 @@ struct GuardianProbe {
     uintptr_t body;
     DWORD sinceMs, nextMs;
     float pawnEnemyM, arisenEnemyM;
+    // 85.63: СОСТОЯНИЕ НА СТАРТЕ. Смысл замера — «что изменилось за окно»,
+    // значит нужны оба конца. Раньше старт печатался отдельной строкой, и его
+    // приходилось сводить с результатом глазами через десятки чужих строк.
+    int  code;
+    char act[48];
 };
 
 struct GuardianSlotState {
@@ -615,6 +646,7 @@ struct GuardianSlotState {
     bool             viewValid;
     GuardianLiveCard live;       // снимок для панели, обновляется раз в секунду
     GuardianProbe probe[2];     // 0=WAKE, 1=INTERCEPT; independent windows
+    AnnounceThrottle announce;  // 85.63: окно тишины на объявление цели
 };
 
 // Индекс = slot - PARTY_MAIN (0..2).
@@ -625,7 +657,7 @@ static GuardianSlotState s_slotState[3];
 int   g_guardianMinRank     = Persona::RANK_SECOND;  // ini [pawnAI] guardianMinRank
 float g_guardianMinIncl     = 350.0f;                // ini [pawnAI] guardianMinIncl
 // Телеметрия: как часто печатать строку состояния по каждому гвардиану.
-DWORD g_guardianTelemetryMs = 1000;                  // ini [pawnAI] guardianTelemetryMs
+DWORD g_guardianTelemetryMs = 0;                     // ini [pawnAI] guardianTelemetryMs (0 = тишина)
 bool g_guardianProbeLog = true;                       // ini [pawnAI] guardianProbeLog
 
 // Measures exactly the enemy signalled, not a different nearest enemy.
@@ -646,16 +678,13 @@ static void GuardianProbeStart(GuardianSlotState& st, int slot,
         p.sinceMs = now;
         p.pawnEnemyM = Dist3(s.pawnX, s.pawnY, s.pawnZ, t.x, t.y, t.z) / scale;
         p.arisenEnemyM = Dist3(s.anchorX, s.anchorY, s.anchorZ, t.x, t.y, t.z) / scale;
-        int32_t code = -1;
-        Runtime::PawnPriorityCodeFor(body, &code);
-        char act[48] = {};
-        Runtime::ReadLiveAct(body, act, sizeof(act));
-        char line[280];
-        sprintf_s(line, "GuardianDoctrine: [%s] PROBE %s START enemy 0x%08X P-E %.1fm A-E %.1fm code %d act %s",
-                  Runtime::PartyCombatSlotName(slot), kind ? "INTERCEPT" : "WAKE",
-                  (unsigned)enemy, p.pawnEnemyM, p.arisenEnemyM, code,
-                  act[0] ? act : "?");
-        logFile << line << std::endl;
+        // 85.63: НА СТАРТЕ МОЛЧИМ — запоминаем состояние. Измерение печатает одну
+        // строку на финише окна (см. GuardianProbeResult), с обоими концами:
+        // было -> стало. В поле 85.60 три замера дали шесть строк, стоявших
+        // врозь и вперемешку с объявлениями цели.
+        Runtime::PawnPriorityCodeFor(body, &p.code);
+        Runtime::ReadLiveAct(body, p.act, sizeof(p.act));
+        ++s_probesStarted;
         break;
     }
 }
@@ -679,12 +708,18 @@ static void GuardianProbeResult(GuardianSlotState& st, int slot,
         Runtime::ReadLiveAct(body, act, sizeof(act));
         uintptr_t current = 0;
         const bool readOk = RdPtr((void*)(body + 0x2EB8), &current);
-        char line[320];
-        sprintf_s(line, "GuardianDoctrine: [%s] PROBE %s RESULT enemy 0x%08X %s P-E %.1f->%.1fm A-E %.1f->%.1fm code %d act %s target %s0x%08X",
+        ++s_probesCompleted;
+        // 85.63: ОДНА СТРОКА НА ЗАМЕР, оба конца в ней: было -> стало. Переход
+        // `code 1->73 act Run->DmgDown` и есть результат наблюдения — раньше его
+        // приходилось собирать из двух строк, стоящих в разных местах лога.
+        char line[400];
+        sprintf_s(line, "GuardianDoctrine: [%s] PROBE %s enemy 0x%08X %s P-E %.1f->%.1fm"
+                        " A-E %.1f->%.1fm code %d->%d act %s->%s target %s0x%08X",
                   Runtime::PartyCombatSlotName(slot), kind ? "INTERCEPT" : "WAKE",
                   (unsigned)p.body, t ? "seen" : "gone",
-                  p.pawnEnemyM, pe, p.arisenEnemyM, ae, code,
-                  act[0] ? act : "?", readOk ? "" : "unreadable/", (unsigned)current);
+                  p.pawnEnemyM, pe, p.arisenEnemyM, ae,
+                  p.code, code, p.act[0] ? p.act : "?", act[0] ? act : "?",
+                  readOk ? "" : "unreadable/", (unsigned)current);
         if (g_guardianProbeLog) logFile << line << std::endl;
         p.body = 0;
         p.nextMs = MsNow();
@@ -992,16 +1027,26 @@ void GuardianDoctrineTick()
             if (st->lastTarget != r.targetThreatBody) {
                 st->lastTarget = r.targetThreatBody;
                 st->lastTargetSinceMs = MsNow();
-                char l[256];
-                sprintf_s(l, "GuardianDoctrine: [%s][%s][%s r%d v%.0f] PROACTIVE TARGET -> %s 0x%08X (%s) Arisen-enemy %.1fm (pawn-Arisen %.1fm)",
-                          Runtime::PartyCombatSlotName(slot),
-                          VocationName(v.vocation),
-                          Persona::Name(v.persona), v.personaRank, v.personaValue,
-                          r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
-                          (unsigned)r.targetThreatBody,
-                          r.targetThreatKind ? r.targetThreatKind : "?",
-                          r.nearestThreatDist, r.pawnAnchorDist);
-                logFile << l << std::endl;
+                // 85.63: КАЧЕЛИ МЕЖДУ ДВУМЯ ТЕЛАМИ БОЛЬШЕ НЕ ПЕЧАТАЮТСЯ. В поле
+                // 85.60 из одиннадцати объявлений половина была про «ближе стал
+                // другой гоблин» — решение не менялось, менялся нос. Сама цель
+                // ставится как и раньше: молчит только строка, а число
+                // свернутых строк уходит в сводку (muted=).
+                if (st->announce.Allow(r.targetThreatBody, MsNow())) {
+                    ++s_targetAnnounces;
+                    char l[256];
+                    sprintf_s(l, "GuardianDoctrine: [%s][%s][%s r%d v%.0f] PROACTIVE TARGET -> %s 0x%08X (%s) Arisen-enemy %.1fm (pawn-Arisen %.1fm)",
+                              Runtime::PartyCombatSlotName(slot),
+                              VocationName(v.vocation),
+                              Persona::Name(v.persona), v.personaRank, v.personaValue,
+                              r.criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
+                              (unsigned)r.targetThreatBody,
+                              r.targetThreatKind ? r.targetThreatKind : "?",
+                              r.nearestThreatDist, r.pawnAnchorDist);
+                    logFile << l << std::endl;
+                } else {
+                    ++s_targetMuted;
+                }
             }
         } else if (!r.zoneEngaged || r.threatsInZone == 0 || !withinLeash) {
             if (st->tempoHeld) Runtime::Tempo::ClearOverride(v.body);

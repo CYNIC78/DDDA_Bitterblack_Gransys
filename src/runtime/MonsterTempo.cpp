@@ -3,7 +3,9 @@
 #include "stdafx.h"
 #include "RuntimeInternal.h"
 #include "MonsterTempo.h"
+#include "LogMemSession.h"   // 85.63: сводки — в полевой пакет
 #include "../TypeAtlas.Generated.h"
+#include "../monsterai/SpeciesCard.h"   // 85.94: потолок темпа берём из карточки вида
 
 // Границы кода игры — из dinput8.cpp, там же, где их берёт FindSignature.
 extern BYTE *codeBase, *codeEnd;
@@ -883,13 +885,28 @@ static const char* kRankNames[kRankSteps] = {
 // Поэтому по яду мини-босс догоняет хобгоблина целиком, по огню и сбиванию
 // выходит ровно половина. Точнее — только отдельными ключами на поле, если
 // понадобится.
-static const float kRankDef[kRankSteps][6] = {
-    { 0.34f, 0.95f, 1.03f, 1.00f, 1.00f, 1.00f },   // новичок: ваниль целиком
-    { 0.46f, 1.03f, 1.07f, 1.09f, 1.35f, 1.30f },   // солдат
-    { 0.13f, 1.07f, 1.12f, 1.20f, 2.00f, 1.95f },   // ветеран: 1-2 на пачку
-    { 0.05f, 1.12f, 1.18f, 1.35f, 2.65f, 2.60f },   // элита
-    { 0.02f, 1.18f, 1.25f, 1.52f, 3.30f, 3.25f },   // мини-босс: половина хоба
+// Столбцы: вес, размер min/max, атака, сопротивления, стойкость, ЗАЩИТА.
+//
+// 85.87: добавлена защита. Решение владельца: «HP мы менять не умеем, а
+// защита по сути и есть система HP — она поглощает урон». Числа намеренно
+// скромнее атаки: защита в формуле урона работает нелинейно, и ×2 по защите
+// это уже far больше, чем ×2 по живучести. Минибосс получает +50 %, то есть
+// держит удар заметно дольше новичка, но не становится неубиваемым.
+// Правится без пересборки: [species.<вид>] rank<N>Defense в ini.
+// Столбцы: вес, размер min/max, атака, сопротивления, стойкость, защита,
+// магзащита, магатака.
+//
+// 85.93: магическая пара зеркалит физическую — mdef повторяет def, matk
+// повторяет atk. Так ранг читается одинаково обеими школами, и у мага не
+// возникает ощущения, что ступени «не про него».
+static const float kRankDef[kRankSteps][9] = {
+    { 0.34f, 0.95f, 1.03f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f },   // новичок: ваниль целиком
+    { 0.46f, 1.03f, 1.07f, 1.09f, 1.35f, 1.30f, 1.08f, 1.08f, 1.09f },   // солдат
+    { 0.13f, 1.07f, 1.12f, 1.20f, 2.00f, 1.95f, 1.18f, 1.18f, 1.20f },   // ветеран: 1-2 на пачку
+    { 0.05f, 1.12f, 1.18f, 1.35f, 2.65f, 2.60f, 1.32f, 1.32f, 1.35f },   // элита
+    { 0.02f, 1.18f, 1.25f, 1.52f, 3.30f, 3.25f, 1.50f, 1.50f, 1.52f },   // мини-босс: половина хоба
 };
+static const float kRankDefMax = 3.0f;   // потолок ручки защиты
 
 // Пределы крепости подняты до 3.5 вместе с калибровкой 85.47: мини-боссу нужно
 // дойти до половины хобгоблина, а это ×3.3 по огню и ×3.25 по сбиванию. Потолок
@@ -924,6 +941,7 @@ bool RanksSpeciesAllowed(const char* kind)
 {
     if (!kind) return false;
     return !strcmp(kind, "uEm0100")     // гоблин — пилот
+        || !strcmp(kind, "uEm0101")     // хобгоблин (85.86), rankScale = off
         || !strcmp(kind, "uEm0200");    // волк — с rankScale = off в ini
 }
 
@@ -1027,6 +1045,14 @@ static void RanksSanitize(RanksNumbers& n)
         // крепость: мусор -> ваниль; ниже ванили не бывает; потолки — выше.
         if (!(st.resist >= 1.0f)) st.resist = 1.0f;
         if (st.resist > kRankResistMax) st.resist = kRankResistMax;
+        // Защита: ниже ванили не опускаем (ранг только усиливает) и держим
+        // потолок — нелинейность формулы урона наказывает за щедрость.
+        if (!(st.def >= 1.0f)) st.def = 1.0f;
+        if (st.def > kRankDefMax) st.def = kRankDefMax;
+        if (!(st.mdef >= 1.0f)) st.mdef = 1.0f;
+        if (st.mdef > kRankDefMax) st.mdef = kRankDefMax;
+        if (!(st.matk >= 1.0f)) st.matk = 1.0f;
+        if (st.matk > 1.80f) st.matk = 1.80f;   // как у физической атаки
         if (!(st.stand >= 1.0f)) st.stand = 1.0f;
         if (st.stand > kRankStandMax) st.stand = kRankStandMax;
         sum += st.weight;
@@ -1037,6 +1063,9 @@ static void RanksSanitize(RanksNumbers& n)
             n.step[i].weight = kRankDef[i][0];
             n.step[i].resist = kRankDef[i][4];
             n.step[i].stand  = kRankDef[i][5];
+            n.step[i].def    = kRankDef[i][6];
+            n.step[i].mdef   = kRankDef[i][7];
+            n.step[i].matk   = kRankDef[i][8];
         }
     }
 }
@@ -1051,6 +1080,19 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
         out.step[i].sizeMin = kRankDef[i][1];
         out.step[i].sizeMax = kRankDef[i][2];
         out.step[i].atk     = kRankDef[i][3];
+        // 85.89: ЗАСЕИВАЕМ И ОСТАЛЬНЫЕ ТРИ СТОЛБЦА.
+        //
+        // Раньше здесь стояли только вес, размер и атака, а resist/stand
+        // оставались нулями — и «умолчанием» для чтения ini служил ноль.
+        // Пока ключи в ini у владельца были (их дописал бэкфилл), это
+        // сходило с рук. Новый ключ rank<N>Defense в его файле не появился,
+        // умолчанием стал ноль, санитайзер поднял его до 1.00 — и защита
+        // ступени молча не работала: в поле 85.88 у всех ступеней def x1.00.
+        out.step[i].resist  = kRankDef[i][4];
+        out.step[i].stand   = kRankDef[i][5];
+        out.step[i].def     = kRankDef[i][6];
+        out.step[i].mdef    = kRankDef[i][7];
+        out.step[i].matk    = kRankDef[i][8];
     }
 
     // 85.41: ЛЕСТНИЦА — ИНСТРУМЕНТ РАЗМЕРА, а размер менять можно не всем.
@@ -1085,6 +1127,14 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
     // рангами с самого начала, — on (его поведение не меняется ни на цифру).
     // Урок тот же, что в 85.48: если умолчание нового ключа может удивить —
     // оно должно быть безопасным, а не «как у соседа».
+    // 85.86: ХОБ ПОД ЛЕСТНИЦЕЙ, НО БЕЗ РАНГОВОГО РОСТА.
+    //
+    // Полосы роста в kRankDef (0.95..1.25) стали множителями ванили, а у хоба
+    // ваниль уже 1.41..1.60. Минибосс-хоб получил бы 1.6 x 1.25 = 2.0 —
+    // вдвое выше гоблина и нелепо. Размером хоба заведует коридор вида
+    // (1.00..1.05), а ступень даёт только атаку и сопротивления.
+    // Умолчание безопасное, как и у волка; ini может включить ключом
+    // rankScale, если владелец захочет.
     const bool defaultScale = !strcmp(speciesKind, "uEm0100");   // гоблин = да
     out.scale = ini.Bool(sec, "rankScale", defaultScale);
 
@@ -1102,9 +1152,50 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
         // 85.44: крепость. Ключ читается как «во сколько раз крепче»:
         // 1.0 = ваниль (и это же значение по умолчанию), больше = крепче.
         snprintf(k, sizeof(k), "rank%dResist",  i);
-        out.step[i].resist  = ini.Float("ranks", k, out.step[i].resist);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].resist);
+            if (raw >= 1.0f) out.step[i].resist = raw;   // ниже 1.0 = мусор
+        }
+        // 85.90: САМОЛЕЧЕНИЕ ПОСЛЕ БЭКФИЛЛА НУЛЯМИ.
+        //
+        // iniConfig::getFloat при отсутствии ключа ДОПИСЫВАЕТ его в файл со
+        // значением умолчания. В 85.87-85.88 умолчанием для новых столбцов
+        // служил ноль (засев появился только в 85.89) — и в ini владельца
+        // легли строки rank0Defense = 0 ... rank4Defense = 0. Дальше ключ уже
+        // существует, засев бессилен, санитайзер поднимает ноль до 1.00, и
+        // защита ступени молча не работает. Ровно это показало поле 85.89:
+        // «def x1.00» у всех ступеней.
+        //
+        // Лечение: ранг НИКОГДА не ослабляет монстра, поэтому значение ниже
+        // 1.0 — заведомо мусор. Берём встроенное и говорим об этом вслух.
+        snprintf(k, sizeof(k), "rank%dDefense", i);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].def);
+            if (raw < 1.0f) {
+                logFile << "Monster Tempo: ranks " << k << " = " << raw
+                        << " in ini is junk (ranks never weaken) - using builtin "
+                        << out.step[i].def << ". Delete the line to stop this"
+                        << " message." << std::endl;
+            } else {
+                out.step[i].def = raw;
+            }
+        }
+        // 85.93: та же защита от бэкфилла нулями, что и у защиты (85.90).
+        snprintf(k, sizeof(k), "rank%dMagickDefense", i);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].mdef);
+            if (raw >= 1.0f) out.step[i].mdef = raw;
+        }
+        snprintf(k, sizeof(k), "rank%dMagickAttack", i);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].matk);
+            if (raw >= 1.0f) out.step[i].matk = raw;
+        }
         snprintf(k, sizeof(k), "rank%dStand",   i);
-        out.step[i].stand   = ini.Float("ranks", k, out.step[i].stand);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].stand);
+            if (raw >= 1.0f) out.step[i].stand = raw;
+        }
     }
     RanksSanitize(out);
     return out;
@@ -1135,6 +1226,32 @@ bool GetRanks(const char* kind, RanksNumbers* out)
         }
     }
     return false;
+}
+
+// 85.87: множитель защиты ступени. Отдельным аксессором, чтобы не ломать
+// сигнатуру RankPickFor (её зовут из нескольких мест).
+float RankDefOf(const char* kind, int step)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return 1.0f;
+    if (step < 0 || step >= kRankSteps) return 1.0f;
+    return n.step[step].def;
+}
+
+float RankMDefOf(const char* kind, int step)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return 1.0f;
+    if (step < 0 || step >= kRankSteps) return 1.0f;
+    return n.step[step].mdef;
+}
+
+float RankMAtkOf(const char* kind, int step)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return 1.0f;
+    if (step < 0 || step >= kRankSteps) return 1.0f;
+    return n.step[step].matk;
 }
 
 bool RankScaleEnabled(const char* kind)
@@ -1197,10 +1314,25 @@ static int         s_packCellNext = 0;   // для вытеснения по к�
 static int s_setPlaces[kPackSets];
 static int s_setBodies[kPackSets];
 
+// 85.62: медленные тики — счётчики за сессию (одна строка в итоге вместо 35 в бою).
+static int s_slowTicks   = 0;
+static int s_slowWorstMs = 0;
+static int s_slowAbove250 = 0;
+static int s_slowOurs    = 0;
+
 struct PackBossRec { int cx, cz, count; };
 static const int kPackBossCells = 64;
 static PackBossRec s_packBoss[kPackBossCells];
 static int         s_nPackBoss = 0;
+
+void NoteSlowTick(int msWall, int cpuUs, bool ours)
+{
+    (void)cpuUs;
+    ++s_slowTicks;
+    if (msWall > s_slowWorstMs) s_slowWorstMs = msWall;
+    if (msWall >= 250) ++s_slowAbove250;
+    if (ours) ++s_slowOurs;
+}
 
 void NotePackSetBody(int idx)
 {
@@ -1465,10 +1597,37 @@ static float HashUnit(uintptr_t body, uint32_t salt)
 static const uint32_t kSaltLoco = 0x00000000u;   // как было: поведение не меняется
 static const uint32_t kSaltAtk  = 0x9E3779B9u;
 
+// 85.94: ПОТОЛОК ВИДА ДЕЙСТВУЕТ И НА БАЗОВЫЙ ТЕМП, А НЕ ТОЛЬКО В ЯРОСТИ.
+//
+// Наблюдение владельца: у хоба бросается в глаза не замах, а КРИК ЯРОСТИ —
+// размашистая анимация рук и сабли, разогнанная до комичного. Разбор:
+// cEm0100ActThreatHowl в ActMap помечен как "taunt", то есть множитель
+// замаха (scope=ATTACKS-ONLY) его не трогает. Ускоряет локомоционный
+// множитель: он патчит ОБЩИЙ путь воспроизведения и действует независимо от
+// текущего действия — в поле 85.93 он применился к телу с tickAct=ActSit.
+//
+// Беда в том, что базовый темп особи брался из ГЛОБАЛЬНОГО диапазона
+// (1.05..1.20) без оглядки на вид, и потолок карточки работал только в
+// ярости. То есть спокойно стоящий хоб всё равно мог вытянуть 1.20.
+// Теперь потолок вида — это потолок: он режет и базовый бросок.
+//
+// Радиус поражения минимальный: у волка карточный потолок 1.25, у гоблина и
+// сауриана 1.20 и 1.22 — все выше глобального максимума, то есть для них
+// ничего не меняется. Реально правка касается только хоба.
+static float SpeciesLocoCeiling(uintptr_t body)
+{
+    char nm[48] = {};
+    if (!Mem::NameOfLiveObject(body, nm, sizeof(nm))) return 0.0f;
+    const MonsterAI::SpeciesCard* c = MonsterAI::FindSpeciesCard(nm);
+    return c ? c->rageLocoHi : 0.0f;
+}
+
 static float FactorFor(uintptr_t body)
 {
     const float unit = HashUnit(body, kSaltLoco);
     float f = g_factorLo + (g_factorHi - g_factorLo) * unit;  // равномерно в диапазоне
+    const float ceil = SpeciesLocoCeiling(body);
+    if (ceil > 0.01f && f > ceil) f = ceil;
     if (f < kFactorMin) f = kFactorMin;
     if (f > kFactorMax) f = kFactorMax;
 
@@ -1973,7 +2132,10 @@ void Init()
     if (g_animLo > g_animHi) { const float s2 = g_animLo; g_animLo = g_animHi; g_animHi = s2; }
     g_animCoupling = config.getFloat("monsterTempo", "animCoupling", 0.0f);
     // Ручка принадлежит слою пешек, поэтому и живёт в его секции.
-    g_animForOverrides = config.getBool("pawnHaste", "animCouple", false);
+    // 85.67: один ключ — одно умолчание. Как в эталоне ([pawnHaste]
+    // animCouple = on) и как читает сам слой пешек (PawnHaste.cpp):
+    // раньше два потребителя отвечали на пропавший ключ по-разному.
+    g_animForOverrides = config.getBool("pawnHaste", "animCouple", true);
     if (g_animCoupling < 0.0f) g_animCoupling = 0.0f;
     if (g_animCoupling > 1.0f) g_animCoupling = 1.0f;
 
@@ -2082,7 +2244,8 @@ void Shutdown()
                   (unsigned)s_attackEntries, s_nAttackProofSeen,
                   (unsigned)s_unknownAttackLike, (unsigned)unknownDetails,
                   (unsigned)g_animEnrolls, (unsigned)g_animRestores);
-        logFile << l << std::endl;
+        // 85.64: это была единственная сводка, стоявшая мимо блока.
+        LogMem::SessionNote(l);
 
         // 85.42: раздача рангов за сессию — «кто заспавнился» одной строкой.
         if (s_rankIssuedTotal > 0) {
@@ -2090,7 +2253,7 @@ void Shutdown()
             RankSummary(rs, sizeof(rs));
             sprintf_s(l, "Tempo: rank summary total=%d  %s",
                       s_rankIssuedTotal, rs);
-            logFile << l << std::endl;
+            LogMem::SessionNote(l);   // 85.63: в пакет
         }
     }
 
@@ -2102,7 +2265,17 @@ void Shutdown()
         PackSetSummary(ps, sizeof(ps));
         char lp[460];
         sprintf_s(lp, "Tempo: pack set summary %s", ps);
-        logFile << lp << std::endl;
+        LogMem::SessionNote(lp);   // 85.63: в пакет
+    }
+
+    // 85.62: медленные тики пешки — одна строка. В поле 85.58 их было 35, и они
+    // занимали в логе больше места, чем вся раздача ступеней. Цифра «наша работа»
+    // важна: она отделяет наши вычисления от вытеснения системой.
+    if (s_slowTicks > 0) {
+        char ls[200];
+        sprintf_s(ls, "Tempo: slow-ticks count=%d worst=%dms above250=%d ofWhichOurs=%d",
+                  s_slowTicks, s_slowWorstMs, s_slowAbove250, s_slowOurs);
+        LogMem::SessionNote(ls);   // 85.63: в пакет
     }
 
     // Снимаем множители до отцепления хуков: если кто-то из монстров
@@ -2552,7 +2725,11 @@ void DumpLocomotionDiagnostics(const char* reason)
               (unsigned)g_locoSprintEnemyHits,
               s_locoGeneralProofLogged ? 1 : 0,
               s_locoSprintProofLogged ? 1 : 0);
-    logFile << l << std::endl;
+    // 85.64: РУЧНОЙ вызов (F12, reason="manual") печатает строку сразу — её
+    // спрашивают в бою, чтобы посмотреть сейчас. Выгрузка кладёт её в пакет:
+    // там она часть итога сессии.
+    if (reason && !strcmp(reason, "manual")) logFile << l << std::endl;
+    else                                     LogMem::SessionNote(l);
 }
 
 void SprintWatchTick()

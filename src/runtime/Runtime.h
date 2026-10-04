@@ -62,6 +62,16 @@ uintptr_t ActorAt(int idx, const char** kindOut);
 uintptr_t FirstBodyOfKind(const char* kind);
 // Враг ли объект этого вида (не заяц, не NPC).
 bool      KindIsEnemy(const char* kind);
+// 85.64: два явных списка (определения — WorldScan.cpp), вынесены в общий
+// заголовок, потому что ими пользуются и тюнер, и приборы:
+//   KindIsHarmless   — мирная живность: олень, лань, вол, крыса, кабан,
+//                      лагерная мелочь, мелкая неопознанная мелочь (не угроза,
+//                      но существо);
+//   KindIsStructural — предметы окружения и части составных боссов: повешенное
+//                      на потолке (em8100) и «грудь Даймона» (em7002).
+// Оба сравнивают по префиксу с границей — ловят варианты вида (uEm8500_00).
+bool      KindIsHarmless(const char* kind);
+bool      KindIsStructural(const char* kind);
 // Объект текущего действия существа. 0, если не резолвится.
 uintptr_t ActObjectOf(uintptr_t body);
 

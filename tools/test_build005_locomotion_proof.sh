@@ -15,7 +15,11 @@ tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 director = (root / 'src/monsterai/MonsterDirector.cpp').read_text(encoding='utf-8')
 
 # Build 012 is a full build over (and must retain) the completed Build 005 proof.
-assert '84.' in tag
+# 85.66: вместо пина «84.» — структура тега (не устаревает).
+import re as _re_tag
+_m_tag = _re_tag.search(r'#define\s+MOD_BUILD_TAG\s+"([^"]+)"', tag)
+assert _m_tag, 'BuildTag.h: не найден MOD_BUILD_TAG'
+assert _re_tag.match(r'^\d+\.\d+', _m_tag.group(1)), 'странный тег: %r' % _m_tag.group(1)
 
 walk = re.search(
     r'static void __declspec\(naked\) HMoveWalk\(\).*?'

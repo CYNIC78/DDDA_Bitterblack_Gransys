@@ -28,6 +28,7 @@
 #include "runtime/RuntimeInternal.h"
 #include "runtime/PartyStatus.h"
 #include "runtime/LogMem.h"
+#include "runtime/LogMemSession.h"   // 85.63: сводки — в полевой пакет
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
@@ -254,13 +255,25 @@ static DWORD WINAPI PawnTickThread(LPVOID){
             const uint64_t u1 = ((uint64_t)ftUser1.dwHighDateTime << 32)
                               | ftUser1.dwLowDateTime;
             const uint32_t cpuUs = (uint32_t)(((k1 - k0) + (u1 - u0)) / 10);
-            logFile << "PAWN-TICK SLOW: " << tickMs << " ms wall"
-                    << " cpuUs=" << cpuUs
-                    << (cpuUs * 1000 < tickMs * 700 ? " (вытеснены, не считали)"
-                                                    : " (наша работа)")
-                    << " scanMaxUs=" << scanUs
-                    << " writesBlocked=" << Runtime::Mem::BlockedWrites()
-                    << std::endl;
+            // 85.62: в счётчик — всегда, в лог — только первые три раза.
+            // Причина: в поле 85.58 эта строка встретилась 35 раз за сессию, и
+            // каждая говорила одно и то же. Наблюдение никуда не уходит: итог
+            // печатается одной строкой в конце сессии (Tempo: slow-ticks ...).
+            const bool ours = !(cpuUs * 1000 < tickMs * 700);
+            Runtime::Tempo::NoteSlowTick((int)tickMs, (int)cpuUs, ours);
+            static int s_slowLogged = 0;
+            if (s_slowLogged < 3) {
+                ++s_slowLogged;
+                logFile << "PAWN-TICK SLOW: " << tickMs << " ms wall"
+                        << " cpuUs=" << cpuUs
+                        << (ours ? " (наша работа)" : " (вытеснены, не считали)")
+                        << " scanMaxUs=" << scanUs
+                        << " writesBlocked=" << Runtime::Mem::BlockedWrites()
+                        << (s_slowLogged == 3
+                            ? "  [дальше такие строки только считаются, итог в конце сессии]"
+                            : "")
+                        << std::endl;
+            }
         }
         LogMem::PeriodicFlush(1500);
     }
@@ -1278,7 +1291,10 @@ void Hooks::PawnAI(){
     // какие правила cmc.prt стреляют (docs/PAWN_ROLE_STACK.md).
     PawnAI::g_guardianMinRank     = config.getInt("pawnAI", "guardianMinRank", 1);
     PawnAI::g_guardianMinIncl     = config.getFloat("pawnAI", "guardianMinIncl", 350.0f);
-    PawnAI::g_guardianTelemetryMs = (DWORD)config.getInt("pawnAI", "guardianTelemetryMs", 1000);
+    // 85.67: умолчание 0 = «в лог не шуметь», как в эталоне ([pawnAI]
+    // guardianTelemetryMs = 0, «0 = never»). Снимок для панели всё равно
+    // обновляется раз в секунду — глохнет только строка в журнал.
+    PawnAI::g_guardianTelemetryMs = (DWORD)config.getInt("pawnAI", "guardianTelemetryMs", 0);
     PawnAI::g_guardianProbeLog = config.getBool("pawnAI", "guardianProbeLog", true);
     g_orch.acquisitor.suppressFloor = config.getFloat("pawnAI", "acquisitorCombatFloor", 100.0f);
     g_orch.acquisitor.boostAmount   = config.getFloat("pawnAI", "acquisitorLootBoost", 650.0f);
@@ -1331,4 +1347,23 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::Nexus::Shutdown();
     PawnAI::OrderWatch::Shutdown();
     g_orch.Shutdown();
+
+    // 85.63: СВОДКА ПЕШЕК. Цифры считаются тиками пешек и живут в модуле
+    // рывка; порядок выгрузки такой, что PawnAI_Shutdown() идёт ДО Unitialize(),
+    // где печатается пакет, — значит сводку надо СКОПИРОВАТЬ, а не печатать.
+    // Тик пешек уже остановлен и ждал нас (WaitForSingleObject выше), поэтому
+    // читаем статику модуля без гонки.
+    {
+        const PawnAI::Haste::Status hs = PawnAI::Haste::Get();
+        char ps[220];
+        sprintf_s(ps, "PawnAI: session summary hasteApplied=%d burstsWeapon=%d"
+                      " burstsDetector=%d pawnsTracked=%d",
+                  hs.applied, hs.burstsWeapon, hs.burstsDetector, hs.pawnsTracked);
+        LogMem::SessionNote(ps);
+    }
+    // 85.63: сводки доктрин. Обе читают счётчики уровня файла, поэтому звать их
+    // можно и после Nexus::Shutdown() — состояние слотов он обнуляет, счётчики
+    // сессии нет. Каждая кладёт свою строку в пакет.
+    PawnAI::GuardianSessionSummary();
+    PawnAI::Nexus::SessionSummary();
 }

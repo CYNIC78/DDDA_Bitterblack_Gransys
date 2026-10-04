@@ -2103,16 +2103,20 @@ static int RegisterRankSpecies(bool live)
             // 85.44: крепость рангов. Печатаем ВСЕГДА, даже когда всё по 1.0 —
             // иначе из лога не видно, что ключи вообще существуют и прочитаны
             // (урок весов 85.42: «задумано» должно быть видно, а не угадываться).
-            char lk[300];
+            char lk[420];
             // (латиница: в логе кириллицы нет нигде, не заводим)
             sprintf_s(lk, "Monster Director: ranks %s toughness (times tougher, 1.00 = vanilla)"
-                          " novice res%.2f stand%.2f | soldier res%.2f stand%.2f"
-                          " | veteran res%.2f stand%.2f | elite res%.2f stand%.2f"
-                          " | miniboss res%.2f stand%.2f",
+                          " novice res%.2f stand%.2f def%.2f mdef%.2f"
+                          " | soldier res%.2f stand%.2f def%.2f mdef%.2f"
+                          " | veteran res%.2f stand%.2f def%.2f mdef%.2f"
+                          " | elite res%.2f stand%.2f def%.2f mdef%.2f"
+                          " | miniboss res%.2f stand%.2f def%.2f mdef%.2f",
                       card->kind,
-                      ln.step[0].resist, ln.step[0].stand, ln.step[1].resist, ln.step[1].stand,
-                      ln.step[2].resist, ln.step[2].stand, ln.step[3].resist, ln.step[3].stand,
-                      ln.step[4].resist, ln.step[4].stand);
+                      ln.step[0].resist, ln.step[0].stand, ln.step[0].def, ln.step[0].mdef,
+                      ln.step[1].resist, ln.step[1].stand, ln.step[1].def, ln.step[1].mdef,
+                      ln.step[2].resist, ln.step[2].stand, ln.step[2].def, ln.step[2].mdef,
+                      ln.step[3].resist, ln.step[3].stand, ln.step[3].def, ln.step[3].mdef,
+                      ln.step[4].resist, ln.step[4].stand, ln.step[4].def, ln.step[4].mdef);
             logFile << lk << std::endl;
             // 85.48: сверка ini со ВСТРОЕННОЙ лестницей. Молчаливый no-op страшнее
             // ошибки: в поле 85.47 десять ключей были автодописаны старым билдом как
@@ -2196,9 +2200,12 @@ void Init()
     // 85.27: радиус встречи у тела павшей пешки. Ключа в ini может не быть —
     // тогда он допишется сам со значением по умолчанию (как chantNearest).
     // 0 = механизм выключен полностью.
-    s_fallenGuardRadius = config.getFloat("monsterAI", "fallenGuardRadius", 10.0f);
+    // 85.91: радиус подхода 10 -> 14 м. Десять метров — это буквально три
+    // шага от тела, игрок успевал поднять пешку, не входя в круг. Ключ в ini
+    // остаётся главным: у кого он уже прописан, тот получит своё значение.
+    s_fallenGuardRadius = config.getFloat("monsterAI", "fallenGuardRadius", 14.0f);
     if (!(s_fallenGuardRadius == s_fallenGuardRadius) || s_fallenGuardRadius < 0.0f)
-        s_fallenGuardRadius = 10.0f;   // NaN/мусор из ini — не оставляем без защиты
+        s_fallenGuardRadius = 14.0f;   // NaN/мусор из ini — не оставляем без защиты
     MonsterAI::SetFallenGuardRadius(s_fallenGuardRadius);
     s_pawnFinish = config.getBool("monsterAI", "pawnFinish", true);
     // 85.33: параллельные приказы. По умолчанию ВЫКЛЮЧЕНО: сначала владелец

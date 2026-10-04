@@ -9,6 +9,7 @@
 #include "TypeAtlas.Generated.h"
 #include "runtime/EnemyFileBase.h"   // 85.60: база вида из файлов игры (автогенерация)
 #include <math.h>   // 85.57: floorf для ячейки места
+#include <string.h> // 85.69: strcmp — дедупликация сообщений «один раз на вид»
 
 /**
  * Первый шаг применения конфига: РАЗВЕДКА, а не запись.
@@ -423,12 +424,23 @@ struct Touched {
     bool  inReturnArmor;
     // Боевые статы (audit 2026-09-21 §8): ваниль + текущее после mult*roll
     float baseAtk, baseDefC, baseMAtk, baseMDefC;
+    // 85.64: РЕЖИМ КАЖДОГО ПОЛЯ БАЗЫ (см. EnemyFileBase.h: write/immune/absent).
+    // Нужен на записи: иммунитет (10000 у Голема) и отсутствующее поле (ноль в
+    // атаке у Death) не пишутся вовсе — их нельзя ни умножать, ни «оценивать».
+    unsigned char baseMode[4];   // 0=atk 1=def 2=matk 3=mdef
     float curAtk, curDefC, curMAtk, curMDefC; // последнее применённое (с mult+roll)
     bool  haveCombat;
     int   combatLogged;
     float combatRollAtk, combatRollDef, combatRollMAtk, combatRollMDef; // 0.9..1.1 per body
     int   spikeLogged;   // 85.34: одна строка на эпизод всплеска (хвост — append)
-    int   rankLogged;  // 85.40: одна строка про ступень на особь
+    int   rankLogged;  // 85.40: сколько раз печатали строку про ступень (лимит 2)
+    // 85.62: СНИМОК того, что ушло в первую строку. Лимит «две строки на особь»
+    // печатал вторую ВСЕГДА, даже когда она дословно повторяла первую: в поле
+    // 85.58 из 34 строк 17 были такими дублями. Плох не только объём — читалось
+    // это как «ступень выдали повторно», то есть ровно тот вопрос, который
+    // закрывали в 85.56. Теперь вторая строка печатается ТОЛЬКО при отличии.
+    int   rankLogStep, rankLogGen, rankLogSet, rankLogCapped;
+    float rankLogSize, rankLogAtk;
     int   rankCounted; // 85.43: ранг уже попал в сводку сессии (отдельно от печати)
 
     // 85.56: СТУПЕНЬ ВЫДАЁТСЯ ОДИН РАЗ И ЗАМОРАЖИВАЕТСЯ.
@@ -446,6 +458,13 @@ struct Touched {
     int   rankStep;        // -1 = ступень не выдавали (нулевая ступень = новичок!)
     float rankSize;        // рост по ступени (если ступень управляет ростом)
     float rankAtk;
+    float rankDefM;        // 85.87: множитель физической защиты от ступени
+    float rankMDefM;       // 85.93: магическая защита от ступени
+    float rankMAtkM;       // 85.93: магическая атака от ступени
+    // 85.88: ЗАЩИТА ОТ САМОЗАХВАТА ПРИ ПЕРЕИСПОЛЬЗОВАНИИ СЛОТА.
+    float lastWroteH;      // последнее, что МЫ записали в рост этого тела
+    float ghostH;          // что осталось в памяти от ПРОШЛОГО жильца слота
+    int   ghostWait;       // сколько тиков ждём, пока движок поставит своё
     float rankResist;
     float rankStand;
     bool  rankUseScale;    // решено В МОМЕНТ ВЫДАЧИ: ступень задаёт рост или нет
@@ -607,6 +626,12 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->rankStep = -1;
     t->rankSize = 0.0f;
     t->rankAtk = 1.0f;
+    t->rankDefM = 1.0f;
+    t->rankMDefM = 1.0f;
+    t->rankMAtkM = 1.0f;
+    t->lastWroteH = 0.0f;
+    t->ghostH = 0.0f;
+    t->ghostWait = 0;
     t->rankResist = 1.0f;
     t->rankStand = 1.0f;
     t->rankUseScale = false;
@@ -715,6 +740,9 @@ static void EnsureRankIssued(Touched* rec, const char* kind, uintptr_t body)
     rec->rankStep    = step;
     rec->rankSize    = sz;
     rec->rankAtk     = atk;
+    rec->rankDefM    = Runtime::Tempo::RankDefOf(kind, step);
+    rec->rankMDefM   = Runtime::Tempo::RankMDefOf(kind, step);
+    rec->rankMAtkM   = Runtime::Tempo::RankMAtkOf(kind, step);
     rec->rankResist  = res;
     rec->rankStand   = stand;
     rec->rankUseScale = Runtime::Tempo::RankScaleEnabled(kind);
@@ -1388,7 +1416,27 @@ struct SpeciesPoolBase {
     float pools[kResDebilCount];
     float flinch, kdown;
     bool  have;
+    // 85.62: отпечаток эталона вида (по тем же полям, что и у тел). По нему
+    // строка на тело может быть короткой: полный список лежит в строке эталона,
+    // а тут только «совпало / не совпало». Это не потеря улики, а её усиление:
+    // раньше отличающееся тело тонуло среди одинаковых длинных строк.
+    uint32_t fp;
 };
+
+// Отпечаток набора запасов (FNV-1a по битам чисел). Считается одинаково и для
+// эталона вида, и для живого тела — поэтому сравнение корректно.
+static uint32_t ResFp(const float* pools, float flinch, float kdown)
+{
+    uint32_t h = 2166136261u;
+    for (int i = 0; i < kResDebilCount; ++i) {
+        uint32_t b = 0; memcpy(&b, &pools[i], 4);
+        h = (h ^ b) * 16777619u;
+    }
+    uint32_t b = 0;
+    memcpy(&b, &flinch, 4); h = (h ^ b) * 16777619u;
+    memcpy(&b, &kdown,  4); h = (h ^ b) * 16777619u;
+    return h;
+}
 static SpeciesPoolBase s_speciesPools[32];
 static int             s_nSpeciesPools = 0;
 
@@ -1493,11 +1541,22 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
             sp->flinch = rec->baseFlinch;
             sp->kdown  = rec->baseKdown;
             sp->have   = true;
-            char l[300];
-            sprintf_s(l, "resist base %s reference taken (pois %.0f froz %.0f burn %.0f"
-                         " flinch %.0f kdown %.0f) - every body of this kind uses it",
-                      kind ? kind : "?", sp->pools[0], sp->pools[10], sp->pools[11],
-                      sp->flinch, sp->kdown);
+            sp->fp     = ResFp(sp->pools, sp->flinch, sp->kdown);
+            // 85.62: ЭТАЛОН ВИДА — теперь единственное место с ПОЛНЫМ списком.
+            // Список полей у всех тел вида один и тот же, а печатался он на
+            // каждое тело: в поле 85.58 — 17 строк по 285 символов, 11% лога.
+            char l[620];
+            int n = 0;
+            n += sprintf_s(l + n, sizeof(l) - (size_t)n,
+                           "resist base %s reference taken (pois %.0f froz %.0f burn %.0f"
+                           " flinch %.0f kdown %.0f) fp=%08X - every body of this kind"
+                           " uses it; full list:",
+                           kind ? kind : "?", sp->pools[0], sp->pools[10], sp->pools[11],
+                           sp->flinch, sp->kdown, sp->fp);
+            for (int i = 0; i < kResDebilCount && n < (int)sizeof(l) - 40; ++i)
+                n += sprintf_s(l + n, sizeof(l) - (size_t)n, " %s %.0f",
+                               kResDebil[i].name, sp->pools[i]);
+            logFile << "EnemyTuner: " << l << std::endl;
             logFile << "EnemyTuner: " << l << std::endl;
         } else if (sp) {
             // Слот мог достаться от прошлого жильца: тогда в теле лежат НЕ
@@ -1525,9 +1584,21 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
 
     // Родные числа игры в лог — один раз на особь. Это и есть цель этой сборки:
     // увидеть настоящие сопротивления гоблина, а не гадать по вики.
+    // 85.62: СТРОКА НА ТЕЛО — КОРОТКАЯ.
+    //
+    // Было: 285 символов на каждое тело, из них 90% — тот же список, что у вида.
+    // Стало: якоря (элементные множители и hp — мы их НЕ пишем, читаем только
+    // для сверки), те запасы, которые игра реально сбивает (яд, заморозка,
+    // горение, флинч, сбивание) и отпечаток всего набора. Если отпечаток разошёлся
+    // с эталоном вида — печатаем ПОЛНУЮ строку с пометкой DIFFERS: расхождение
+    // теперь видно громче, а не тонет среди одинаковых строк.
     if (rec->resLogged < 1) {
         ++rec->resLogged;
-        char line[560];
+        const SpeciesPoolBase* ref = FindSpeciesPools(kind);
+        const uint32_t fp = ResFp(rec->baseRes, rec->baseFlinch, rec->baseKdown);
+        const bool fpDiffers = (ref && ref->have && ref->fp != fp);
+
+        char line[620];
         int n = 0;
         n += sprintf_s(line + n, sizeof(line) - (size_t)n, "resist %s 0x%08X elem",
                        kind ? kind : "?", (unsigned)body);
@@ -1538,15 +1609,25 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
                                kElemAnchors[i].name, ev);
         }
         float hpv = 0.0f;
-        if (SafeRead((const void*)(base + kFldHumanHp), &hpv, 4))
-            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " hp %.0f |", hpv);
-        else
-            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " hp ? |");
-        for (int i = 0; i < kResDebilCount && n < (int)sizeof(line) - 60; ++i)
-            n += sprintf_s(line + n, sizeof(line) - (size_t)n, " %s %.2f",
-                           kResDebil[i].name, rec->baseRes[i]);
-        sprintf_s(line + n, sizeof(line) - (size_t)n, " | flinch %.1f kdown %.1f",
-                  rec->baseFlinch, rec->baseKdown);
+        const bool haveHp = SafeRead((const void*)(base + kFldHumanHp), &hpv, 4);
+        n += sprintf_s(line + n, sizeof(line) - (size_t)n, " hp %.0f |",
+                       haveHp ? hpv : -1.0f);
+        if (!fpDiffers) {
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n,
+                           " pois %.0f froz %.0f burn %.0f flinch %.1f kdown %.1f"
+                           " | fp=%08X ok",
+                           rec->baseRes[0], rec->baseRes[10], rec->baseRes[11],
+                           rec->baseFlinch, rec->baseKdown, fp);
+        } else {
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n,
+                           " fp=%08X DIFFERS(from %08X):", fp, ref->fp);
+            for (int i = 0; i < kResDebilCount && n < (int)sizeof(line) - 60; ++i)
+                n += sprintf_s(line + n, sizeof(line) - (size_t)n, " %s %.2f",
+                               kResDebil[i].name, rec->baseRes[i]);
+            n += sprintf_s(line + n, sizeof(line) - (size_t)n,
+                           " | flinch %.1f kdown %.1f",
+                           rec->baseFlinch, rec->baseKdown);
+        }
         logFile << "EnemyTuner: " << line << std::endl;
     }
 
@@ -1681,19 +1762,34 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
         // runtime/EnemyFileBase.h. Проверено полем: в логе 85.57 из памяти
         // гоблина прочитаны ровно числа файла (250/75/80/75).
         //
-        // У пяти видов в файле стоят не боевые числа (нули, «иммунные» тысячи) —
-        // SpeciesFileBaseSane их отсекает, и тогда работает прежний путь: таблица
-        // видов, заполненная в этой сессии, затем оценка. Оба аварийных пути
-        // ГРОМКИЕ: и выбор источника, и расхождение с файлом печатаются в лог.
+        // 85.64: если в карточке вида стоят нули или «иммунные» тысячи, вид
+        // больше НЕ выбрасывается: политика решается по каждому полю (нули не
+        // пишем — у Death нет обычной атаки; 10000/20000 не пишем — это маркеры
+        // иммунитета Големов). Прежний путь (таблица видов, затем оценка)
+        // остался только для видов, которых в таблице нет вовсе — их шесть, и
+        // все они перечислены в docs/SPECIES_CENSUS.md. Оба аварийных пути
+        // ГРОМКИЕ: и выбор источника, и политика, и расхождение печатаются в лог.
         const SpeciesFileBase* fbase = (emId!=0xFFFF) ? FindSpeciesFileBase(emId) : nullptr;
-        const bool useFileBase = SpeciesFileBaseSane(fbase);
+        const bool useFileBase = SpeciesFileBaseUsable(fbase);
         bool recoveredAtk = false, recoveredDef = false;
+
+        // 85.64: режимы по умолчанию — «писать всё». Так их видят аварийные пути
+        // (таблица видов из памяти, оценка): там мы по-прежнему записываем все
+        // четыре поля, как в 85.60. Файловый путь переопределяет режимы ниже.
+        rec->baseMode[0] = rec->baseMode[1] = rec->baseMode[2] = rec->baseMode[3] = kSpeciesWrite;
 
         if (useFileBase) {
             rec->baseAtk  = fbase->atk;
             rec->baseDefC = fbase->defC;
             rec->baseMAtk = fbase->mAtk;
             rec->baseMDefC= fbase->mDefC;
+            // 85.64: политика по полям. Иммунитет и «поля нет» не пишем — см.
+            // заголовок таблицы: 10000 в защите Голема умножить нельзя, а ноль в
+            // атаке Death — это «нет обычной атаки», а не слабый удар.
+            rec->baseMode[0] = (unsigned char)SpeciesFieldModeOf(fbase->atk);
+            rec->baseMode[1] = (unsigned char)SpeciesFieldModeOf(fbase->defC);
+            rec->baseMode[2] = (unsigned char)SpeciesFieldModeOf(fbase->mAtk);
+            rec->baseMode[3] = (unsigned char)SpeciesFieldModeOf(fbase->mDefC);
         } else if (spb && spb->have) {
             // Таблица видов, заполненная в этой сессии (аварийный путь).
             rec->baseAtk = spb->atk;
@@ -1748,14 +1844,20 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
                       recoveredDef ? " RECOVERED-def" : "");
             logFile << "EnemyTuner: " << cb << std::endl;
 
-            char sv[230];
-            sprintf_s(sv, "combat base %s source=%s file atk %.1f def %.1f matk %.1f mdef %.1f",
+            // 85.64: policy=… печатается ТОЛЬКО когда политика не «всё писать»,
+            // то есть у трёх видов из 92 (Голем, Металлический голем, Death).
+            // Для остальных строка в логе выглядит как раньше.
+            char pol[80];
+            SpeciesPolicyText(fbase, pol, sizeof(pol));
+            char sv[300];
+            sprintf_s(sv, "combat base %s source=%s file atk %.1f def %.1f matk %.1f mdef %.1f%s%s",
                       kind ? kind : "?",
                       useFileBase ? "FILE" : (spb && spb->have ? "species" : "estimate"),
                       fbase ? fbase->atk   : 0.0f,
                       fbase ? fbase->defC  : 0.0f,
                       fbase ? fbase->mAtk  : 0.0f,
-                      fbase ? fbase->mDefC : 0.0f);
+                      fbase ? fbase->mDefC : 0.0f,
+                      pol[0] ? " policy=" : "", pol);
             logFile << "EnemyTuner: " << sv << std::endl;
         }
 
@@ -1765,17 +1867,35 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
         // в нём изменил кто-то другой), путь поиска блока и «что мы записали бы
         // сейчас» (файл × множители × ролл): если сырьё равно этому числу, в
         // памяти лежит наша же прошлая запись.
-        if (fbase && fbase->atk > 0.0f) {
-            const float dev    = curAtk / fbase->atk;
-            const float devDef = (fbase->defC > 0.0f) ? curDef / fbase->defC : 0.0f;
-            const float devMA  = (fbase->mAtk > 0.0f) ? curMAtk / fbase->mAtk : 0.0f;
-            const float devMD  = (fbase->mDefC > 0.0f) ? curMDef / fbase->mDefC : 0.0f;
-            if (dev < 0.97f || dev > 1.03f || devDef < 0.97f || devDef > 1.03f ||
-                devMA < 0.97f || devMA > 1.03f || devMD < 0.97f || devMD > 1.03f) {
+        // 85.64: СРАВНИВАЕМ ТОЛЬКО ТЕ ПОЛЯ, КОТОРЫЕ РЕАЛЬНО ПИШЕМ. У Голема
+        // 10000 в защите — маркер иммунитета, у Death в атаке ноль: сырьё в
+        // памяти никогда не совпадёт с ними «по значению», и старая проверка
+        // кричала бы всегда. Смотрим только режим write.
+        if (fbase && (rec->baseMode[0] == kSpeciesWrite ||
+                      rec->baseMode[1] == kSpeciesWrite ||
+                      rec->baseMode[2] == kSpeciesWrite ||
+                      rec->baseMode[3] == kSpeciesWrite)) {
+            const bool cmAtk = (rec->baseMode[0] == kSpeciesWrite) && fbase->atk > 0.0f;
+            const bool cmDef = (rec->baseMode[1] == kSpeciesWrite) && fbase->defC > 0.0f;
+            const bool cmMA  = (rec->baseMode[2] == kSpeciesWrite) && fbase->mAtk > 0.0f;
+            const bool cmMD  = (rec->baseMode[3] == kSpeciesWrite) && fbase->mDefC > 0.0f;
+            const float dev    = cmAtk ? curAtk / fbase->atk   : 1.0f;
+            const float devDef = cmDef ? curDef / fbase->defC  : 1.0f;
+            const float devMA  = cmMA  ? curMAtk / fbase->mAtk : 1.0f;
+            const float devMD  = cmMD  ? curMDef / fbase->mDefC: 1.0f;
+            const bool off = (cmAtk && (dev < 0.97f || dev > 1.03f)) ||
+                             (cmDef && (devDef < 0.97f || devDef > 1.03f)) ||
+                             (cmMA  && (devMA < 0.97f || devMA > 1.03f)) ||
+                             (cmMD  && (devMD < 0.97f || devMD > 1.03f));
+            if (off) {
                 float hpNow = 0.0f;
                 SafeRead((const void*)(base + kFldHumanHp), &hpNow, 4);
-                const float ourWrite = fbase->atk * t.attackMult * rec->combatRollAtk;
-                char rf[330];
+                // «что мы записали бы» считаем по полю, которое точно пишем:
+                // у Death атаки нет, поэтому берём защиту.
+                const float ourWrite = cmAtk
+                    ? fbase->atk * t.attackMult * rec->combatRollAtk
+                    : fbase->defC * t.defenseMult * rec->combatRollDef;
+                char rf[340];
                 sprintf_s(rf, "combat base %s RAW MISMATCH: read %.1f/%.1f/%.1f/%.1f"
                               " vs file %.1f/%.1f/%.1f/%.1f"
                               " (x%.3f/x%.3f/x%.3f/x%.3f) hp %.0f ourWriteWouldBe %.1f"
@@ -1834,7 +1954,15 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     // из десяти получили ×1.52 случайно — у одного рост остался 1.12, у двух
     // 0.96, то есть «элита» с ростом новичка. Урок тот же, что и с числами:
     // если признак неотличим — не угадываем, а даём ступень по хешу.
-    if (ranksOn && rec->rankLogged < 2) {
+    // 85.62: сверяем с тем, что уже печатали. Совпало — молчим.
+    const bool rankSameAsLogged = (rec->rankLogged >= 1)
+        && rec->rankLogStep   == rec->rankStep
+        && rec->rankLogGen    == (int)rec->gen
+        && rec->rankLogSet    == rec->setIndex
+        && rec->rankLogCapped == (rec->rankCapped ? 1 : 0)
+        && NearlyEq(rec->rankLogSize, rec->rankSize)
+        && NearlyEq(rec->rankLogAtk,  rec->rankAtk);
+    if (ranksOn && rec->rankLogged < 2 && !rankSameAsLogged) {
         // 85.43: сводка сессии считает выдачу ПРИ НАЗНАЧЕНИИ — это по-прежнему
         // так, просто назначение переехало в EnsureRankIssued. Здесь только
         // строка в лог, и лимит «две на особь» её не касается.
@@ -1857,12 +1985,21 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
                              ? Runtime::Tempo::PackSetName(rec->setIndex) : nullptr;
             if (setn) sprintf_s(setpart, " set=%s", setn);
             if (rec->rankCapped) lstrcpynA(cappart, " miniboss-capped", sizeof(cappart));
-            sprintf_s(ll, "rank %s %s(%d) %s atk x%.2f gen=%u%s%s -> 0x%08X",
+            sprintf_s(ll, "rank %s %s(%d) %s atk x%.2f def x%.2f matk x%.2f"
+                          " mdef x%.2f gen=%u%s%s -> 0x%08X",
                       kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
-                      rec->rankStep, spart, rec->rankAtk, rec->gen,
+                      rec->rankStep, spart, rec->rankAtk, rec->rankDefM,
+                      rec->rankMAtkM, rec->rankMDefM, rec->gen,
                       setpart, cappart, (unsigned)body);
             logFile << "EnemyTuner: " << ll << std::endl;
             lstrcpynA(s_status, ll, sizeof(s_status));
+            // 85.62: снимок — вторая строка появится только при отличии.
+            rec->rankLogStep   = rec->rankStep;
+            rec->rankLogGen    = (int)rec->gen;
+            rec->rankLogSet    = rec->setIndex;
+            rec->rankLogCapped = rec->rankCapped ? 1 : 0;
+            rec->rankLogSize   = rec->rankSize;
+            rec->rankLogAtk    = rec->rankAtk;
         }
     }
 
@@ -1872,9 +2009,17 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
 
     float wantAtk  = rec->baseAtk  * t.attackMult        * rollAtk  * adrAtk
                    * (ranksOn ? rankAtk : 1.0f);
-    float wantDef  = rec->baseDefC * t.defenseMult       * rollDef;
-    float wantMAtk = rec->baseMAtk * t.magickAttackMult  * rollMAtk * adrMAtk;
-    float wantMDef = rec->baseMDefC* t.magickDefenseMult * rollMDef;
+    // 85.87: защита ступени входит ТЕМ ЖЕ множителем, одним писателем.
+    // Отдельная запись из ApplyRankToughness конфликтовала бы с этой строкой
+    // каждый кадр: два источника на одно поле — это бесконечная перезапись.
+    float wantDef  = rec->baseDefC * t.defenseMult       * rollDef
+                   * (ranksOn ? rec->rankDefM : 1.0f);
+    float wantMAtk = rec->baseMAtk * t.magickAttackMult  * rollMAtk * adrMAtk
+                   * (ranksOn ? rec->rankMAtkM : 1.0f);
+    // 85.93: магическая защита ступени. Тем же единственным писателем, что и
+    // физическая: два источника на одно поле дерутся каждый кадр.
+    float wantMDef = rec->baseMDefC* t.magickDefenseMult * rollMDef
+                   * (ranksOn ? rec->rankMDefM : 1.0f);
 
     // NaN protection — hot-reload может подсунуть NaN из полузаписанного ini
     // или из повреждённой памяти. NaN в charParam = краш движка при расчёте урона.
@@ -1893,15 +2038,26 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
     if (wantMAtk < 0.0f) wantMAtk = 0.0f; if (wantMAtk > 50000.0f) wantMAtk = 50000.0f;
     if (wantMDef < 0.0f) wantMDef = 0.0f; if (wantMDef > 50000.0f) wantMDef = 50000.0f;
 
+    // 85.64: ЧТО ВООБЩЕ ПИШЕМ. Иммунитет (10000) и отсутствующее поле (ноль у
+    // Death) не пишутся: первое — свойство вида, второе — отсутствие механики.
+    const bool wAtk  = (rec->baseMode[0] == kSpeciesWrite);
+    const bool wDef  = (rec->baseMode[1] == kSpeciesWrite);
+    const bool wMAtk = (rec->baseMode[2] == kSpeciesWrite);
+    const bool wMDef = (rec->baseMode[3] == kSpeciesWrite);
+
     // если всё уже стоит — ничего не делаем (избегаем лишних записей)
-    bool needAtk = !NearlyEq(curAtk, wantAtk);
-    bool needDef = !inSanct && !NearlyEq(curDef, wantDef);
-    bool needMAtk= !NearlyEq(curMAtk, wantMAtk);
-    bool needMDef= !inSanct && !NearlyEq(curMDef, wantMDef);
+    bool needAtk = wAtk  && !NearlyEq(curAtk, wantAtk);
+    bool needDef = wDef  && !inSanct && !NearlyEq(curDef, wantDef);
+    bool needMAtk= wMAtk && !NearlyEq(curMAtk, wantMAtk);
+    bool needMDef= wMDef && !inSanct && !NearlyEq(curMDef, wantMDef);
     if (!needAtk && !needDef && !needMAtk && !needMDef) {
-        // обновим cur-кэш даже если не писали (на случай если Sanctuary менял защиту)
-        rec->curAtk = wantAtk; rec->curMAtk = wantMAtk;
-        if (!inSanct) { rec->curDefC = wantDef; rec->curMDefC = wantMDef; }
+        // обновим cur-кэш даже если не писали (на случай если Sanctuary менял
+        // защиту). НЕ трогаем кэш полей под политикой: там в памяти живёт
+        // значение движка, и подменять его нашим «хотим» значит врать себе.
+        if (wAtk)  rec->curAtk  = wantAtk;
+        if (wMAtk) rec->curMAtk = wantMAtk;
+        if (!inSanct && wDef)  rec->curDefC  = wantDef;
+        if (!inSanct && wMDef) rec->curMDefC = wantMDef;
         return 0;
     }
 
@@ -2084,8 +2240,36 @@ static int ApplyReturnSanctuary(uintptr_t body, Touched* rec, const EntityCfg::T
     return wrote;
 }
 
+// 85.64: ЧАСТИ СОСТАВНЫХ ВРАГОВ НЕ ТРОГАЕМ. Тюнер ходит по телам через
+// KindIsCreature (живность масштабировать можно и нужно — это намеренно), но
+// ambient prop и части драконов/Даймона — не самостоятельные враги: писать им
+// боевые статы и размер значит вмешиваться в чужую деталь. Список один для всего
+// продукта — Runtime::KindIsStructural (WorldScan.cpp), чтобы не разошлись.
 static void TickOneBody(uintptr_t body, const char* kind)
 {
+    if (Runtime::KindIsStructural(kind)) {
+        // Печатаем один раз на вид: иначе в логе не отличить «не видели» от
+        // «видели и намеренно не трогали».
+        // 85.69: сравниваем ТЕКСТ, а не указатели, и держим КОПИИ. Поле 85.68
+        // показало, почему это обязательно: имя живёт в буфере самого тела
+        // (per-actor kindBuf), поэтому у двух тел одного вида строки одинаковые,
+        // а указатели разные — «один раз на вид» печаталось восемь раз. Обратная
+        // ловушка ещё хуже: слот тела переиспользуется, буфер переписывается, и
+        // по указателю чужое имя могло «совпасть» со старым — пропуск исчезал бы
+        // молча. Копия решает обе стороны.
+        static char seen[6][48] = {};
+        static int nSeen = 0;
+        bool known = false;
+        for (int i = 0; i < nSeen; ++i) if (!strcmp(seen[i], kind)) { known = true; break; }
+        if (!known && nSeen < 6 && kind) {
+            lstrcpynA(seen[nSeen++], kind, sizeof(seen[0]));
+            char l[180];
+            sprintf_s(l, "structural %s not tuned (part of a composite enemy, not a body of its own)",
+                      kind);
+            logFile << "EnemyTuner: " << l << std::endl;
+        }
+        return;
+    }
     // P0-2 / hot-reload safety: stale body must not be touched
     if (!body) return;
     if (!Runtime::Mem::RegionOk(body, 0x70)) return; // need at least +0x60..0x68 scale
@@ -2094,7 +2278,30 @@ static void TickOneBody(uintptr_t body, const char* kind)
     if (s_holdBody && body == s_holdBody) return;
 
     uint16_t emId = EmIdFromKind(kind);
-    if (emId == 0xFFFF) return;
+    if (emId == 0xFFFF) {
+        // 85.65: ПУСТОЙ НОМЕР. Не всякое имя вида раскладывается в uEm<цифры>:
+        // у семьи манитера класс кончается буквой (uEm5500B, uEm5500C), у людей
+        // это uHumanEnemy (у него номер синтетический, см. EmIdFromKind).
+        // Такой вид не тюнится вообще: ни ini-секции вида, ни строки в файл-базе,
+        // ни рангов, ни размера. Раньше он выпадал молча — по логу нельзя было
+        // отличить «не видели» от «видели и намеренно не тронули». Печатаем
+        // один раз на вид, тем же способом, что и пропуск деталей выше.
+        // 85.69: как и выше — сравнение по тексту (см. комментарий у seen[]).
+        static char seenNoId[8][48] = {};
+        static int nSeenNoId = 0;
+        bool knownNoId = false;
+        for (int i = 0; i < nSeenNoId; ++i)
+            if (!strcmp(seenNoId[i], kind)) { knownNoId = true; break; }
+        if (!knownNoId && nSeenNoId < 8 && kind && kind[0]) {
+            lstrcpynA(seenNoId[nSeenNoId++], kind, sizeof(seenNoId[0]));
+            char l[190];
+            sprintf_s(l, "%s not tuned (class name carries no em id: no ini section, no file-base row)",
+                      kind);
+            logFile << "EnemyTuner: " << l << std::endl;
+            lstrcpynA(s_status, l, sizeof(s_status));
+        }
+        return;
+    }
 
     const EntityCfg::Tuning& t = EntityCfg::For(emId);
     if (!t.enabled) return;
@@ -2116,8 +2323,18 @@ static void TickOneBody(uintptr_t body, const char* kind)
         // читаем ваниль заново, как при первой встрече. Цена — одно лишнее
         // чтение базы на редкий случай, польза — статы всегда от своего вида.
         const uint16_t was = rec0->species;
+        // 85.88: СЛЕД ПРОШЛОГО ЖИЛЬЦА. Поле 85.86 поймало случай целиком:
+        // хоб 0x11097470 получил от нас рост 1.469, умер, слот занял гоблин —
+        // и тюнер принял НАШУ ЖЕ запись за ванильный рост гоблина
+        // (`scale decision uEm0100: vanilla 1.469`). Гоблин вырос до 1.548 и
+        // стал ростом с хоба; владелец принял его за мини-босса.
+        // Старая защита (неравные W/H/D = наша работа) тут не срабатывает:
+        // в ветке вожака мы пишем рост равномерно.
+        const float ghost = rec0->lastWroteH;
         memset(rec0, 0, sizeof(*rec0));
         rec0->body = body;
+        rec0->ghostH = ghost;
+        rec0->ghostWait = 90;      // ~1.5 с: движку хватит поставить своё
         // 85.56: у адреса новый жилец — новое поколение и никакой ступени.
         // Раньше ступень считалась от одного адреса, и новый монстр получал
         // ступень прежнего (поле 85.55: волчица в слот гоблина — «ветеран»).
@@ -2245,6 +2462,22 @@ static void TickOneBody(uintptr_t body, const char* kind)
         if (!ScaleLooksSane(cw) || !ScaleLooksSane(ch) || !ScaleLooksSane(cd))
             return;                       // тело ещё не готово, подождём тик
 
+        // 85.88: в слоте ещё лежит НАШЕ значение от прошлого жильца — ждём,
+        // пока движок впишет рост нового тела. Принять сейчас значит
+        // унаследовать чужой размер и умножить его ступенью.
+        if (rec->ghostWait > 0 && rec->ghostH > 0.05f
+            && NearlyEq(ch, rec->ghostH)) {
+            --rec->ghostWait;
+            if (rec->ghostWait == 0) {
+                char lg[190];
+                sprintf_s(lg, "0x%08X slot reuse: engine never rewrote scale,"
+                              " taking %.3f as vanilla (was our value for the"
+                              " previous occupant)", (unsigned)body, ch);
+                logFile << "EnemyTuner: " << lg << std::endl;
+            }
+            return;
+        }
+
         // ЗАЩИТА ОТ САМОЗАХВАТА. Если мод перезагрузили (или запись уже
         // применялась) — в памяти лежит НАШЕ значение, и принять его за
         // ваниль нельзя: коэффициент начнёт умножаться сам на себя и
@@ -2271,12 +2504,36 @@ static void TickOneBody(uintptr_t body, const char* kind)
     const bool isLeader = (rec->baseH >= leaderThresh);
     float wantW = 1.0f, wantH = 1.0f, wantD = 1.0f;
 
+    // --- КОРИДОР ОТНОСИТЕЛЕН ВАНИЛИ (85.84) -----------------------------
+    //
+    // Поле 85.83, жалоба владельца: хобгоблины под модом стали заметно мельче,
+    // часть пачки ростом почти с гоблина. Причина найдена по коду.
+    //
+    // Коридор вида в карточке (`uEm0101`: 1.00..1.14) применялся АБСОЛЮТНО:
+    // рост особи переписывался числом из коридора, без оглядки на то, каким
+    // он был у Capcom. Для гоблина (родной рост около 1.02..1.17) разница
+    // незаметна, а хоб крупнее по природе — и мы его ужимали.
+    //
+    // Это противоречило собственному замыслу карточки: «пол scaleMin держим
+    // на 1.00 — масштаб это ручка опасности, задохликов не делаем». Имелось
+    // в виду «никогда не меньше ВАНИЛИ», а получилось «никогда не меньше
+    // ЕДИНИЦЫ». Теперь коридор — это множитель родного роста особи:
+    // 1.00 = «как у Capcom», 1.14 = «на 14 % крупнее». Уменьшить не может
+    // никто и никогда.
+    //
+    // Ванильный разброс при этом сохраняется: база берётся у КАЖДОЙ особи
+    // своя (rec->baseH), движок разбрасывает рост сам.
+    const float vanilla = (rec->baseH > 0.05f) ? rec->baseH : 1.0f;
+
     if (rankScale) {
         // 85.41: лестница ПЕРВИЧНА. Раньше первой стояла ветка «вожак», и тело
         // с запомненной базой >= 1.12 (часто наша же прошлая запись) и размер
         // не получало, и ступень ломало. Теперь под лестницей КАЖДОЕ тело
         // получает полосу своей ступени — без исключений и угадывания.
-        wantH = rankSize;
+        // Ступень тоже стала множителем: «новичок = ваниль целиком» в
+        // kRankDef (0.95..1.03) наконец значит то, что написано. Раньше
+        // ванильный гоблин 1.136 на ступени новичка УМЕНЬШАЛСЯ до 0.95-1.03.
+        wantH = vanilla * rankSize;
         const float lm = 0.02f;   // комплекция внутри полосы
         uint32_t lh1 = (uint32_t)(body >> 3) * 2654435761u;
         uint32_t lh2 = (uint32_t)(body >> 5) * 2246822519u;
@@ -2285,15 +2542,28 @@ static void TickOneBody(uintptr_t body, const char* kind)
         wantW = wantH * (1.0f + lm * lj1);
         wantD = wantH * (1.0f + lm * lj2);
     } else if (isLeader) {
-        // Вожак от Capcom — только для видов БЕЗ лестницы (их коридор).
-        // Сохраняем его авторский статус и крупный размер, лишь гарантируем
-        // верхний предел безопасности (scaleHi + 0.04).
-        wantH = (rec->baseH > scaleHi + 0.04f) ? (scaleHi + 0.04f) : rec->baseH;
+        // ВЕТКА ВОЖАКА БОЛЬШЕ НЕ НУЖНА — и в 85.84 она стала вредной.
+        //
+        // Смысл ветки был в защите: при АБСОЛЮТНОМ коридоре крупного
+        // ванильного вожака (база >= leaderScaleThreshold, у хоба 1.12)
+        // нельзя было пускать через PickScale, иначе его срезало бы до
+        // 1.00..1.14. Когда коридор стал множителем, срезать стало нечем:
+        // множитель начинается с 1.00 и уменьшить не может.
+        //
+        // А вот вреда ветка принесла сразу. Поле 85.84: у хобов родной рост
+        // выше порога 1.12, поэтому КАЖДЫЙ хоб попадал сюда, получал
+        // wantH = vanilla, это совпадало с текущим значением — и функция
+        // выходила без записи и без строки в лог. Снаружи это выглядело как
+        // «тюнер вообще не работает»: ни одной строки EnemyTuner за сессию
+        // при 31 хобе в мире.
+        //
+        // Теперь вожак идёт общей дорогой и тоже растёт от своей базы.
+        wantH = vanilla * PickScale(body, scaleLo, scaleHi);
         wantW = wantH;
         wantD = wantH;
     } else {
         // Рядовой член стаи: рассчитываем размер внутри коридора вида
-        wantH = PickScale(body, scaleLo, scaleHi);
+        wantH = vanilla * PickScale(body, scaleLo, scaleHi);
         if (jitter > 0.001f) {
             uint32_t h1 = (uint32_t)(body >> 3) * 2654435761u;
             uint32_t h2 = (uint32_t)(body >> 5) * 2246822519u;
@@ -2307,7 +2577,38 @@ static void TickOneBody(uintptr_t body, const char* kind)
         }
     }
 
+    // Предохранитель: множитель на множитель не должен родить великана.
+    // Потолок — полуторный ванильный рост особи и 3.0 по абсолюту.
+    const float capRel = vanilla * 1.5f;
+    if (wantH > capRel) { const float k = capRel / wantH; wantH *= k; wantW *= k; wantD *= k; }
+    if (wantH > 3.0f)   { const float k = 3.0f  / wantH; wantH *= k; wantW *= k; wantD *= k; }
+    if (wantH < vanilla) { wantW *= vanilla / wantH; wantD *= vanilla / wantH; wantH = vanilla; }
+
     float cur = ch;
+
+    // ОДНА СТРОКА НА ВИД, ДАЖЕ ЕСЛИ НИЧЕГО НЕ ПИШЕМ.
+    //
+    // Поле 85.84 стоило вечера именно из-за тишины: решение «не писать»
+    // выглядело в логе ровно так же, как «слой выключен». Теперь по первому
+    // телу каждого вида печатается, какая ветка сработала и почему.
+    {
+        static char seenScale[12][48] = {};
+        static int  nSeenScale = 0;
+        bool known = false;
+        for (int i = 0; i < nSeenScale; ++i)
+            if (!strcmp(seenScale[i], kind ? kind : "?")) { known = true; break; }
+        if (!known && nSeenScale < 12) {
+            lstrcpynA(seenScale[nSeenScale++], kind ? kind : "?", sizeof(seenScale[0]));
+            char l[220];
+            sprintf_s(l,
+                "scale decision %s: vanilla %.3f corridor %.2f..%.2f %s -> want %.3f%s",
+                kind ? kind : "?", vanilla, scaleLo, scaleHi,
+                rankScale ? "RANK" : (isLeader ? "LEADER" : "GENE"),
+                wantH,
+                NearlyEq(cur, wantH) ? "  (equals current - no write)" : "");
+            logFile << "EnemyTuner: " << l << std::endl;
+        }
+    }
 
     if (NearlyEq(cur, wantH)) return;   // держится — ничего не делаем
 
@@ -2317,6 +2618,7 @@ static void TickOneBody(uintptr_t body, const char* kind)
     if (n <= 0) return;
 
     s_writes += n;
+    rec->lastWroteH = wantH;      // след для защиты от самозахвата (85.88)
     ++rec->applies;
     if (wasReverted) ++rec->reverts;
 
@@ -2425,6 +2727,17 @@ const char* StatusLine() { return s_status; }
 // чтобы строка смерти показывала правду, даже если движок что-то вернул назад.
 // 85.56: что за ступень живёт в этом теле. Отдаём ЗАМОРОЖЕННОЕ — то, по чему
 // особь реально живёт, а не то, что получилось бы при нынешних весах.
+// 85.62: выданный ступенью размер особи. Нужен прибору пачки: живое чтение
+// масштаба у тел, пришедших с загрузкой мира, показывает ровно 1.000, и строка
+// смерти врала про размер («scaleH=1» там, где ступень выдала 1.105). Выданный
+// размер заморожен за жильцом и верен всегда.
+float IssuedSizeFor(uintptr_t body)
+{
+    Touched* rec = FindTouched(body);
+    if (!rec || rec->rankStep < 0 || !rec->rankUseScale) return -1.0f;
+    return rec->rankSize;
+}
+
 bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut, int* setIndexOut)
 {
     Touched* rec = FindTouched(body);

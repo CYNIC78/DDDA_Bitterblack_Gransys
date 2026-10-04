@@ -4,6 +4,7 @@
 #include "PawnAI_Common.h"
 #include "../runtime/Runtime.h"
 #include "../runtime/MemProbe.h"
+#include "../runtime/LogMemSession.h"   // 85.64: сводки — в полевой пакет
 
 extern BYTE *codeBase;
 
@@ -700,11 +701,12 @@ void Shutdown()
 {
     if (s_applied || s_watching)
         DoClear("shutdown");
-    logFile << "Possession: shutdown BuffApply6=" << s_nId6
-            << " BuffApply7=" << s_nId7
-            << " recipe=" << (s_recipe ? 1 : 0)
-            << " layout=" << (s_fnStart ? 1 : 0)
-            << " custom=" << (s_customOn ? 1 : 0) << std::endl;
+    // 85.64: строка уходит в полевой пакет (печатается блоком в конце сессии).
+    char ps[200];
+    sprintf_s(ps, "Possession: shutdown BuffApply6=%d BuffApply7=%d recipe=%d"
+                  " layout=%d custom=%d",
+              s_nId6, s_nId7, s_recipe ? 1 : 0, s_fnStart ? 1 : 0, s_customOn ? 1 : 0);
+    LogMem::SessionNote(ps);
 }
 
 Status Get()

@@ -1,0 +1,84 @@
+85.63-session-packet
+ЧИСТКА ЛОГА, ВТОРАЯ ПОЛОВИНА. ИГРА НЕ МЕНЯЛАСЬ — НУЖНА ПЕРЕСБОРКА.
+
+КОРОТКО
+  Продолжение того, что ты выбрал на смене: сводки конца сессии теперь лежат одним
+  блоком в самом конце лога, а два места, где лог шумел парами строк, свёрнуты.
+  Как и 85.62 — тронуты только строки. Цели, латчи, темп, ступени, наборы, урон:
+  всё как в 85.62.
+
+1. ВСЯ СЕССИЯ ОДНИМ БЛОКОМ В КОНЦЕ ЛОГА
+  Раньше сводки рождались в пяти разных местах и печатались где придётся: пачка и
+  огонь — в одном месте, ступени и наборы — в другом, пешки и защита — в третьем.
+  Теперь в самом конце лога будет ровно один кусок:
+
+      === SESSION === 14 summaries, the whole session in one block
+      Tempo: rank summary total=15  uEm0100:5 7 2 1 0
+      Tempo: pack set summary places: rabble 1 patrol 2 warband 1 hunt 1 | bodies: …
+      PackObserve: fall summary falls=0 stumbles=0 trips=1 …
+      PackObserve: burn summary bodies=0 starts=0 survived=0 died=0 left=0 …
+      WandRange: shutdown summary applyEvents=7 waitRetries=29 firstApply=1
+      CasterWatch: session summary boltsCharged=1 boltsFired=1 …
+      Aggro: shutdown summary directorWrites=… pin=… supp=… fakehit=… unsafeSkips=… rollbacks=… targetSwitches=…
+      PawnHaste: session summary bursts=5 weapon=1 detector=4 details=3
+      PawnAI: session summary hasteApplied=5 burstsWeapon=1 burstsDetector=4 pawnsTracked=3
+      GuardianDoctrine: session summary probes=3 completed=3 unpaired=0 announces=11 muted=9
+      NexusDoctrine: session summary probes=1 completed=1 unpaired=0 announces=17 muted=8
+      Tempo: slow-ticks count=13 worst=313ms above250=5 ofWhichOurs=0
+      LogMem: session fault-handling summary faults=1498 dumps=3 sites=3
+      === END OF SESSION ===
+
+  Разбор сессии теперь — вырезать один кусок, а не искать двадцать строк по всему
+  логу. Порядок выгрузки модулей не тронут (в самой игре его переставлять нельзя):
+  каждая сводка считается в свой момент, печатается блоком. Если сводки вдруг
+  окажется больше, чем влезает в отведённые 8 КБ, в блоке будет сказано об этом
+  прямым текстом, и ни одна строка не будет обрезана наполовину.
+
+2. ПАРЫ ЗАМЕРОВ ДОКТРИН СВЁРНУТЫ В ОДНУ СТРОКУ
+  Guardian и Nexus печатали замер парой: `PROBE START` в начале окна и `PROBE RESULT`
+  через 2,5 секунды. Между ними могли стоять десятки чужих строк, и результат
+  наблюдения приходилось сводить глазами. Теперь одна строка, и в ней оба конца:
+
+      GuardianDoctrine: [Hired1] PROBE INTERCEPT enemy 0x113C0060 seen
+        P-E 27.4->19.3m A-E 10.7->8.0m code 1->73 act cPlActRun->cPlActDmgDown
+        target 0x11177FC0
+
+  Читается как раньше, только «было -> стало» теперь на одной строке и сразу видно
+  переход: код приоритета 1 -> 73, действие Run -> DmgDown — то есть пешка
+  действительно пошла на перехват. У Nexus в строке ещё и партнёр на момент старта.
+
+3. ОБЪЯВЛЕНИЯ ЦЕЛИ — ПОД ОКНОМ ТИШИНЫ 3 СЕКУНДЫ НА ТЕЛО
+  Строка `PROACTIVE TARGET` печатается на смену цели. В твоём логе 85.60 их было 28,
+  и почти половина — качели между двумя гоблинами в упор (0x10D60060 и 0x11070060):
+  решение не менялось, менялся только чей нос ближе. Теперь про одно и то же тело
+  не чаще раза в 3 секунды. Цель ставится ровно как раньше — молчит только строка.
+  Сколько объявлений свернули, видно в сводке: `muted=`. Если захочешь видеть все —
+  скажи, сделаю окно ключом в живом ini.
+
+4. МЕЛОЧЬ: СВОДКА ПЕШЕК
+  `PawnAI: session summary hasteApplied=… burstsWeapon=… burstsDetector=… pawnsTracked=…` —
+  рывки пешек одной строкой, рядом с остальными сводками.
+
+ЧТО НЕ МЕНЯЛОСЬ
+  * Игровая логика: цели доктрин, латчи, темп, ступени, наборы, крепость, урон —
+    85.63 = 85.62 плюс другой лог. Ни одной новой записи в память игры.
+  * Живые секции `[ranks]` и `[packs]`; ступень и набор заморожены за жильцом.
+  * Строки, по которым разбираем поле (ступени, смерти, огонь, падения, JOIN/LEAVE) —
+    на месте, их я не трогал.
+
+ЧТО СМОТРЕТЬ В ПОЛЕ
+  * Блок `=== SESSION ===` в самом конце: все сводки подряд, включая новые доктрины
+    и пешек. Если какой-то сводки в блоке нет — это уже сигнал, присылай.
+  * В смертях/уходах — `size=… issued` (это правка 85.62, в поле она ещё не летала).
+  * `GuardianDoctrine: … muted=` / `NexusDoctrine: … muted=` — сколько шума свернули.
+    Если `muted=` заметно больше `announces=` — окно можно и укоротить, скажи.
+  * `unpaired=` больше нуля означает: замер начался и не дожил до конца окна
+    (конец боя, выгрузка мира). Это нормально, но пусть будет на виду.
+
+ОТКАТ: 85.62-log-diet (там уже чистка, но без пакета и без окон).
+СБОРКА: Release. Тронуты src/PawnAI.cpp, src/dinput8.cpp, src/monsterai/PackObserve.cpp,
+src/runtime/MonsterTempo.cpp, src/runtime/LogMem.cpp + новый src/runtime/LogMemSession.h,
+src/pawnai/GuardianDoctrine.cpp/.h, src/pawnai/NexusDoctrine.cpp/.h + новый
+src/pawnai/DoctrineAnnounce.h, src/pawnai/PawnHaste.cpp, src/pawnai/WandRange.cpp,
+src/runtime/AggroWatch.cpp, tools/syntax_check.sh + две новые фикстуры, плюс документы.
+ИНИ ПРАВИТЬ НЕ НАДО (новых ключей нет).

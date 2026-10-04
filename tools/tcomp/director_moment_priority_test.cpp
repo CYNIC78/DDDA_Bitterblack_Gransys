@@ -5,6 +5,20 @@
 #include <map>
 #include <vector>
 
+// 85.66: 85.36 довёл до Tempo числа вида из ini — фикстура обязана знать этот зов.
+// Стаб объявлен НА ВЕРХНЕМ УРОВНЕ: внутри `namespace Runtime` (где живут стабы Tempo
+// и Aggro) имя MonsterAI не находится, и тип «не называет тип».
+namespace MonsterAI {
+SpeciesTempoNumbers SpeciesTempoFromIni(SpeciesIniReader&, const SpeciesCard&,
+                                        float, float, float, float)
+{
+    SpeciesTempoNumbers n;
+    memset(&n, 0, sizeof(n));
+    n.rageEnabled = false;     // безопасный путь продукта: нет строки в ini — нет темпа
+    return n;
+}
+} // namespace MonsterAI
+
 std::ofstream logFile("/tmp/director_moment_priority_test.log");
 BYTE** pBase = 0;
 IniConfigStub config;
@@ -80,6 +94,21 @@ bool GetFactors(uintptr_t, float* loco, float* atk)
 }
 
 void RegisterRageProfile(const char*, float, float, float, float) {}
+
+// 85.66: продукт вырос (85.56/85.57 — ранги и наборы пачек), фикстура обязана
+// знать новые символы. Здесь они — безопасные заглушки: предмет этой фикстуры —
+// политика директора и её строки; ранги и наборы проверяют ranks_test /
+// packobserve_t в гейте (там линкуется настоящий MonsterTempo.cpp).
+RanksNumbers RanksFromIni(RanksIniReader&, const char*) { return RanksNumbers(); }
+void         RegisterRanks(const char*, const RanksNumbers&) {}
+bool         RanksBuiltinToughness(int, float* resistOut, float* standOut)
+{
+    if (resistOut) *resistOut = 1.0f;
+    if (standOut)  *standOut  = 1.0f;
+    return true;
+}
+PackSetsConfig PackSetsFromIni(RanksIniReader&) { return PackSetsConfig(); }
+void           RegisterPackSets(const PackSetsConfig&) {}
 
 // 85.36: директор читает действующие границы [monsterTempo], чтобы числа вида
 // нельзя было поставить НИЖЕ базы (иначе admit молча отбивает тело). В фикстуре

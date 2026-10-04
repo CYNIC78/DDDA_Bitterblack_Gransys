@@ -23,7 +23,14 @@ TMP="$(mktemp -d /tmp/director_build012.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.' "$TAG"
+# 85.66: вместо пина «84.» — структура тега + согласие с README (не устаревает).
+tag_val="$(sed -n 's/.*MOD_BUILD_TAG[[:space:]]*"\([^"]*\)".*/\1/p' "$TAG" | head -1)"
+case "$tag_val" in
+  [0-9]*.[0-9]*) ;;
+  *) echo "BuildTag.h: тег не похож на билд: '$tag_val'" >&2; exit 1;;
+esac
+grep -Fq "$tag_val" "$README" || {
+  echo "README не упоминает текущий тег '$tag_val'" >&2; exit 1; }
 grep -Fq '84.9-pilot012-urgency-mobilization' "$README"
 grep -Fq '84.10-goblin-pack-observe' "$README"
 grep -Fq '84.12-wolf-combat-card' "$README"
@@ -104,7 +111,8 @@ grep -q 'strcmp(v.kind, "uEm0200")' "$PRODUCT"
 grep -q 'strcmp(kind, "uEm0200")' "$AGGRO"
 
 # Product Tempo owns a separate bounded, non-ratcheting stable->rage table.
-grep -q 'kMaxDirectorMobilizations = 16' "$TEMPO"
+# 85.66: 85.40 (лестница) поднял потолок мобилизаций 16 -> 32.
+grep -q 'kMaxDirectorMobilizations = 32' "$TEMPO"
 grep -q 'kDirectorDecayMs = 1400' "$TEMPO"
 grep -q 'kWolfRageLocoLo = 1.20f' "$TEMPO"
 grep -q 'kWolfRageLocoHi = 1.25f' "$TEMPO"

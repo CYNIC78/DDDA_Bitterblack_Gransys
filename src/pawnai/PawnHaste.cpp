@@ -5,6 +5,7 @@
 #include "../CombatBus.h"
 #include "../runtime/Runtime.h"
 #include "../runtime/MonsterTempo.h"
+#include "../runtime/LogMemSession.h"   // 85.63: сводки — в полевой пакет
 
 namespace PawnAI {
 namespace Haste {
@@ -163,7 +164,7 @@ void Shutdown()
         const int details = s_actLogged > 3 ? 3 : s_actLogged;
         sprintf_s(l, "PawnHaste: session summary bursts=%d weapon=%d detector=%d details=%d",
                   s_applied, s_burstsWeapon, s_burstsDetector, details);
-        logFile << l << std::endl;
+        LogMem::SessionNote(l);   // 85.63: в пакет
     }
 }
 

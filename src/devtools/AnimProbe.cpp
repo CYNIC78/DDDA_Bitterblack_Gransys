@@ -39,6 +39,116 @@ struct SlotStat {
     uint32_t resetsAtAct;
 };
 
+// --- УЛИКА ПО СОВПАДЕНИЮ ВО ВРЕМЕНИ (85.72) -------------------------
+//
+// Замеры вне боя себя исчерпали: поле стоит на максимуме, а максимум мы и
+// так знаем из файла. Настоящий запас выдаёт себя ПРОСАДКОЙ В МОМЕНТ УДАРА.
+//
+// Ведём по каждому слоту кадр последнего падения. Когда подопытный входит в
+// отшатывание (DmgStumble) или в полёт (Tumble/CFall/Blow), начисляем очко
+// всем, кто просел за последние kBlameWindow кадров. Случайное поле совпадёт
+// раз или два; настоящий запас — каждый раз. Счёт и есть улика.
+// Окно расширено с 12 до 30 кадров (15 кадров анимации, полсекунды). Поле
+// 85.78: при семи пригодных событиях лучший счёт был 5/7 — настоящий запас
+// обязан быть 7/7, значит часть просадок не попадала в узкое окно.
+static const int kBlameWindow = 30;
+static uint32_t s_lastDrop[kTotalSlots];   // кадр последнего падения значения
+static uint16_t s_blame[kTotalSlots];      // сколько раз просел перед ударом
+static bool     s_armed = false;
+static char     s_armKind[48] = {};
+static int      s_armTicks = 0;
+static char     s_lockKind[48] = {};   // вид подопытного на момент захвата
+static char     s_statKind[48] = {};   // вид, к которому относятся НАКОПЛЕННЫЕ улики
+static int      s_lastDmgFrame = 0;    // кадр последнего полученного урона
+static uintptr_t s_quitBody = 0;       // кого только что покинули по тишине
+static const int kQuietFrames  = 1800; // 30 с без урона -> ищем другого
+static const float kLockMaxMetres = 40.0f;
+// --- ЧИСЛА ИЗ .rst, ОДНА ТАБЛИЦА НА ВЕСЬ ФАЙЛ -----------------------
+struct RstExpect { const char* kind; float hp, kd, rate, flinch; };
+static const RstExpect kRst[] = {
+    { "uEm0100", 1000.0f,  100.0f,  0.3f,  100.0f },   // гоблин
+    { "uEm0101", 2000.0f,  650.0f,  0.3f,  450.0f },   // хобгоблин
+    { "uEm0102", 6000.0f,  2200.0f, 1.5f,  1500.0f },  // гримгоблин
+    { "uEm0103", 14500.0f, 3500.0f, 2.5f,  2800.0f },
+    { "uEm0104", 5500.0f,  2000.0f, 1.5f,  1500.0f },
+    { "uEm0200", 800.0f,   300.0f,  0.3f,  100.0f },   // волк
+    { "uEm0600", 800.0f,   50.0f,   0.1f,  80.0f },    // гарпия
+    { "uEm0400", 2500.0f,  800.0f,  5.0f,  500.0f },   // саурианы
+    { "uEm0401", 3200.0f,  1250.0f, 5.0f,  650.0f },
+    { "uEm0402", 4800.0f,  2000.0f, 5.0f,  1000.0f },
+    { "uEm0403", 8500.0f,  2800.0f, 0.5f,  1800.0f },
+    { "uEm0404", 15000.0f, 4000.0f, 5.0f,  2500.0f },
+    { "uEm0405", 11500.0f, 5000.0f, 1.0f,  4000.0f },
+    { "uEm0406", 13200.0f, 5000.0f, 1.0f,  4000.0f },
+    { "uEm0407", 22000.0f, 6000.0f, 1.0f,  5000.0f },
+    { "uEm0408", 26000.0f, 3500.0f, 1.0f,  5000.0f },
+};
+
+static const RstExpect* RstFor(const char* kind)
+{
+    if (!kind || !kind[0]) return 0;
+    for (size_t k = 0; k < sizeof(kRst) / sizeof(kRst[0]); ++k)
+        if (strcmp(kind, kRst[k].kind) == 0) return &kRst[k];
+    return 0;
+}
+
+static float    s_rstKd = 0.0f, s_rstFlinch = 0.0f;  // числа вида для пометок
+static int      s_blameEvents = 0;   // события, случившиеся УЖЕ ПОД ЗАПИСЬЮ
+static bool     s_wantAutoReport = false;
+// Автоотчёт: каждые kAutoReportStep пригодных улик складываем разбор в лог,
+// не прерывая охоту. Нажимать Stop больше не обязательно — и случайный
+// клик по панели в бою перестаёт быть катастрофой.
+static const int kAutoReportStep = 10;
+static int       s_nextAutoReport = kAutoReportStep;
+static int      s_nStumbleSeen = 0;
+static int      s_nFallSeen    = 0;
+
+// ВНИМАНИЕ: классификация ровно та же, что в PackObserve (§ActIs*Family).
+// Поле 85.73 поймало на этом: «Stumble» по подстроке ловит cEm0100ActRunStumble
+// — это СПОТЫКАНИЕ НА БЕГУ, а не удар. Автозахват сел на хоба, который просто
+// запнулся, и 7100 кадров смотрел, как тот бегает и воет. От удара отшатывание
+// называется DmgStumble, и только оно тратит запас.
+static void AutoReportTick();
+
+static bool ActIsTripLike(const char* a)      // спотыкание — НЕ наше
+{
+    return a && (strstr(a, "RunStumble") != 0 || strstr(a, "SlopeFall") != 0);
+}
+// ПОЛЕ 85.76 НАЗВАЛО НАСТОЯЩИЕ ИМЕНА. У хобов и гоблинов отшатывание от
+// удара называется cEmActDmgShrink, а отлёт — cEmActDmgBlow; DmgStumble в
+// живом бою не встретился ни разу (11 Shrink и 3 Blow за сессию). Оба имени
+// есть в ActMap.Generated.h с пометкой "damage":
+//     { "DmgShrink", "cEmActDmgShrink", 0, ..., "damage" }
+//     { "DmgBlow",   "cEmActDmgBlow",   0, ..., "damage" }
+// PackObserve знает только DmgStumble — поэтому и молчал.
+static bool ActIsStumbleLike(const char* a)
+{
+    return a && (strstr(a, "DmgStumble") != 0 || strstr(a, "DmgShrink") != 0);
+}
+static bool ActIsFallLike(const char* a)
+{
+    return a && (strstr(a, "Tumble") != 0 || strstr(a, "CFall") != 0
+              || strstr(a, "DmgBlow") != 0);
+}
+
+// Для ЗАХВАТА берём любой признак полученного урона, а не только полное
+// отшатывание: запас проседает от каждого попадания, и чем раньше мы сядем
+// на тело, тем больше просадок увидим. Счёт событий в BLAME при этом
+// по-прежнему ведётся строго по DmgStumble/Tumble/CFall.
+static bool ActIsDamageLike(const char* a)
+{
+    if (!a || ActIsTripLike(a)) return false;
+    // Урон по времени ударом не является и запас не тратит. Поле 85.77
+    // село на отравленного хоба в 31.7 м (cEm0100ActDmgPoisonWalk) и
+    // простояло 1571 кадр при одной смене действия.
+    if (strstr(a, "Poison") != 0 || strstr(a, "Burn") != 0
+     || strstr(a, "Drown")  != 0 || strstr(a, "Tar")  != 0) return false;
+    // DmgRestraint — враг схвачен (пешкой или лианой), а не получил удар.
+    // Поле 85.79: последний захват сессии ушёл именно на него.
+    if (strstr(a, "Restraint") != 0) return false;
+    return strstr(a, "Dmg") != 0 || ActIsFallLike(a);
+}
+
 static SlotStat s_stat[kTotalSlots];   // трактовка байт как float
 static SlotStat s_statI[kTotalSlots];  // те же байты как int32
 static float    s_prev[kTotalSlots];
@@ -490,6 +600,81 @@ static bool HoldAdd(uint8_t zone, uint32_t off, char* why, int cap)
     f.zone = zone; f.off = off; f.at = at; f.orig = orig; f.origOk = true;
     Runtime::Mem::WrSafe((void*)at, &s_heldVal, 4);
     return true;
+}
+
+// --- ЗАМОРОЗКА КАНДИДАТА В ЗАПАС ------------------------------------
+//
+// Отдельный механизм от TestWrite: тот создан для множителей темпа и
+// зажимает значение в 0.1…4.0, а запас надо ставить в 65000. Пишем сырые
+// четыре байта каждый кадр и умеем вернуть исходное.
+//
+// Смысл проверки: если заморозить НАСТОЯЩИЙ запас на огромном значении,
+// враг перестанет отшатываться вовсе. Это видно глазом за минуту и не
+// требует ни выборки, ни статистики.
+void PoolRelease();   // объявление: используется в PoolFreeze ниже
+
+struct PoolHold {
+    bool      on;
+    uint32_t  off;
+    uintptr_t at;
+    uint32_t  origBits;
+    uint32_t  valBits;
+};
+static PoolHold s_pool = {};
+
+void PoolFreeze(uint32_t bodyOff, float value, bool asInt)
+{
+    if (!s_body) {
+        lstrcpynA(s_testStatus, "pool: start the probe first", sizeof(s_testStatus));
+        logFile << "AnimProbe: " << s_testStatus << std::endl;
+        return;
+    }
+    if (bodyOff < 0x100) {       // заголовок объекта трогать нельзя
+        lstrcpynA(s_testStatus, "pool: refused - object header", sizeof(s_testStatus));
+        logFile << "AnimProbe: " << s_testStatus << std::endl;
+        return;
+    }
+    PoolRelease();
+    const uintptr_t at = s_body + bodyOff;
+    uint32_t orig = 0;
+    if (!Runtime::Mem::Rd((void*)at, &orig, 4)) {
+        lstrcpynA(s_testStatus, "pool: unreadable", sizeof(s_testStatus));
+        logFile << "AnimProbe: " << s_testStatus << std::endl;
+        return;
+    }
+    uint32_t bits;
+    if (asInt) { const int32_t iv = (int32_t)value; memcpy(&bits, &iv, 4); }
+    else       { memcpy(&bits, &value, 4); }
+
+    s_pool.on = true; s_pool.off = bodyOff; s_pool.at = at;
+    s_pool.origBits = orig; s_pool.valBits = bits;
+    Runtime::Mem::WrSafe((void*)at, &s_pool.valBits, 4);
+
+    float fOrig; memcpy(&fOrig, &orig, 4);
+    sprintf_s(s_testStatus, "pool: FROZEN body +0x%04X = %.0f (%s), was f=%.4g i=%d",
+              (unsigned)bodyOff, value, asInt ? "int" : "float",
+              fOrig, (int)orig);
+    logFile << "AnimProbe: " << s_testStatus << std::endl;
+}
+
+void PoolRelease()
+{
+    if (!s_pool.on) return;
+    if (s_body && s_pool.at == s_body + s_pool.off)
+        Runtime::Mem::WrSafe((void*)s_pool.at, &s_pool.origBits, 4);
+    logFile << "AnimProbe: pool: released body +0x" << std::hex << s_pool.off
+            << std::dec << std::endl;
+    s_pool.on = false;
+}
+
+bool PoolFrozen() { return s_pool.on; }
+
+static void PoolTick()
+{
+    if (!s_pool.on || !s_body) return;
+    const uintptr_t at = s_body + s_pool.off;
+    if (at != s_pool.at) { s_pool.on = false; return; }  // тело сменилось
+    Runtime::Mem::WrSafe((void*)at, &s_pool.valBits, 4);
 }
 
 void TestRevert()
@@ -1345,21 +1530,35 @@ void ScanChildren()
             << std::endl;
 }
 
-void Start(const char* kind)
+// Общее начало замера. forced != 0 — садимся на указанное тело (автозахват),
+// иначе ищем ближайшего к Аризену.
+static void StartCore(const char* kind, uintptr_t forced, bool keepStats = false)
 {
     s_active = false;
     s_body = 0;
     s_frames = 0;
     s_actChanges = 0;
     s_havePrev = false;
-    s_nActs = 0;
     s_actStartFrame = 0;
-    memset(s_acts, 0, sizeof(s_acts));
-    memset(s_stat, 0, sizeof(s_stat));
-    memset(s_statI, 0, sizeof(s_statI));
-    for (uint32_t i = 0; i < kTotalSlots; ++i) {
-        s_stat[i].minV = s_statI[i].minV = 3.0e38f;
-        s_stat[i].maxV = s_statI[i].maxV = -3.0e38f;
+
+    // ПРИ ПЕРЕХВАТЕ СЛЕДУЮЩЕЙ ЦЕЛИ НАКОПЛЕННОЕ НЕ СТИРАЕМ. Тела одного вида
+    // имеют одинаковую раскладку, поэтому улики по смещениям складываются.
+    // Поле 85.76: четыре перезахвата подряд, и каждый обнулял счёт — в итоге
+    // разбор видел только последние секунды боя.
+    if (!keepStats) {
+        s_nStumbleSeen = 0;
+        s_nFallSeen    = 0;
+        s_blameEvents  = 0;
+        s_nActs = 0;
+        memset(s_lastDrop, 0, sizeof(s_lastDrop));
+        memset(s_blame,    0, sizeof(s_blame));
+        memset(s_acts, 0, sizeof(s_acts));
+        memset(s_stat, 0, sizeof(s_stat));
+        memset(s_statI, 0, sizeof(s_statI));
+        for (uint32_t i = 0; i < kTotalSlots; ++i) {
+            s_stat[i].minV = s_statI[i].minV = 3.0e38f;
+            s_stat[i].maxV = s_statI[i].maxV = -3.0e38f;
+        }
     }
 
     // БЛИЖАЙШИЙ к Аризену, а не первый в списке.
@@ -1368,7 +1567,13 @@ void Start(const char* kind)
     // дерёшься с другим. Именно так и вышло: за 2425 кадров проба поймала
     // только FingerLaugh и HeartyLaugh, а прыжковый удар прошёл мимо —
     // его выполнял другой гоблин.
-    uintptr_t body = PickNearestEnemy(kind, s_kindBuf, sizeof(s_kindBuf));
+    uintptr_t body = forced;
+    if (body) {
+        if (!Runtime::Mem::NameOfLiveObject(body, s_kindBuf, sizeof(s_kindBuf)))
+            body = 0;
+    } else {
+        body = PickNearestEnemy(kind, s_kindBuf, sizeof(s_kindBuf));
+    }
 
     if (!body) {
         lstrcpynA(s_status, "AnimProbe: no enemies in the world", sizeof(s_status));
@@ -1392,6 +1597,11 @@ void Start(const char* kind)
         const float dx = bx - ax, dy = by - ay, dz = bz - az;
         dist = sqrtf(dx * dx + dy * dy + dz * dz) / 100.0f;
     }
+    if (const RstExpect* e = RstFor(s_kindBuf)) {
+        s_rstKd = e->kd; s_rstFlinch = e->flinch;
+    } else {
+        s_rstKd = s_rstFlinch = 0.0f;
+    }
     sprintf_s(s_status, "AnimProbe: recording %s 0x%08X at %.1f m, act=%s",
               s_kindBuf, (unsigned)body, dist, s_actName[0] ? s_actName : "?");
     logFile << s_status << std::endl;
@@ -1409,26 +1619,195 @@ void Start(const char* kind)
     }
 }
 
+void Start(const char* kind)
+{
+    s_armed = false;
+    StartCore(kind, 0);
+}
+
+// --- АВТОЗАХВАТ (85.73) ---------------------------------------------
+//
+// Поле 85.72 упёрлось не в прибор, а в прицеливание: во взводе хобов при
+// поддержке циклопа выбрать нужное тело руками невозможно, и зонд дважды
+// садился не на того. Решение: не выбирать вовсе. Прибор ждёт и сам
+// садится на ПЕРВОГО, кто вошёл в отшатывание или в полёт, — то есть на
+// того, кого заведомо бьют.
+void Arm(const char* kind)
+{
+    s_armed = true;
+    s_active = false;
+    s_armTicks = 0;
+    s_lastDmgFrame = 0;
+    s_quitBody = 0;
+    memset(s_lockKind, 0, sizeof(s_lockKind));
+    // s_statKind НЕ чистим: накопленные улики переживают повторное ARM.
+    s_body = 0;
+    lstrcpynA(s_armKind, (kind && kind[0]) ? kind : "", sizeof(s_armKind));
+    sprintf_s(s_status, "AnimProbe: ARMED - waiting for %s to stagger",
+              s_armKind[0] ? s_armKind : "any enemy");
+    logFile << s_status;
+    if (s_statKind[0])
+        logFile << "  (carrying " << s_nStumbleSeen << " flinches, "
+                << s_nFallSeen << " knockdowns for " << s_statKind << ")";
+    logFile << std::endl;
+}
+
+// Один проход по миру: ищем врага, который прямо сейчас отшатнулся.
+static uintptr_t FindStaggeringEnemy()
+{
+    // БЛИЖАЙШИЙ из тех, кого бьют. Поле 85.74 село на хоба в 108 метрах —
+    // там его кто-то задел один раз, и шесть минут ничего не происходило.
+    float ax = 0, ay = 0, az = 0;
+    const bool haveArisen = Runtime::GetArisenWorldPos(&ax, &ay, &az);
+
+    uintptr_t best = 0;
+    float bestD2 = 3.0e38f;
+    for (int i = 0; i < Runtime::g_nAct; ++i) {
+        const Runtime::ActorDump& A = Runtime::g_act[i];
+        if (!A.ptr || A.isDead) continue;
+        if (!A.kind || !Runtime::KindIsEnemy(A.kind)) continue;
+        if (s_armKind[0] && strncmp(A.kind, s_armKind, strlen(s_armKind)) != 0) continue;
+        char nm[48] = {};
+        if (!Runtime::Mem::NameOfLiveObject(A.ptr, nm, sizeof(nm))) continue;
+        if (strncmp(nm, "uEm", 3) != 0) continue;
+        char act[48] = {};
+        if (!Runtime::ReadLiveAct(A.ptr, act, sizeof(act))) continue;
+        if (!ActIsDamageLike(act)) continue;
+        if (A.ptr == s_quitBody) continue;      // этот уже молчал, ищем живую драку
+
+        float d2 = 0.0f;
+        if (haveArisen) {
+            const float dx = A.x - ax, dy = A.y - ay, dz = A.z - az;
+            d2 = dx * dx + dy * dy + dz * dz;
+            const float lim = kLockMaxMetres * 100.0f;
+            if (d2 > lim * lim) continue;      // драка не наша
+        }
+        if (d2 < bestD2) { bestD2 = d2; best = A.ptr; }
+    }
+    return best;
+}
+
 void Tick()
 {
     // Запись слепка A/B идёт независимо от обычного замера: она нужна
     // и тогда, когда проба не запущена.
     if (s_abWhich >= 0) { AbTick(); return; }
 
+    // Режим ожидания: сидим и смотрим, кого ударят.
+    if (s_armed && !s_active) {
+        // Сердцебиение: без него невозможно отличить «никто не попал» от
+        // «прибор вообще не живёт». Поле 85.74 стоило нам целой пачки хобов
+        // именно из-за этой неясности.
+        ++s_armTicks;
+        if ((s_armTicks % 30) == 0)
+            sprintf_s(s_status,
+                      "AnimProbe: ARMED %s, evidence %d usable (%d flinch + %d kd)",
+                      s_armKind[0] ? s_armKind : "any",
+                      s_blameEvents, s_nStumbleSeen, s_nFallSeen);
+        if ((s_armTicks % 600) == 0) {
+            int nEnemy = 0;
+            for (int i = 0; i < Runtime::g_nAct; ++i)
+                if (Runtime::g_act[i].ptr && !Runtime::g_act[i].isDead
+                    && Runtime::g_act[i].kind
+                    && Runtime::KindIsEnemy(Runtime::g_act[i].kind)) ++nEnemy;
+            logFile << "AnimProbe: ARMED, alive and watching " << nEnemy
+                    << " enemies (" << s_armTicks << " frames)" << std::endl;
+        }
+        const uintptr_t hit = FindStaggeringEnemy();
+        if (!hit) return;
+        char lockAct[48] = {};
+        Runtime::ReadLiveAct(hit, lockAct, sizeof(lockAct));
+        logFile << "AnimProbe: AUTO-LOCK on 0x" << std::hex << hit
+                << std::dec << " - it is taking damage (act=" << lockAct << ")"
+                << std::endl;
+        // История просадок относится к ПРЕЖНЕМУ телу: у нового свои значения
+        // в тех же слотах, и разница между телами — не просадка.
+        memset(s_lastDrop, 0, sizeof(s_lastDrop));
+
+        // Улики принадлежат ВИДУ, а не телу и не сеансу. Поле 85.79: после
+        // гибели подопытного владелец нажал ARM заново, и четыре набранных
+        // отшатывания пропали, хотя вид был тот же. Теперь решает только вид.
+        char nameNow[48] = {};
+        Runtime::Mem::NameOfLiveObject(hit, nameNow, sizeof(nameNow));
+        const bool sameKind = (s_statKind[0] != 0
+                            && strcmp(s_statKind, nameNow) == 0);
+        if (!sameKind && s_statKind[0])
+            logFile << "AnimProbe: kind changed " << s_statKind << " -> "
+                    << nameNow << ", statistics reset" << std::endl;
+        StartCore(nullptr, hit, sameKind);
+        if (s_active) {
+            lstrcpynA(s_lockKind, s_kindBuf, sizeof(s_lockKind));
+            lstrcpynA(s_statKind, s_kindBuf, sizeof(s_statKind));
+
+            // ПРИВЯЗКА К ВИДУ ПОСЛЕ ПЕРВОГО ЗАХВАТА.
+            //
+            // Поле 85.80: в смешанной пачке кнопка «любой враг» бросала
+            // прибор между хобом и гоблином, и каждый перескок законно
+            // обнулял улики — три строки "kind changed ... statistics reset"
+            // за сессию, 19 ударов превратились в три. Теперь первый
+            // захват решает, за кем следим до конца забега.
+            if (!s_armKind[0]) {
+                lstrcpynA(s_armKind, s_kindBuf, sizeof(s_armKind));
+                logFile << "AnimProbe: pinned to " << s_armKind
+                        << " for the rest of this run (press ARM again to"
+                        << " choose another species)" << std::endl;
+            }
+            s_lastDmgFrame = 0;
+            // Удар, по которому мы сели, — уже событие: пропускать его
+            // нельзя, иначе первая просадка пройдёт мимо счёта.
+            if (ActIsStumbleLike(lockAct)) ++s_nStumbleSeen;
+            else if (ActIsFallLike(lockAct)) ++s_nFallSeen;
+        }
+        return;
+    }
+
     if (!s_active || !s_body) return;
+
+    // ПОДМЕНА ТЕЛА. Поле 85.74: подопытный погиб, аллокатор отдал ту же
+    // память другим объектам, и зонд 21667 кадров писал статистику по
+    // чужим данным — в списке действий оказались uCmc, rObjCollision,
+    // MtObject и даже uPlayer. Проверяем имя класса каждый кадр.
+    {
+        char nm[48] = {};
+        const bool ok = Runtime::Mem::NameOfLiveObject(s_body, nm, sizeof(nm))
+                     && strncmp(nm, "uEm", 3) == 0
+                     && (!s_lockKind[0] || strcmp(nm, s_lockKind) == 0);
+        if (!ok) {
+            logFile << "AnimProbe: target 0x" << std::hex << s_body << std::dec
+                    << " is gone (now '" << (nm[0] ? nm : "?")
+                    << "') - it died and the memory was reused" << std::endl;
+            s_active = false;
+            s_body = 0;
+            if (s_armed) {
+                lstrcpynA(s_status, "AnimProbe: target died - re-armed",
+                          sizeof(s_status));
+                logFile << s_status << std::endl;
+            }
+            return;
+        }
+    }
 
     static float cur[kTotalSlots];
 
     if (!ReadAll(cur)) {
-        lstrcpynA(s_status, "AnimProbe: body became unreadable, stopped", sizeof(s_status));
-        logFile << s_status << std::endl;
+        logFile << "AnimProbe: body became unreadable" << std::endl;
         s_active = false;
+        if (s_armed) {
+            // Подопытный умер посреди боя — ждём следующего. Накопленное
+            // НЕ сбрасываем: Stop разберёт то, что успели увидеть.
+            s_body = 0;
+            lstrcpynA(s_status, "AnimProbe: target died - re-armed", sizeof(s_status));
+        } else {
+            lstrcpynA(s_status, "AnimProbe: body became unreadable, stopped", sizeof(s_status));
+        }
+        logFile << s_status << std::endl;
         return;
     }
 
     // Удерживаем испытуемые значения: движок может переписывать поле
     // каждый кадр, и разовая запись ничего не покажет.
     HoldTick();
+    PoolTick();
 
     char nowAct[48] = {};
     Runtime::ReadLiveAct(s_body, nowAct, sizeof(nowAct));
@@ -1436,6 +1815,26 @@ void Tick()
         NoteActFinished(s_lastActName, s_frames - s_actStartFrame);
         s_actStartFrame = s_frames;
         ++s_actChanges;
+
+        // Вошли в отшатывание или в полёт? Значит запас только что кончился —
+        // виноват тот, кто перед этим просел.
+        if (ActIsDamageLike(nowAct)) s_lastDmgFrame = s_frames;
+        if (ActIsStumbleLike(nowAct) || ActIsFallLike(nowAct)) {
+            if (ActIsFallLike(nowAct)) ++s_nFallSeen; else ++s_nStumbleSeen;
+            // Событие годится в улику, только если мы писали ДО него хотя бы
+            // окно наблюдения. Захват происходит в момент удара, то есть
+            // просадка уже позади: такое событие попадало в знаменатель, но
+            // обвинить по нему было некого — отсюда потолок 2/4 в поле 85.77.
+            if (s_frames > kBlameWindow) {
+                ++s_blameEvents;
+                s_wantAutoReport = true;
+                const uint32_t from = (uint32_t)(s_frames - kBlameWindow);
+                for (uint32_t i = 0; i < kTotalSlots; ++i)
+                    if (s_lastDrop[i] && s_lastDrop[i] >= from && s_blame[i] < 0xFFFF)
+                        ++s_blame[i];
+            }
+        }
+
         lstrcpynA(s_lastActName, nowAct, sizeof(s_lastActName));
         // Смена действия = гарантированный конец цикла. Предыдущий кадр
         // сравнивать не с чем, пропускаем его, чтобы не засчитать сброс
@@ -1455,6 +1854,10 @@ void Tick()
         const bool nearAct = (s_frames - s_actStartFrame) <= 3;
         Accumulate(s_stat, cur, s_prev, nearAct);
         Accumulate(s_statI, curI, s_prevI, nearAct);
+
+        // Кадр последнего падения — сырьё для улики по времени.
+        for (uint32_t i = 0; i < kTotalSlots; ++i)
+            if (cur[i] < s_prev[i]) s_lastDrop[i] = (uint32_t)s_frames;
     }
 
     memcpy(s_prev, cur, sizeof(s_prev));
@@ -1462,10 +1865,30 @@ void Tick()
     s_havePrev = true;
     ++s_frames;
 
+    if (s_wantAutoReport) { s_wantAutoReport = false; AutoReportTick(); }
+
+    // ТИХАЯ ЦЕЛЬ. В режиме ожидания нет смысла висеть на том, кого перестали
+    // бить: драка ушла к другому телу. Накопленное сохраняем, подопытного
+    // меняем. Без этого один случайный удар занимал прибор на всю сессию.
+    if (s_armed && (s_frames - s_lastDmgFrame) > kQuietFrames) {
+        s_quitBody = s_body;
+        logFile << "AnimProbe: target 0x" << std::hex << s_body << std::dec
+                << " took no damage for " << (kQuietFrames / 60)
+                << " s - re-arming (kept " << s_nStumbleSeen << " stumbles, "
+                << s_nFallSeen << " falls)" << std::endl;
+        s_active = false;
+        s_body = 0;
+        return;
+    }
+
     if ((s_frames % 30) == 0) {
-        sprintf_s(s_status, "AnimProbe: %d frames, %d acts seen, now %s (%d f)",
-                  s_frames, s_nActs, s_lastActName[0] ? s_lastActName : "?",
-                  s_frames - s_actStartFrame);
+        // Главное число на экране — улики, а не кадры: владельцу надо
+        // видеть, набралась выборка или ещё бить.
+        sprintf_s(s_status,
+                  "AnimProbe: %s evidence %d usable (%d flinch + %d kd) | %s",
+                  s_statKind[0] ? s_statKind : "?",
+                  s_blameEvents, s_nStumbleSeen, s_nFallSeen,
+                  s_lastActName[0] ? s_lastActName : "?");
     }
 }
 
@@ -1498,11 +1921,40 @@ static void Accumulate(SlotStat* stat, const float* cur, const float* prev, bool
         }
 }
 
-void Stop()
+// Явный сброс накопленного: нужен при смене вида подопытных вручную.
+void ResetEvidence()
 {
-    s_active = false;
-    TestRevert();   // не оставляем игру с нашим значением
-    if (s_frames < 30) {
+    s_nStumbleSeen = 0;
+    s_nFallSeen    = 0;
+    s_blameEvents  = 0;
+    s_nextAutoReport = kAutoReportStep;
+    memset(s_lastDrop, 0, sizeof(s_lastDrop));
+    memset(s_blame,    0, sizeof(s_blame));
+    memset(s_statKind, 0, sizeof(s_statKind));
+    for (uint32_t i = 0; i < kTotalSlots; ++i) {
+        s_stat[i].minV = s_statI[i].minV = 3.0e38f;
+        s_stat[i].maxV = s_statI[i].maxV = -3.0e38f;
+        s_stat[i].ups = s_stat[i].downs = 0;
+        s_statI[i].ups = s_statI[i].downs = 0;
+    }
+    lstrcpynA(s_status, "AnimProbe: evidence cleared", sizeof(s_status));
+    logFile << s_status << std::endl;
+}
+
+// Печать разбора БЕЗ остановки замера.
+//
+// Поле 85.81 стоило целой сессии: улики набрались (15 отшатываний и 4
+// сбивания, ни одного сброса вида), но владелец не нажал Stop — и всё
+// осталось в памяти, а лог кончился строкой ARMED. Теперь отчёт сам
+// ложится в лог на каждом десятке пригодных улик и при выходе из игры.
+static void Report(bool stopping)
+{
+    if (stopping) {
+        s_active = false;
+        s_armed  = false;
+        TestRevert();   // не оставляем игру с нашим значением
+    }
+    if (s_frames < 30 && s_blameEvents == 0) {
         lstrcpynA(s_status, "AnimProbe: too few frames", sizeof(s_status));
         logFile << s_status << std::endl;
         return;
@@ -1521,7 +1973,9 @@ void Stop()
 
     // --- хронометраж действий -------------------------------------------
     if (s_nActs) {
-        NoteActFinished(s_lastActName, s_frames - s_actStartFrame);
+        // Хронометраж закрываем только при настоящей остановке: иначе каждый
+        // автоотчёт дописывал бы текущее действие ещё раз.
+        if (stopping) NoteActFinished(s_lastActName, s_frames - s_actStartFrame);
         logFile << "  act durations (render frames; game animates at 30/s,"
                 << " so divide by 2 for animation frames):" << std::endl;
         for (int i = 0; i < s_nActs; ++i) {
@@ -1591,8 +2045,8 @@ void Stop()
                           sizeof(s_verdict));
             }
 
-            // Чистый замер становится новым эталоном.
-            if (!s_runHadWrites) {
+            // Чистый замер становится новым эталоном (только при остановке).
+            if (!s_runHadWrites && stopping) {
                 memcpy(s_baseActs, s_acts, sizeof(s_acts));
                 s_nBaseActs = s_nActs;
                 logFile << "  (clean run - stored as the baseline)" << std::endl;
@@ -1705,6 +2159,295 @@ void Stop()
         logFile << "    Test by writing: set 1.5, then measure the act duration."
                 << " A playback rate shortens it; anything else does not."
                 << std::endl;
+    }
+
+    // --- УЛИКА ПО ВРЕМЕНИ: КТО ПРОСЕЛ ПЕРЕД УДАРОМ ----------------------
+    //
+    // Главный раздел с 85.72. Не зависит ни от файловых чисел, ни от
+    // раскладки: чистая корреляция «просел -> враг отшатнулся».
+    {
+        const int seen   = s_nStumbleSeen + s_nFallSeen;
+        const int events = s_blameEvents;   // только те, что под записью
+        logFile << "  BLAME (slots that dropped just before a stagger):"
+                << "  flinches (DmgShrink/DmgStumble) " << s_nStumbleSeen
+                << ", knockdowns (DmgBlow/Tumble) " << s_nFallSeen
+                << "  (of " << seen << " seen, " << events
+                << " usable as evidence)" << std::endl;
+        if (events && events < 6)
+            logFile << "    WARNING: only " << events << " event(s) - the list"
+                    << " below is mostly noise. Twenty-plus hits are needed"
+                    << " before a slot stands out." << std::endl;
+        if (!events) {
+            logFile << "    (no DmgStumble/Tumble on THIS body - nobody landed"
+                    << " a hit on it; RunStumble does not count)" << std::endl;
+        } else {
+            // Берём лучших по числу совпадений; порог — больше половины
+            // событий, иначе это случайность.
+            // Поле 85.82: при 11 пригодных уликах порог «больше половины»
+            // не взял НИКТО, и раздел напечатал пустоту. Это потеря данных:
+            // даже 4/11 — информация. Печатаем верх списка всегда.
+            const int need = 1;
+            int shown = 0;
+            for (int pass = 0; pass < 1; ++pass) {
+                uint16_t top = 0;
+                for (uint32_t i = 0; i < kTotalSlots; ++i)
+                    if (s_blame[i] > top) top = s_blame[i];
+                for (uint16_t want = top; want >= (uint16_t)need && shown < 24; --want) {
+                    for (uint32_t i = 0; i < kTotalSlots && shown < 24; ++i) {
+                        if (s_blame[i] != want) continue;
+                        const SlotStat& q = s_stat[i];
+
+                        // Отсев заведомо чужого. Поле 85.73 показало, чем
+                        // забивается список при двух событиях: мировые
+                        // координаты (3.8e+04 и дрожат каждый кадр), углы
+                        // (-3.14…3.14), скорости (-17…13).
+                        //
+                        //  * запас не бывает отрицательным и не бывает
+                        //    космическим: держим 1 … 20000;
+                        //  * запас меняется от ударов и ползёт обратно, а не
+                        //    пересчитывается каждый кадр физикой.
+                        if (!(q.maxV > 1.0f && q.maxV < 20000.0f)) continue;
+                        if (q.minV < 0.0f) continue;
+                        if ((q.ups + q.downs) > (uint32_t)(s_frames / 4)) continue;
+                        uint8_t zone = (uint8_t)kZoneBody; uint32_t off = i * 4;
+                        if (i >= kBodySlots + kActSlots) { zone = (uint8_t)kZoneChild; off = (i - kBodySlots - kActSlots) * 4; }
+                        else if (i >= kBodySlots)        { zone = (uint8_t)kZoneAct;   off = (i - kBodySlots) * 4; }
+                        char lab[64];
+                        if (zone == (uint8_t)kZoneBody) ParamLabel(off, lab, sizeof(lab));
+                        else                            lab[0] = 0;
+                        // Совпадение с числом вида из .rst — не доказательство,
+                        // но именно пересечение двух независимых признаков
+                        // (виновен всегда И равен файловому числу) и есть то,
+                        // что мы ищем.
+                        const char* mark = "";
+                        if (s_rstKd > 0.0f) {
+                            const float dk = q.maxV - s_rstKd, df = q.maxV - s_rstFlinch;
+                            if ((dk < 0 ? -dk : dk) <= s_rstKd * 0.02f)
+                                mark = "  << MATCHES .rst knockdown";
+                            else if ((df < 0 ? -df : df) <= s_rstFlinch * 0.02f)
+                                mark = "  << MATCHES .rst flinch";
+                        }
+                        if (want == (uint16_t)events && !*mark)
+                            mark = "  << perfect record";
+                        char l[260];
+                        sprintf_s(l, "    %-5s +0x%04X  blamed %u/%d  min %.4g  max %.4g  moves %u%s%s",
+                                  ZoneName(zone), (unsigned)off,
+                                  (unsigned)want, events,
+                                  q.minV, q.maxV,
+                                  (unsigned)(q.ups + q.downs), lab, mark);
+                        logFile << l << std::endl;
+                        ++shown;
+                    }
+                    if (want == 0) break;
+                }
+            }
+            if (!shown)
+                logFile << "    (nothing dropped consistently before the"
+                        << " staggers)" << std::endl;
+            logFile << "    A real pool is blamed EVERY time and its max should"
+                    << " equal the .rst number below." << std::endl;
+        }
+    }
+
+    // --- ЧИСЛА ИЗ .rst: ЗАПАС СБИВАНИЯ И ОТШАТЫВАНИЯ ---------------------
+    //
+    // Версия 2 (после поля 85.70). Первый заход по гоблину дал два слота
+    // со значением 100.0 и ни одного с 0.3 по соседству, то есть файловая
+    // четвёрка в теле подряд НЕ лежит. Выводы поля:
+    //
+    //  * тело гоблина 29632 B целиком внутри читаемых 0x7400 — «не влезло»
+    //    отпадает, запас либо не сырой float, либо живёт в дочернем объекте;
+    //  * пара из charparam (+0x0E0/+0x0E4) в теле уже НЕ 100: наш же тюнер
+    //    пишет туда ×rankStand (у солдата 130). Ориентироваться на неё нельзя;
+    //  * печать констант по телу показывает ТОЛЬКО ровную 1.0, поэтому
+    //    скорость восстановления 0.3 в прошлый лог не попала в принципе.
+    //
+    // Отсюда три поиска вместо одного: шаблон «как в файле», отдельный
+    // список скоростей и трактовка байт как int32.
+    {
+        const RstExpect* exp = RstFor(s_kindBuf);
+
+        logFile << "  .rst ENDURANCE candidates (file numbers found in memory):"
+                << std::endl;
+        if (!exp) {
+            logFile << "    (no .rst table for " << s_kindBuf
+                    << " - add it to kRst in AnimProbe.cpp)" << std::endl;
+        } else {
+        logFile << "    file record: hp " << exp->hp << ", knockdown " << exp->kd
+                << ", rate " << exp->rate << ", flinch " << exp->flinch
+                << std::endl;
+
+        // Общая мерка: 0.1 % или абсолютный минимум для мелких чисел.
+        struct Near {
+            static bool eq(float a, float b)
+            {
+                const float d = (a > b) ? (a - b) : (b - a);
+                const float tol = (b < 0.0f ? -b : b) * 0.001f;
+                return d <= (tol > 0.0005f ? tol : 0.0005f);
+            }
+            static bool live(float v) { return v < 3.0e37f && v > -3.0e37f; }
+        };
+        static const struct { uint8_t z; const char* n; } kZ[3] =
+            { { (uint8_t)kZoneBody, "body" }, { (uint8_t)kZoneAct, "act" },
+              { (uint8_t)kZoneChild, "child" } };
+        (void)kZ;
+
+        // --- 1. ШАБЛОН «КАК В ФАЙЛЕ» ------------------------------------
+        //
+        // Самый избирательный поиск: подряд kd, rate, flinch, rate. Ложное
+        // срабатывание требует четырёх совпадений кряду, такого в шуме
+        // практически не бывает. Отдельно отмечаем hp слева — в файле он
+        // стоит непосредственно перед запасом.
+        {
+            logFile << "    [1] file layout (kd, rate, flinch, rate in a row):"
+                    << std::endl;
+            int n1 = 0;
+            for (uint32_t i = 0; i + 3 < kTotalSlots && n1 < 12; ++i) {
+                if (!Near::live(s_stat[i].maxV)) continue;
+                if (!Near::eq(s_stat[i].maxV,     exp->kd))     continue;
+                if (!Near::eq(s_stat[i + 1].maxV, exp->rate))   continue;
+                if (!Near::eq(s_stat[i + 2].maxV, exp->flinch)) continue;
+                if (!Near::eq(s_stat[i + 3].maxV, exp->rate))   continue;
+                uint8_t zone = (uint8_t)kZoneBody; uint32_t off = i * 4;
+                if (i >= kBodySlots + kActSlots) { zone = (uint8_t)kZoneChild; off = (i - kBodySlots - kActSlots) * 4; }
+                else if (i >= kBodySlots)        { zone = (uint8_t)kZoneAct;   off = (i - kBodySlots) * 4; }
+                const bool hpLeft = (i > 0) && Near::eq(s_stat[i - 1].maxV, exp->hp);
+                char l[220];
+                sprintf_s(l, "        %-5s +0x%04X  FILE QUAD%s%s",
+                          ZoneName(zone), (unsigned)off,
+                          hpLeft ? "  + maxHP on the left - this is the record" : "",
+                          (s_stat[i].ups || s_stat[i].downs) ? "  << CHANGED" : "");
+                logFile << l << std::endl;
+                ++n1;
+            }
+            if (!n1) logFile << "        (none - the record is not laid out as"
+                             << " in the file)" << std::endl;
+        }
+
+        // --- 2. ОТДЕЛЬНО ЗАПАСЫ И ОТДЕЛЬНО СКОРОСТИ ---------------------
+        //
+        // Если подряд не лежит, ищем части по отдельности. Скорость
+        // восстановления печатаем ОБЯЗАТЕЛЬНО: прошлый лог её не показал,
+        // потому что печать констант по телу держит только ровную 1.0,
+        // а 0.3 для нас — главный отпечаток вида.
+        {
+            logFile << "    [2] pools and recovery rates, separately:" << std::endl;
+            int nP = 0, nR = 0;
+            for (uint32_t i = 0; i < kTotalSlots && (nP < 24 || nR < 24); ++i) {
+                const float v = s_stat[i].maxV;
+                if (!Near::live(v)) continue;
+                const bool isKd = Near::eq(v, exp->kd);
+                const bool isFl = Near::eq(v, exp->flinch);
+                const bool isRt = Near::eq(v, exp->rate);
+                if (!isKd && !isFl && !isRt) continue;
+                if (isRt && nR >= 24) continue;
+                if ((isKd || isFl) && nP >= 24) continue;
+                if (isRt) ++nR; else ++nP;
+
+                uint8_t zone = (uint8_t)kZoneBody; uint32_t off = i * 4;
+                if (i >= kBodySlots + kActSlots) { zone = (uint8_t)kZoneChild; off = (i - kBodySlots - kActSlots) * 4; }
+                else if (i >= kBodySlots)        { zone = (uint8_t)kZoneAct;   off = (i - kBodySlots) * 4; }
+                char lab[64];
+                if (zone == (uint8_t)kZoneBody) ParamLabel(off, lab, sizeof(lab));
+                else                            lab[0] = 0;
+                // Ровный рост без падений — таймер, а не запас. Поле 85.74:
+                // +0x079C показал ровно 450 просто потому, что это отсчёт
+                // 15 секунд шагом 0.5 за кадр (15 * 30 = 450).
+                const bool ramp = (s_stat[i].ups > s_stat[i].downs * 10);
+                char l[240];
+                sprintf_s(l, "        %-5s +0x%04X = %-10.4f %-9s%s%s",
+                          ZoneName(zone), (unsigned)off, v,
+                          isRt ? "RATE" : (isKd ? "knockdown" : "flinch"),
+                          ramp ? "<< RAMP (timer, not a pool)"
+                               : ((s_stat[i].ups || s_stat[i].downs) ? "<< CHANGED" : "(static)"),
+                          lab);
+                logFile << l << std::endl;
+
+                char nb[240];
+                int n = sprintf_s(nb, "              around:");
+                for (int d = -4; d <= 4 && n > 0 && n < 200; ++d) {
+                    const int j = (int)i + d;
+                    if (j < 0 || j >= (int)kTotalSlots) continue;
+                    const float w = s_stat[j].maxV;
+                    if (!Near::live(w)) continue;
+                    n += sprintf_s(nb + n, sizeof(nb) - n, d ? " %.4g" : " [%.4g]", w);
+                }
+                logFile << nb << std::endl;
+            }
+            if (!nP && !nR) logFile << "        (none)" << std::endl;
+        }
+
+        // --- 3. ТЕ ЖЕ БАЙТЫ КАК ЦЕЛЫЕ -----------------------------------
+        //
+        // Запас вполне может храниться целым: 100 как int32 читается во
+        // float как денормал 1.4e-43 и мимо первых двух поисков проходит.
+        {
+            logFile << "    [3] same bytes as int32 (pool may be integer):"
+                    << std::endl;
+            int n3 = 0;
+            for (uint32_t i = 0; i < kTotalSlots && n3 < 20; ++i) {
+                const float v = s_statI[i].maxV;
+                if (!Near::live(v)) continue;
+                if (!Near::eq(v, exp->kd) && !Near::eq(v, exp->flinch)) continue;
+                uint8_t zone = (uint8_t)kZoneBody; uint32_t off = i * 4;
+                if (i >= kBodySlots + kActSlots) { zone = (uint8_t)kZoneChild; off = (i - kBodySlots - kActSlots) * 4; }
+                else if (i >= kBodySlots)        { zone = (uint8_t)kZoneAct;   off = (i - kBodySlots) * 4; }
+                char l[220];
+                sprintf_s(l, "        %-5s +0x%04X = %-8.0f %s  %s",
+                          ZoneName(zone), (unsigned)off, v,
+                          Near::eq(v, exp->kd) ? "knockdown" : "flinch",
+                          (s_statI[i].ups || s_statI[i].downs) ? "<< CHANGED" : "(static)");
+                logFile << l << std::endl;
+                ++n3;
+            }
+            if (!n3) logFile << "        (none)" << std::endl;
+        }
+
+        // --- [4] СЫРОЕ ОКНО ВОКРУГ СОВПАДЕНИЙ -------------------------
+        //
+        // Поле 85.82 дало два конкретных адреса у хоба: int32 650 на
+        // body +0x6128 и float 450 на body +0x5F84. Чтобы понять, запас
+        // это или совпадение, нужна раскладка вокруг них: где максимум,
+        // где текущее, где скорость. Печатаем окно обоими взглядами.
+        {
+            logFile << "    [4] raw window around the matches:" << std::endl;
+            int nWin = 0;
+            for (uint32_t i = 0; i < kBodySlots && nWin < 4; ++i) {
+                const float fv = s_stat[i].maxV, iv = s_statI[i].maxV;
+                const bool hitF = Near::live(fv)
+                               && (Near::eq(fv, exp->kd) || Near::eq(fv, exp->flinch));
+                const bool hitI = Near::live(iv)
+                               && (Near::eq(iv, exp->kd) || Near::eq(iv, exp->flinch));
+                if (!hitF && !hitI) continue;
+                ++nWin;
+                char hdr[160];
+                sprintf_s(hdr, "      around body +0x%04X (%s view):",
+                          (unsigned)(i * 4), hitI ? "int32" : "float");
+                logFile << hdr << std::endl;
+                const int lo = (i >= 8) ? (int)i - 8 : 0;
+                for (int j = lo; j < (int)i + 9 && j < (int)kBodySlots; ++j) {
+                    const SlotStat& sf = s_stat[j];
+                    const SlotStat& si = s_statI[j];
+                    char l[200];
+                    sprintf_s(l,
+                        "        +0x%04X  f=%-12.4g i=%-10.0f  moves %u%s",
+                        (unsigned)(j * 4),
+                        Near::live(sf.maxV) ? sf.maxV : 0.0f,
+                        Near::live(si.maxV) ? si.maxV : 0.0f,
+                        (unsigned)(sf.ups + sf.downs),
+                        (j == (int)i) ? "   <<< match" : "");
+                    logFile << l << std::endl;
+                }
+            }
+            if (!nWin) logFile << "      (no matches to window)" << std::endl;
+        }
+
+        logFile << "    Decisive test is the diff: the same offset must read "
+                << exp->kd << " here and a different species number elsewhere."
+                << std::endl;
+        logFile << "    NOTE: charparam +0x0E0/+0x0E4 are NOT the .rst pool and"
+                << " our own tuner scales them by rankStand." << std::endl;
+        }
     }
 
     // --- целочисленные счётчики -----------------------------------------
@@ -1843,6 +2586,20 @@ void Stop()
 
     sprintf_s(s_status, "AnimProbe: %d candidates, %d frames - see log",
               nb, s_frames);
+}
+
+void Stop()
+{
+    Report(true);
+}
+
+static void AutoReportTick()
+{
+    if (s_blameEvents < s_nextAutoReport) return;
+    s_nextAutoReport = s_blameEvents + kAutoReportStep;
+    logFile << "AnimProbe: === AUTO-REPORT at " << s_blameEvents
+            << " usable events (hunt continues) ===" << std::endl;
+    Report(false);
 }
 
 int         CandidateCount()      { return s_nCand; }

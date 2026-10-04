@@ -34,7 +34,14 @@ TMP="$(mktemp -d /tmp/dual_observe_8416.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.' "$TAG"
+# 85.66: вместо пина «84.» — структура тега + согласие с README (не устаревает).
+tag_val="$(sed -n 's/.*MOD_BUILD_TAG[[:space:]]*"\([^"]*\)".*/\1/p' "$TAG" | head -1)"
+case "$tag_val" in
+  [0-9]*.[0-9]*) ;;
+  *) echo "BuildTag.h: тег не похож на билд: '$tag_val'" >&2; exit 1;;
+esac
+grep -Fq "$tag_val" "$README" || {
+  echo "README не упоминает текущий тег '$tag_val'" >&2; exit 1; }
 grep -Fq '84.15-goblin-grab-hold' "$README"
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.16-dual-observe' "$README"

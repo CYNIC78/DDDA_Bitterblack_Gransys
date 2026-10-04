@@ -31,6 +31,9 @@ struct Status {
 Status GetStatus(); // compatibility: first active/assigned Nexus
 Status GetStatusFor(int slot); // independent per-pawn status (1..3)
 void   SetEnabled(bool on);
+// 85.63: сводка сессии (замеры и объявления цели) — одной строкой в полевой
+// пакет. Зовётся при выгрузке, до печати пакета.
+void   SessionSummary();
 
 } // namespace Nexus
 } // namespace PawnAI

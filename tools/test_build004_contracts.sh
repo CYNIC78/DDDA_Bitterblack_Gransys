@@ -22,7 +22,11 @@ readme = (root / 'README.md').read_text(encoding='utf-8')
 doc = (root / 'docs/archive/MONSTER_TARGETING_PROTOTYPE.md').read_text(encoding='utf-8')
 dinput = (root / 'src/dinput8.cpp').read_text(encoding='utf-8')
 
-assert '84.' in tag
+# 85.66: вместо пина «84.» — структура тега (не устаревает).
+import re as _re_tag
+_m_tag = _re_tag.search(r'#define\s+MOD_BUILD_TAG\s+"([^"]+)"', tag)
+assert _m_tag, 'BuildTag.h: не найден MOD_BUILD_TAG'
+assert _re_tag.match(r'^\d+\.\d+', _m_tag.group(1)), 'странный тег: %r' % _m_tag.group(1)
 worldscan = (root / 'src/runtime/WorldScan.cpp').read_text(encoding='utf-8')
 assert 'KindIsLiveEnemyBody(nm)' in worldscan
 assert 'KindIsLiveEnemyBody(kind)' in worldscan
@@ -160,7 +164,9 @@ for slot in ('Arisen', 'MainPawn', 'Hired1', 'Hired2'):
     assert f'identity-{slot}-absent' in aggro
 assert 'fixed-slot identity availability' in aggro
 assert 'DirectorIdentityExactNow()' in aggro
-assert 'if (director && !DirectorIdentityExactNow())' in aggro
+# 85.66: 85.33 — личность директора спрашивают только для главного канала
+# (вторичный канал живёт без него, иначе «щитовики» теряли приказ).
+assert 'if (orderScope == kOrderPrimary)   return DirectorIdentityExactNow();' in aggro
 assert 'LiveWolfCardMode' in aggro
 assert 'kCombatPinValue' in aggro
 assert 'not live 1/4 or 1/2' in aggro
@@ -170,7 +176,8 @@ assert 'leave-engaged' in aggro
 assert 'IsDirectorKind' in aggro
 assert 'uEm0101' in aggro[aggro.index('static bool IsDirectorKind'):aggro.index('static bool IsGoblinFamily')]
 assert '  left ' in aggro
-assert 'if (director && CombatOccupiesOther' in aggro
+# 85.66: 85.33 — этот вопрос задаёт КАНАЛ ПРИКАЗА (orderScope), а не директор.
+assert 'orderScope && CombatOccupiesOther' in aggro
 assert 's_pinMember = MEMBER_NONE;' in aggro
 assert 'product lease owns the actuator' in aggro
 assert 'TryGoblinEmptyCardWake' in aggro

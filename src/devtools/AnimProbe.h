@@ -57,6 +57,15 @@ void ScanChildren();
 // Начать замер по конкретному телу. Пустой kind = первый попавшийся враг.
 void Start(const char* kind);
 
+// Автозахват: прибор ждёт и сам садится на первого врага, который
+// отшатнулся или улетел, — прицеливаться руками не нужно. kind = nullptr
+// или "" — любой враг, иначе префикс вида ("uEm0101").
+void Arm(const char* kind);
+
+// Сброс накопленных улик (они живут между целями и между нажатиями Arm,
+// пока вид подопытных не сменился).
+void ResetEvidence();
+
 // Дополнительно следить за дочерним объектом по смещению в теле.
 // 0 = не следить.
 void WatchChild(uint32_t bodyOffset);
@@ -100,6 +109,14 @@ void     SuspectsApply(float value);
 void  TestApplyIndex(int i, float value);        // по кнопке кандидата
 void  TestWrite(uint32_t bodyOffset, float value); // ручное смещение в теле
 void  TestRevert();
+
+// --- заморозка кандидата в запас ---------------------------------------
+// Ставит сырые 4 байта по смещению в теле и удерживает каждый кадр.
+// Если заморозить настоящий запас на большом значении, враг перестанет
+// отшатываться — проверка видна глазом и не требует статистики.
+void  PoolFreeze(uint32_t bodyOffset, float value, bool asInt);
+void  PoolRelease();
+bool  PoolFrozen();
 bool  TestActive();
 int   TestHeldCount();                            // сколько полей удерживаем
 const char* TestStatus();

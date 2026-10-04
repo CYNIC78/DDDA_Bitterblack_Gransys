@@ -194,6 +194,10 @@ python3 tools/package_build.py
 1. читает `MOD_BUILD_TAG` из `src/BuildTag.h`;
 2. собирает zip из отслеживаемых файлов (`git ls-files`) — без `.git`,
    мусора сборки (`Release/`, `obj/`, `__pycache__` и т.п.) и чужих zip;
+   **рабочие конфиги игрока в архив не кладутся** (`OWNER_CONFIGS`):
+   `ddda_ai_overhaul.ini`, `ddda_entities.ini`, `ddda_pawn_ai_profiles.ini` —
+   распаковка поверх папки игры затирает ручные значения. В архиве есть
+   `ddda_ai_overhaul.default.ini` (эталон) и `ddda_music_map.example.ini`;
 3. пересоздаёт `MANIFEST.txt` (заголовок + состав билда из секции
    «Текущий milestone» в `CHANGELOG.md`) и `MANIFEST.sha256` (контрольные
    суммы всех файлов пакета).

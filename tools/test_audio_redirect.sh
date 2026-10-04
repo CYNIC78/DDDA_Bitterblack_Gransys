@@ -17,7 +17,11 @@ import sys
 root = Path(sys.argv[1])
 ar = (root / 'src/audio/AudioRedirect.cpp').read_text(encoding='utf-8')
 tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
-assert '84.' in tag
+# 85.66: вместо пина «84.» — структура тега (не устаревает).
+import re as _re_tag
+_m_tag = _re_tag.search(r'#define\s+MOD_BUILD_TAG\s+"([^"]+)"', tag)
+assert _m_tag, 'BuildTag.h: не найден MOD_BUILD_TAG'
+assert _re_tag.match(r'^\d+\.\d+', _m_tag.group(1)), 'странный тег: %r' % _m_tag.group(1)
 # 84.95: recovery pipeline (голос каждой смены состояния — FIX_RULES 4б)
 assert 'InvalidateFound' in ar
 assert 'INVALIDATE' in ar

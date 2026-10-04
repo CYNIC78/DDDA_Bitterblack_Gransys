@@ -2,6 +2,8 @@
 #include "NexusDoctrine.h"
 #include "NexusPolicy.h"
 #include "GuardianDoctrine.h" // единая карточка базового стека/ранга каждой пешки
+#include "DoctrineAnnounce.h"          // 85.63: окно тишины на объявление цели
+#include "../runtime/LogMemSession.h" // 85.63: сводка — в полевой пакет
 #include "PawnPersona.h"
 #include "PartyRescueProtocol.h"
 #include "PawnAI_Common.h"
@@ -24,6 +26,14 @@ using Runtime::Mem::NameOfLiveObjectSafe;
 static bool s_enabled = true;
 static bool s_probeLog = true; // [pawnAI] nexusProbeLog (events only)
 
+// 85.63: СЧЁТЧИКИ СЕССИИ — вне состояния слота (Nexus::Shutdown() его обнуляет,
+// а сводка печатается после выгрузки модулей). Как у Guardian: сколько замеров
+// начато/завершено и сколько объявлений цели свернуло окно тишины.
+static int s_probesStarted   = 0;
+static int s_probesCompleted = 0;
+static int s_targetAnnounces = 0;
+static int s_targetMuted     = 0;
+
 // У каждого исполнителя своя привязка, latch и последняя цель. Роль
 // выбирается его собственным стеком; две Nexus могут охранять одну пешку.
 struct NexusState {
@@ -39,6 +49,12 @@ struct NexusState {
     uintptr_t probeBody;       // one fixed enemy for the whole 2.5s window
     DWORD probeStartMs, probeNextMs;
     float probePawnEnemyM, probePartnerEnemyM;
+    // 85.63: СОСТОЯНИЕ НА СТАРТЕ (как у Guardian): замер печатает оба конца —
+    // было -> стало — одной строкой, поэтому старт надо запомнить, а не печатать.
+    int   probeCode;
+    int   probePartnerSlot;
+    char  probeAct[48];
+    AnnounceThrottle announce; // 85.63: окно тишины на объявление цели
     NexusPolicy::Assignment assignment;
     uintptr_t actorBody, actorRecord;
     DWORD lastEncounterMs;
@@ -49,9 +65,10 @@ struct NexusState {
         pawnPartnerDist(1e9f), threatsInZone(0), targetThreatBody(0),
         criticalThreat(false), lastLoggedTarget(0), probeBody(0),
         probeStartMs(0), probeNextMs(0), probePawnEnemyM(0),
-        probePartnerEnemyM(0), actorBody(0),
+        probePartnerEnemyM(0), probeCode(-1), probePartnerSlot(-1), actorBody(0),
         actorRecord(0), lastEncounterMs(0), encounterSeen(false) {
         memset(targetThreatKind, 0, sizeof(targetThreatKind));
+        memset(probeAct, 0, sizeof(probeAct));
         memset(emergencyLatch, 0, sizeof(emergencyLatch));
         memset(candidateBody, 0, sizeof(candidateBody));
         memset(candidateRecord, 0, sizeof(candidateRecord));
@@ -149,6 +166,20 @@ void Shutdown()
         s_state[slot] = NexusState();
 }
 
+// 85.63: СВОДКА ДЛЯ ПОЛЕВОГО ПАКЕТА. Читает только счётчики уровня файла —
+// то есть её можно звать и после Shutdown() (он обнуляет состояние слотов, а
+// счётчики сессии не трогает).
+void SessionSummary()
+{
+    char l[220];
+    sprintf_s(l, "NexusDoctrine: session summary probes=%d completed=%d unpaired=%d"
+                 " announces=%d muted=%d",
+              s_probesStarted, s_probesCompleted,
+              s_probesStarted - s_probesCompleted,
+              s_targetAnnounces, s_targetMuted);
+    LogMem::SessionNote(l);
+}
+
 void Init()
 {
     Shutdown();
@@ -224,12 +255,22 @@ static void NexusProbeResult(int slot, NexusState& st,
         partnerEnemy = Dist3D(partner.x, partner.y, partner.z,
                               threat->x, threat->y, threat->z) / 100.0f;
     }
+    ++s_probesCompleted;
     if (s_probeLog) {
-        char line[320];
-        sprintf_s(line, "NexusDoctrine: [%s] PROBE RESULT enemy 0x%08X %s P-E %.1f->%.1fm A-E %.1f->%.1fm code %d act %s target %s0x%08X",
+        // 85.63: одна строка на замер, оба конца в ней. Партнёр берётся из
+        // записи старта: за окно назначение могло смениться, и подставлять
+        // текущего было бы подменой наблюдения.
+        char line[400];
+        sprintf_s(line, "NexusDoctrine: [%s] PROBE enemy 0x%08X partner %s %s"
+                        " P-E %.1f->%.1fm A-E %.1f->%.1fm code %d->%d act %s->%s"
+                        " target %s0x%08X",
                   Runtime::PartyCombatSlotName(slot), (unsigned)st.probeBody,
+                  (st.probePartnerSlot >= Runtime::PARTY_MAIN &&
+                   st.probePartnerSlot <= Runtime::PARTY_HIRED2)
+                       ? Runtime::PartyCombatSlotName(st.probePartnerSlot) : "none",
                   threat ? "seen" : "gone", st.probePawnEnemyM, pawnEnemy,
-                  st.probePartnerEnemyM, partnerEnemy, code,
+                  st.probePartnerEnemyM, partnerEnemy,
+                  st.probeCode, code, st.probeAct[0] ? st.probeAct : "?",
                   act[0] ? act : "?", targetOk ? "" : "unreadable/",
                   (unsigned)current);
         logFile << line << std::endl;
@@ -348,17 +389,12 @@ static void TickOne(int slot, NexusState& st, const Runtime::PartyCombatSnapshot
                 st.probeStartMs = probeNow;
                 st.probePawnEnemyM = Dist3D(px, py, pz, t.x, t.y, t.z) / 100.0f;
                 st.probePartnerEnemyM = Dist3D(ax, ay, az, t.x, t.y, t.z) / 100.0f;
-                char act[48] = {};
-                Runtime::ReadLiveAct(nexusBody, act, sizeof(act));
-                int32_t code = -1;
-                Runtime::PawnPriorityCodeFor(nexusBody, &code);
-                char line[280];
-                sprintf_s(line, "NexusDoctrine: [%s] PROBE START enemy 0x%08X partner %s P-E %.1fm A-E %.1fm code %d act %s",
-                          nexusRoleName, (unsigned)bestThreatBody,
-                          Runtime::PartyCombatSlotName(partnerSlot),
-                          st.probePawnEnemyM, st.probePartnerEnemyM,
-                          code, act[0] ? act : "?");
-                logFile << line << std::endl;
+                // 85.63: НА СТАРТЕ МОЛЧИМ — запоминаем состояние. Измерение
+                // печатает одну строку на финише окна (см. NexusProbeResult).
+                Runtime::ReadLiveAct(nexusBody, st.probeAct, sizeof(st.probeAct));
+                Runtime::PawnPriorityCodeFor(nexusBody, &st.probeCode);
+                st.probePartnerSlot = partnerSlot;
+                ++s_probesStarted;
                 break;
             }
         }
@@ -369,12 +405,19 @@ static void TickOne(int slot, NexusState& st, const Runtime::PartyCombatSnapshot
 
         if (st.lastLoggedTarget != st.targetThreatBody) {
             st.lastLoggedTarget = st.targetThreatBody;
-            char l[256];
-            sprintf_s(l, "NexusDoctrine: [%s] PROACTIVE TARGET -> %s 0x%08X (%s) dist=%.1fm (pawn-partner=%.1fm, partner: %s [%s])",
-                      nexusRoleName, criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
-                      (unsigned)st.targetThreatBody, st.targetThreatKind, minThreatDist,
-                      st.pawnPartnerDist, Runtime::PartyCombatSlotName(partnerSlot), st.partnerRole);
-            logFile << l << std::endl;
+            // 85.63: качели между двумя телами больше не печатаются (см.
+            // DoctrineAnnounce.h). Цель ставится как и раньше — молчит строка.
+            if (st.announce.Allow(st.targetThreatBody, MsNow())) {
+                ++s_targetAnnounces;
+                char l[256];
+                sprintf_s(l, "NexusDoctrine: [%s] PROACTIVE TARGET -> %s 0x%08X (%s) dist=%.1fm (pawn-partner=%.1fm, partner: %s [%s])",
+                          nexusRoleName, criticalThreat ? "CRITICAL-MELEE" : "PREEMPT-INTERCEPT",
+                          (unsigned)st.targetThreatBody, st.targetThreatKind, minThreatDist,
+                          st.pawnPartnerDist, Runtime::PartyCombatSlotName(partnerSlot), st.partnerRole);
+                logFile << l << std::endl;
+            } else {
+                ++s_targetMuted;
+            }
         }
     } else {
         if (st.active) {

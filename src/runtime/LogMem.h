@@ -22,6 +22,10 @@ void SetWorkerThreadId(DWORD tid);
 
 // 85.25: сколько нарушений доступа перехвачено за сессию (для итоговой сводки).
 unsigned VEH_Faults();
+// 85.62: сколько раз сработала защита и сколько разных площадок найдено — для
+// итоговой строки сессии, чтобы не печатать «[VEH] dump #N» на каждый случай.
+unsigned VEH_Dumps();
+unsigned VEH_Sites();
 
 } // namespace LogMem
 

@@ -6,6 +6,7 @@
 #include "SpeciesCard.h"
 #include "../CombatBus.h"
 #include "../EnemyTuner.h"
+#include "../runtime/LogMemSession.h"   // 85.63: сводки — в полевой пакет
 #include "../runtime/MonsterTempo.h"
 #ifndef DDDA_PACKOBSERVE_PORTABLE
 #include "../runtime/Runtime.h"
@@ -484,15 +485,55 @@ static Member* AddMember(uintptr_t body, const char* kind,
     return &m;
 }
 
+// 85.62: РАЗМЕР В СТРОКАХ СОБЫТИЙ.
+//
+// Что было не так. Печаталось ЖИВОЕ чтение масштаба. У тел, которые пришли с
+// загрузкой мира, оно показывает ровно 1.000 — и в поле 85.58 двадцать строк
+// смерти/ухода врали про размер: «scaleH=1» там, где ступень выдала 1.105.
+// Теперь печатаем ВЫДАННЫЙ размер (он заморожен за жильцом и верен всегда), а
+// живое чтение показываем только если оно разошлось с выданным: это уже улика
+// («движок сдвинул размер»), и она заметна сразу.
+static void SizeText(char* out, int cap, uintptr_t body, bool valid, float live)
+{
+    if (!out || cap <= 0) return;
+    const float issued = EnemyTuner::IssuedSizeFor(body);
+    if (issued > 0.0f) {
+        if (valid && fabsf(live - issued) > 0.005f)
+            sprintf_s(out, (size_t)cap, "size=%.3f issued, live %.3f (differs)",
+                      issued, live);
+        else
+            sprintf_s(out, (size_t)cap, "size=%.3f issued", issued);
+    } else if (valid) {
+        sprintf_s(out, (size_t)cap, "size=%.3f live", live);
+    } else {
+        lstrcpynA(out, "size=?", cap);
+    }
+}
+
+// 85.62: имя похоже на СУЩЕСТВО, а не на служебный объект движка.
+//
+// В поле 85.60 строка ухода дала «pools=stale(now uOmObj7515)»: наша проверка
+// 85.58 считала конкретным чужим классом ЛЮБОЕ имя на «u», а uOmObj7515 — это
+// служебный объект, не монстр. Ровно та же ошибка, что была с MtObject: прибор
+// кричал там, где не знал. Существа у игры называются uEmXXXX (плюс варианты с
+// суффиксом), остальное конкретным классом НЕ считаем.
+static bool LooksLikeCreatureKind(const char* name)
+{
+    if (!name || !name[0]) return false;
+    if (name[0] == 'u' && name[1] == 'E' && name[2] == 'm') return true;   // uEm0100
+    const char* e = strstr(name, "Enemy");
+    return e != nullptr;                                                   // на всякий случай
+}
+
 static void LogJoin(const Member& m)
 {
-    logFile << "PackObserve: JOIN @0x" << std::hex << m.body << std::dec
-            << " kind=" << m.kind
-            << " act=" << (m.act[0] ? m.act : "?")
-            << " role=" << PackRoleName(m.role)
-            << " scaleH=" << (m.scaleValid ? m.scaleH : -1.0f)
-            << " dist=" << m.distM << "m"
-            << std::endl;
+    char sz[64];
+    SizeText(sz, (int)sizeof(sz), m.body, m.scaleValid, m.scaleH);
+    char line[260];
+    sprintf_s(line, "PackObserve: JOIN @0x%08X kind=%s act=%s role=%s %s dist=%.1fm",
+              (unsigned)m.body, m.kind[0] ? m.kind : "?",   // 85.66: kind — массив, адрес не бывает NULL
+              m.act[0] ? m.act : "?", PackRoleName(m.role), sz, m.distM);
+    logFile << line << std::endl;
 }
 
 // 85.39: уход тела из кадра. Мёртвое тело движок выбрасывает из скана, и
@@ -557,11 +598,15 @@ static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap
     //   * конкретный чужой класс (uEm0200, uHumanEnemy…) -> stale, числа не печатаем;
     //   * имя не разрешилось (базовый класс, пусто)      -> ранг наш, а запасы
     //     помечаем unverified: читать их сейчас небезопасно, но и врать нечем.
+    // 85.62: КОНКРЕТНЫЙ — значит имя СУЩЕСТВА. Поле 85.60 дало «stale(now
+    // uOmObj7515)»: служебный объект движка принимался за чужого монстра, и
+    // верные данные опять прятались. Теперь имя, не похожее на существо, даёт
+    // unverified — но с самим именем в скобках, чтобы не терять наблюдение.
     bool staleSlot = false, unverified = false;
     if (LiveKindOf(body, live, (int)sizeof(live))) {
-        const bool concrete = (live[0] == 'u' && live[1] != 0);
-        if (concrete && !SameSpeciesBase(live, kind)) staleSlot = true;
-        else if (!concrete) unverified = true;
+        const bool creature = LooksLikeCreatureKind(live);
+        if (creature && !SameSpeciesBase(live, kind)) staleSlot = true;
+        else if (!creature) unverified = true;
     } else {
         unverified = true;      // имени нет вовсе — тоже не улика
     }
@@ -581,7 +626,10 @@ static void AppendRankPools(uintptr_t body, const char* kind, char* out, int cap
     const char* sn = (setIdx >= 0) ? Runtime::Tempo::PackSetName(setIdx) : nullptr;
     if (sn && n > 0) n += sprintf_s(out + n, (size_t)(cap - n), " set=%s", sn);
     if (unverified) {
-        if (n > 0) sprintf_s(out + n, (size_t)(cap - n), " pools=unverified");
+        // Имя всё равно печатаем: «unverified» без имени — потеря наблюдения,
+        // а имя стоит две дюжины символов и объясняет, кто там был.
+        if (live[0]) sprintf_s(out + n, (size_t)(cap - n), " pools=unverified(now %s)", live);
+        else if (n > 0) sprintf_s(out + n, (size_t)(cap - n), " pools=unverified");
         return;
     }
     float pois = 0.0f, kd = 0.0f, burn = 0.0f;
@@ -666,13 +714,17 @@ static void LeaveMember(Member& m, uint32_t now)
     char rankInfo[128];
     AppendRankPools(m.body, m.kind, rankInfo, (int)sizeof(rankInfo));
 
+    // 85.62: выданный размер вместо живого чтения (см. SizeText).
+    char szText[64];
+    SizeText(szText, (int)sizeof(szText), m.body, m.scaleValid, m.scaleH);
+
     logFile << "PackObserve: " << (death ? "DEATH" : "LEAVE")
             << " @0x" << std::hex << m.body << std::dec
             << " kind=" << m.kind
             << " lastAct=" << (m.act[0] ? m.act : "?")
             << rankInfo
             << " role=" << PackRoleName(m.role)
-            << " scaleH=" << (m.scaleValid ? m.scaleH : -1.0f)
+            << " " << szText
             << " dist=" << m.distM << "m"
             << " lived=" << (now - m.joinMs) << "ms";
     if (death) {
@@ -832,24 +884,29 @@ void PackObserveShutdown()
 {
     // 85.51: итог по устойчивости. Падение = проверка запаса сбивания,
     // STUMBLE = проверка запаса отшатывания, TRIP к крепости не относится.
-    logFile << "PackObserve: fall summary falls=" << s_nFalls
-            << " stumbles=" << s_nStumbles
-            << " trips=" << s_nTrips
-            << " (fall=knockdown, stumble=dmg-flinch, trip=locomotion)"
-            << std::endl;
+    // 85.63: строка уходит в полевой пакет (печатается блоком в конце сессии).
+    {
+        char fs[260];
+        sprintf_s(fs, "PackObserve: fall summary falls=%d stumbles=%d trips=%d"
+                      " (fall=knockdown, stumble=dmg-flinch, trip=locomotion)",
+                  s_nFalls, s_nStumbles, s_nTrips);
+        LogMem::SessionNote(fs);
+    }
     // 85.54: итог по огню. «survived» — это те, кто вышел из горения живым;
     // именно их владелец и заметил глазами, а лог их раньше не показывал.
-    logFile << "PackObserve: burn summary bodies=" << s_nBurnBodies
-            << " starts=" << s_nBurnStarts
-            << " survived=" << s_nBurnSurvived
-            << " died=" << s_nBurnDeaths
-            << " left=" << s_nBurnLeft
-            << " (bodies=how many monsters caught fire, starts=ignitions incl."
-               " re-ignitions, survived=came out of the fire alive,"
-               " died=went down while STILL ON FIRE (act not an end-of-burn;"
-               " the killing blow may have been a pawn's, not the fire's),"
-               " left=left view before the outcome)"
-            << std::endl;
+    // 85.63: строка уходит в полевой пакет (печатается блоком в конце сессии).
+    {
+        char bs[560];
+        sprintf_s(bs, "PackObserve: burn summary bodies=%d starts=%d survived=%d"
+                      " died=%d left=%d (bodies=how many monsters caught fire,"
+                      " starts=ignitions incl. re-ignitions, survived=came out of"
+                      " the fire alive, died=went down while STILL ON FIRE (act not"
+                      " an end-of-burn; the killing blow may have been a pawn's,"
+                      " not the fire's), left=left view before the outcome)",
+                  s_nBurnBodies, s_nBurnStarts, s_nBurnSurvived,
+                  s_nBurnDeaths, s_nBurnLeft);
+        LogMem::SessionNote(bs);
+    }
     if (s_live > 0) ResetEncounter("shutdown");
     s_armed = false;
     s_admitted = false;
@@ -1053,10 +1110,12 @@ void PackObserveDump()
             << " write=off" << std::endl;
     for (int i = 0; i < s_nMem; ++i) {
         const Member& m = s_mem[i];
+        char szText[64];
+        SizeText(szText, (int)sizeof(szText), m.body, m.scaleValid, m.scaleH);
         logFile << "PackObserve: member @0x" << std::hex << m.body << std::dec
                 << " role=" << PackRoleName(m.role)
                 << " act=" << (m.act[0] ? m.act : "?")
-                << " scaleH=" << (m.scaleValid ? m.scaleH : -1.0f)
+                << " " << szText
                 << " dist=" << m.distM
                 << " horn=" << m.hornCount
                 << " charge=" << m.chargeCount

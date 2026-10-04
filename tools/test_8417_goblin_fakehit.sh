@@ -28,7 +28,14 @@ TMP="$(mktemp -d /tmp/goblin_fakehit_8417.XXXXXX)"
 trap 'rm -rf "$TMP"' EXIT
 
 # Identity and documentation must agree.
-grep -Fq '84.' "$TAG"
+# 85.66: вместо пина «84.» — структура тега + согласие с README (не устаревает).
+tag_val="$(sed -n 's/.*MOD_BUILD_TAG[[:space:]]*"\([^"]*\)".*/\1/p' "$TAG" | head -1)"
+case "$tag_val" in
+  [0-9]*.[0-9]*) ;;
+  *) echo "BuildTag.h: тег не похож на билд: '$tag_val'" >&2; exit 1;;
+esac
+grep -Fq "$tag_val" "$README" || {
+  echo "README не упоминает текущий тег '$tag_val'" >&2; exit 1; }
 grep -Fq '84.16-dual-observe' "$README"
 grep -Fq '84.21-species-rage' "$README"
 [ -f "$DOC1" ] && [ -f "$DOC2" ]
@@ -63,8 +70,9 @@ assert fh.count('PIN ROLLBACK goblin-fakehit') == 2
 # PinRow dispatches fakehit by kind.
 row = aggro[aggro.index('static void PinRow'):]
 row = row[:row.index('static void PinSummary')]
-assert 'GoblinFakehitCard(R, S, who, now, director)' in row
-assert 'PinFakehitCard(R, S, who, now, director)' in row
+# 85.66: 85.33 развела приказы на два канала — последний аргумент стал orderScope.
+assert 'GoblinFakehitCard(R, S, who, now, orderScope)' in row
+assert 'PinFakehitCard(R, S, who, now, orderScope)' in row
 
 # Goblin lease gets fakehit (including ALERT); suppress stays ALARM-only.
 assert 'const bool goblinLease = directorActive' in aggro

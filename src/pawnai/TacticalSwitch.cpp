@@ -1,3 +1,10 @@
+// TacticalSwitch.cpp — ситуативная поправка к базе: категория врага
+// (small/medium/large/flying/mage/boss) → дельта целевых весов. Одна из трёх
+// поправок оркестратора рядом со SmartUtilitarian и AcquisitorManager.
+//
+// Вне боя окно удара закрыто и категория сбрасывается: «присутствие» держит
+// WorldScan отдельно от боевых отчётов (два канала шины, см. CombatBus.h).
+
 #include "stdafx.h"
 #include "TacticalSwitch.h"
 #include "../CombatBus.h"

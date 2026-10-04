@@ -18,6 +18,7 @@
 #include "devtools/DevTools.h"
 #include "runtime/Runtime.h"
 #include "runtime/PartyStatus.h"
+#include "runtime/LogMemSession.h"   // 85.68: SessionNote/SessionFlush объявлены ЗДЕСЬ, а не в LogMem.h
 #include "audio/AudioRedirect.h"
 #include "EntityConfig.h"
 #include "ModPaths.h"
@@ -152,8 +153,22 @@ void Unitialize()
     Hooks::CameraPlusShutdown();  // останавливает поток, НО без Wait (через событие)
     // 85.25: сколько нарушений доступа перехвачено за сессию. Раньше эта цифра
     // была недоступна: обработчик молчал, и мы не знали, что он работает.
-    logFile << "LogMem: session fault-handling summary faults="
-            << LogMem::VEH_Faults() << std::endl;
+    // 85.62: к числу перехваченных нарушений добавляем, сколько раз сработала
+    // защита и сколько разных площадок найдено — это и есть «дампы», которые
+    // раньше печатались по строке на каждый случай.
+    // 85.63: цифры защиты пишутся в пакет ДО того, как его печатает
+    // SessionFlush (чтение счётчиков не зависит от порядка выгрузки модулей).
+    {
+        char vs[220];
+        sprintf_s(vs, "LogMem: session fault-handling summary faults=%u dumps=%u"
+                      " sites=%u",
+                  LogMem::VEH_Faults(), LogMem::VEH_Dumps(), LogMem::VEH_Sites());
+        LogMem::SessionNote(vs);
+    }
+    // 85.63: одним куском все сводки сессии (ступени, наборы, огонь, падения,
+    // медленные тики, пешки, защита). Порядок строк внутри — порядок выгрузки
+    // модулей; содержимое — ровно то, что каждый модуль печатал и раньше.
+    LogMem::SessionFlush();
     logFile << "DDDA AI Overhaul - Shutting down..." << std::endl;
     logFile << "MH_DisableHook: " << MH_StatusToString(MH_DisableHook(MH_ALL_HOOKS)) << std::endl;
     logFile << "MH_Uninitialize: " << MH_StatusToString(MH_Uninitialize()) << std::endl;

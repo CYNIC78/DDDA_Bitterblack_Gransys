@@ -1,3 +1,11 @@
+// OrderWatch.cpp — тактические приказы D-Pad / F1-F3 (Ко мне! / Вперёд! /
+// Помогите!): распознаёт приказ, ищет врага в секторе взгляда игрока (до 35 м
+// по WorldReport из CombatBus) и ведёт его с плавным затуханием, отдавая
+// ускорение через Runtime::Tempo::SetOverride.
+//
+// Порядок в цепочке: Guardian → Nexus → Rescue → OrderWatch; активный Rescue
+// блокирует пин Nexus, но назначение Nexus сохраняется — полного арбитража нет.
+
 #include "stdafx.h"
 #include "OrderWatch.h"
 #include "PawnAI_Common.h"

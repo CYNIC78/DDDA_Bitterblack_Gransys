@@ -93,6 +93,12 @@ bool PoolsFor(uintptr_t body, float* poisOut, float* kdownOut, float* burnOut);
 bool RankIssuedFor(uintptr_t body, int* stepOut, uint32_t* genOut,
                    int* setIndexOut = nullptr);
 
+// 85.62: выданный ступенью размер особи (-1, если ступень не выдана или вид вне
+// лестницы). Прибор пачки печатает его вместо живого чтения масштаба: у тел,
+// пришедших с загрузкой мира, живое чтение показывает ровно 1.000, и строка
+// смерти врала про размер.
+float IssuedSizeFor(uintptr_t body);
+
 float     HeldValue();
 
 // --- покадровый сэмплер масштаба -------------------------------------------

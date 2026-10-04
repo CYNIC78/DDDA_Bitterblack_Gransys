@@ -15,6 +15,39 @@ std::ofstream logFile("/tmp/packobserve_t.log", std::ios::trunc);
 IniConfigStub config;
 BYTE** pBase = 0;
 
+// 85.66: прибор пишет сводки через LogMem::SessionNote (85.63). В портативной
+// фикстуре пакета нет — стаб в глобальном пространстве имён (как в LogMem.h).
+namespace LogMem {
+void SessionNote(const char*) {}
+}
+
+// 85.66: строка запасов спрашивает тюнер. Тюнера в портативной фикстуре нет —
+// честный ответ «не читается» (в продукте за это отвечает EnemyTuner.cpp).
+// 85.66: PackObserve спрашивает у тюнера три вещи — запасы тела, выданную ступень
+// и выданный размер. Тюнера в портативной фикстуре нет, поэтому ответы честные:
+// «нет запасов», «ступени не выдавались», «размер = 1.0». Все три зова перечислены
+// здесь поимённо, чтобы следующий добавленный зов падал ЛИНКОВКОЙ, а не молчанием.
+namespace EnemyTuner {
+bool  PoolsFor(uintptr_t, float*, float*, float*) { return false; }
+float IssuedSizeFor(uintptr_t) { return 1.0f; }
+bool RankIssuedFor(uintptr_t, int* stepOut, uint32_t* genOut, int* setIndexOut)
+{
+    if (stepOut)    *stepOut = -1;
+    if (genOut)     *genOut = 0;
+    if (setIndexOut) *setIndexOut = -1;
+    return false;                      // ступени в этой фикстуре не выдаются
+}
+}
+
+// 85.66: имя набора по индексу и имя ступени — это спрашивает строка события
+// пачки. Наборы и ступени в этой фикстуре не выдаются, поэтому ответы «нет».
+namespace Runtime {
+namespace Tempo {
+const char* PackSetName(int) { return nullptr; }
+const char* RankStepName(int) { return nullptr; }
+} // namespace Tempo
+} // namespace Runtime
+
 using namespace MonsterAI;
 
 static std::string Slurp()
@@ -109,7 +142,7 @@ static void TestRabbleTrio()
     const std::string log = Slurp();
     Need(log, "ADMIT species=uEm0100 size=29632 observe=1 tempoRage=1 aggroWrite=1");
     Need(log, "PACK n=3 composition=rabble");
-    Need(log, "JOIN @0x1001");
+    Need(log, "JOIN @0x00001001");
 }
 
 static void TestSizeLedAndSkipMixed()
@@ -133,8 +166,8 @@ static void TestSizeLedAndSkipMixed()
     Need(log, "PACK n=5 composition=led");
     Need(log, "SKIP uEm0100_0 (component, not full-body uEm0100)");
     Need(log, "MIXED uEm0100=5 uEm0101=1");
-    NeedNot(log, "JOIN @0x20c0");
-    NeedNot(log, "JOIN @0x20d0");
+    NeedNot(log, "JOIN @0x000020C0");
+    NeedNot(log, "JOIN @0x000020D0");
 }
 
 static void TestHornChargeIgnoreAndFall()

@@ -291,5 +291,8 @@ void  GuardianLeverRestore();           // откат (выгрузка, вык�
 bool  GuardianLeverIsActive();   // desired при угрозе в preempt-радиусе (по умолч. 0)
 void GuardianDoctrineTick();
 void GuardianStackLogReset(); // reset discovery logging on leaving gameplay
+// 85.63: сводка сессии (замеры и объявления цели) — одной строкой в полевой
+// пакет. Зовётся при выгрузке, до печати пакета.
+void GuardianSessionSummary();
 
 } // namespace PawnAI

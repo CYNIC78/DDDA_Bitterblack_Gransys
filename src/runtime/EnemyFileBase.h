@@ -123,18 +123,82 @@ static const SpeciesFileBase* FindSpeciesFileBase(unsigned short emId)
     return 0;
 }
 
-// Годится ли файловая база в дело.
+// ── 85.64: ПОЛИТИКА ПО ПОЛЯМ, А НЕ ОТСЕВ ВИДА ────────────────────────────────
 //
-// Отсев нужен ровно для двух случаев, и оба видны глазами: нулевые поля
-// (em1200/em1201/em6003 — это не бойцы) и «иммунные» круглые тысячи
-// (em5100 mdef 10000, em5101 def 10000/mdef 20000 — это маркеры, а не статы).
-// Потолок 9000 выбран так, чтобы НЕ задеть настоящие боевые виды: у em7001
-// атака 8500 — реальная, и она должна попадать в работу. Прежний путь
-// (таблица видов из памяти, затем оценка) остаётся для отсеянных.
-static bool SpeciesFileBaseSane(const SpeciesFileBase* b)
+// Было (85.60): вид с любым «небоевым» полем выбрасывался целиком и уходил на
+// прежний путь (таблица видов из памяти, затем оценка). Перепись видов
+// (docs/SPECIES_CENSUS.md) показала, кого именно это выбросило: Голем (em5100),
+// Металлический голем (em5101) и Death (em6003). Это не «не бойцы»: у Death в
+// файле НОЛЬ в атаке (у него нет обычной атаки), а 10000/20000 у големов стоят в
+// ЗАЩИТЕ и означают иммунитет (обычный голем не берётся магией, металлический —
+// физикой).
+//
+// Стало: вид принимается, если карточка вообще похожа на бойца, а режим решается
+// ПО КАЖДОМУ ПОЛЮ:
+//
+//   write  — обычное боевое число: умножаем на множители вида и пишем (как было);
+//   immune — маркер иммунитета (>= 9000): НЕ пишем и НЕ умножаем. Это свойство
+//            вида, а не стат: умножить 10000 на ×3 значит сломать иммунитет;
+//   absent — ноль: у вида нет такого поля (Death без атаки). Тоже не пишем:
+//            ноль в атаке — не «слабый удар», а «нет удара», и подставлять туда
+//            оценку значит выдумывать механику, которой у босса нет.
+//
+// Смысл правки: файл остаётся единственным источником базы и для этих трёх
+// боссов. Старый путь «память -> оценка» теперь только для видов, которых в
+// таблице нет вовсе (нет карточки или нет класса в exe).
+enum SpeciesFieldMode {
+    kSpeciesWrite  = 0,   // обычное боевое число
+    kSpeciesImmune = 1,   // маркер иммунитета (9000+)
+    kSpeciesAbsent = 2    // ноль: поля у вида нет
+};
+
+static SpeciesFieldMode SpeciesFieldModeOf(float v)
+{
+    if (!(v > 0.0f)) return kSpeciesAbsent;
+    if (v >= 9000.0f) return kSpeciesImmune;
+    return kSpeciesWrite;
+}
+
+static const char* SpeciesFieldModeName(SpeciesFieldMode m)
+{
+    return m == kSpeciesImmune ? "immune" : (m == kSpeciesAbsent ? "absent" : "write");
+}
+
+// Годится ли карточка в дело: все четыре поля конечны и не выходят далеко за
+// пределы боевых (50000 — тот же потолок, что у клампа записи), и хотя бы одно
+// поле обычное. Иначе это не карточка бойца, и работает прежний путь.
+static bool SpeciesFileBaseUsable(const SpeciesFileBase* b)
 {
     if (!b) return false;
-    if (b->atk <= 0.0f || b->defC <= 0.0f || b->mAtk <= 0.0f || b->mDefC <= 0.0f) return false;
-    if (b->atk > 9000.0f || b->defC > 9000.0f || b->mAtk > 9000.0f || b->mDefC > 9000.0f) return false;
-    return true;
+    const float v[4] = { b->atk, b->defC, b->mAtk, b->mDefC };
+    int usable = 0;
+    for (int i = 0; i < 4; ++i) {
+        if (!(v[i] == v[i])) return false;          // NaN
+        if (v[i] < 0.0f || v[i] > 50000.0f) return false;
+        if (SpeciesFieldModeOf(v[i]) == kSpeciesWrite) ++usable;
+    }
+    return usable > 0;
+}
+
+// Политика вида одной строкой для лога: `policy=mdef:immune`, у Death —
+// `policy=atk:absent matk:absent`. Если все четыре поля обычные, строки нет:
+// в логе ничего не меняется для 87 видов из 92.
+static void SpeciesPolicyText(const SpeciesFileBase* b, char* out, int cap)
+{
+    if (!out || cap <= 0) return;
+    out[0] = 0;
+    if (!b) return;
+    const float v[4]  = { b->atk, b->defC, b->mAtk, b->mDefC };
+    const char* nm[4] = { "atk", "def", "matk", "mdef" };
+    int n = 0;
+    // Без sprintf_s и вообще без библиотек: заголовок подключается и фикстурой,
+    // у которой нет ни windows.h, ни stdio. Строки короткие, копируем вручную.
+    for (int i = 0; i < 4; ++i) {
+        const SpeciesFieldMode m = SpeciesFieldModeOf(v[i]);
+        if (m == kSpeciesWrite) continue;
+        const char* parts[4] = { n ? " " : "", nm[i], ":", SpeciesFieldModeName(m) };
+        for (int p = 0; p < 4; ++p)
+            for (const char* c = parts[p]; *c && n < cap - 1; ++c) out[n++] = *c;
+        out[n] = 0;
+    }
 }

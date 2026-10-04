@@ -17,13 +17,20 @@ ui = (root / 'src/EnemyAI.cpp').read_text(encoding='utf-8')
 proj = (root / 'ddda-ai-overhaul.vcxproj').read_text(encoding='utf-8')
 tag = (root / 'src/BuildTag.h').read_text(encoding='utf-8')
 
-assert '84.' in tag
+# 85.66: вместо пина «84.» — структура тега (не устаревает).
+import re as _re_tag
+_m_tag = _re_tag.search(r'#define\s+MOD_BUILD_TAG\s+"([^"]+)"', tag)
+assert _m_tag, 'BuildTag.h: не найден MOD_BUILD_TAG'
+assert _re_tag.match(r'^\d+\.\d+', _m_tag.group(1)), 'странный тег: %r' % _m_tag.group(1)
 aggro = (root / 'src/runtime/AggroWatch.cpp').read_text(encoding='utf-8')
 assert 'TryGoblinEmptyCardWake' in aggro
 assert 'EnsureGoblinRosterSlots' in aggro
 assert 'kEm0100RosterBase   = 0x2FA0' in aggro
 assert '"uEm0100", 29632u, true, true' in card
-assert '1.21f, 1.24f, 1.32f, 1.40f' in card  # goblin rage profile (84.21)
+# 85.66: коридор ярости гоблина. В коде сегодня 1.15/1.20/1.15/1.24 — это тот самый
+# открытый вопрос «док против кода» (docs/DOC_CONSISTENCY_2026_09_25.md §B).
+# Пин держим по ФАКТУ: решит владелец вернуть 1.21/1.24/1.32/1.40 — менять код и пин вместе.
+assert '1.15f, 1.20f, 1.15f, 1.24f' in card  # goblin rage profile (факт кода на 85.66)
 assert '"uEm0200", 29888u, true, true,  true' in card
 assert 'strcmp(kind, expect)' in card
 assert 'PackObserveIngest' in obs

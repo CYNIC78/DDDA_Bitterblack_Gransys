@@ -1,4 +1,5 @@
-// tools/tcomp/filebase_test.cpp — поведенческая проверка таблицы баз вида (85.60).
+// tools/tcomp/filebase_test.cpp — поведенческая проверка таблицы баз вида
+// (85.60: таблица из файлов игры; 85.64: политика по полям вместо отсева вида).
 //
 // Зачем. База боевых статов теперь берётся из файлов игры и умножается — значит
 // ошибка в таблице сразу меняет бой у ВСЕХ видов, а не у одного. Владелец поля
@@ -10,6 +11,7 @@
 // стоять ДО include. Заголовку таблицы шимы не нужны: там только числа.
 #include <cassert>
 #include <cstdio>
+#include <cstring>
 
 #include "../../src/runtime/EnemyFileBase.h"
 
@@ -20,7 +22,13 @@ int main()
     const SpeciesFileBase* g = FindSpeciesFileBase(100);      // uEm0100 -> emId 100
     assert(g != 0);
     assert(g->atk == 250.0f && g->defC == 75.0f && g->mAtk == 80.0f && g->mDefC == 75.0f);
-    assert(SpeciesFileBaseSane(g));
+    assert(SpeciesFileBaseUsable(g));
+    // У обычного вида политика пустая: в логе ничего не меняется.
+    {
+        char pol[80];
+        SpeciesPolicyText(g, pol, sizeof(pol));
+        assert(pol[0] == 0);
+    }
 
     // 2. Волк и харпия — следующие в очереди видов; числа из файлов игры.
     const SpeciesFileBase* w = FindSpeciesFileBase(200);
@@ -37,18 +45,53 @@ int main()
     assert(FindSpeciesFileBase(65000) == 0);
     assert(FindSpeciesFileBase(0) == 0);
 
-    // 5. Отсев небоевых чисел. У em1200 (id 1200) в файле нули, у em5101 (5101)
-    //    «иммунные» тысячи: такие в дело не идут, для них работает прежний путь.
-    const SpeciesFileBase* zero = FindSpeciesFileBase(1200);
-    assert(zero && !SpeciesFileBaseSane(zero));
-    const SpeciesFileBase* imm = FindSpeciesFileBase(5101);
-    assert(imm && !SpeciesFileBaseSane(imm));
+    // 5. 85.64: ПОЛИТИКА ПО ПОЛЯМ. Раньше вид с «небоевым» полем выбрасывался
+    //    целиком и уходил на аварийный путь (память -> оценка). Теперь карточка
+    //    принимается, а поля получают режим: immune (маркер 9000+) или absent
+    //    (ноль). Проверяем три вида, из-за которых это и делалось.
+    {
+        const SpeciesFileBase* golem = FindSpeciesFileBase(5100);   // Golem
+        assert(golem && golem->mDefC == 10000.0f);
+        assert(SpeciesFileBaseUsable(golem));
+        char pol[80];
+        SpeciesPolicyText(golem, pol, sizeof(pol));
+        assert(strcmp(pol, "mdef:immune") == 0);
+        // Иммунитет остаётся иммунитетом: множитель к нему не применяется.
+        assert(SpeciesFieldModeOf(golem->mDefC) == kSpeciesImmune);
+        assert(SpeciesFieldModeOf(golem->atk) == kSpeciesWrite);
+    }
+    {
+        const SpeciesFileBase* metal = FindSpeciesFileBase(5101);   // Metal Golem
+        assert(metal && SpeciesFileBaseUsable(metal));
+        char pol[80];
+        SpeciesPolicyText(metal, pol, sizeof(pol));
+        assert(strcmp(pol, "def:immune mdef:immune") == 0);
+    }
+    {
+        const SpeciesFileBase* death = FindSpeciesFileBase(6003);   // Death
+        assert(death && death->atk == 0.0f && death->mAtk == 0.0f);
+        assert(death->defC == 666.0f && death->mDefC == 666.0f);
+        assert(SpeciesFileBaseUsable(death));
+        char pol[80];
+        SpeciesPolicyText(death, pol, sizeof(pol));
+        assert(strcmp(pol, "atk:absent matk:absent") == 0);
+        // Ноль — это «нет поля», а не «слабое поле»: писать туда нельзя.
+        assert(SpeciesFieldModeOf(death->atk) == kSpeciesAbsent);
+        assert(SpeciesFieldModeOf(death->defC) == kSpeciesWrite);
+    }
+    {
+        // Не-боец с нулями: тоже принимается (защита 75 в файле настоящая),
+        // но атаки/магии у него нет.
+        const SpeciesFileBase* scare = FindSpeciesFileBase(1200);
+        assert(scare && SpeciesFileBaseUsable(scare));
+        assert(SpeciesFieldModeOf(scare->atk) == kSpeciesAbsent);
+    }
 
-    // 6. Потолок отсева НЕ должен задевать настоящих крупных бойцов: у em7001
-    //    атака 8500 — реальная, она обязана попадать в работу. А «иммунные»
-    //    круглые тысячи (em5100 mdef 10000) — обязаны отсеиваться.
-    assert(SpeciesFileBaseSane(FindSpeciesFileBase(7001)));
-    assert(!SpeciesFileBaseSane(FindSpeciesFileBase(5100)));
+    // 6. Настоящие крупные бойцы не задеты: у em7001 атака 8500 — реальная,
+    //    и режим у неё обычный (потолок «иммунитета» начинается с 9000).
+    assert(SpeciesFileBaseUsable(FindSpeciesFileBase(7001)));
+    assert(SpeciesFieldModeOf(FindSpeciesFileBase(7001)->atk) == kSpeciesWrite);
+    assert(SpeciesFieldModeOf(FindSpeciesFileBase(7001)->defC) == kSpeciesWrite);
 
     // 7. Таблица непустая и без дублей emId (дубль = неоднозначный вид).
     assert(kSpeciesFileBaseCount > 80);
@@ -57,7 +100,8 @@ int main()
             assert(kSpeciesFileBase[i].emId != kSpeciesFileBase[j].emId);
 
     std::printf("  filebase: goblin 250/75/80/75, hob 410, wolf 220, harpy 350,"
-                " отсев нулей и иммунных, дублей нет (%d видов)\n",
+                " политика полей (golem mdef:immune, death atk:absent),"
+                " дублей нет (%d видов)\n",
                 kSpeciesFileBaseCount);
     return 0;
 }

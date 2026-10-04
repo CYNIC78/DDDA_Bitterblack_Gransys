@@ -351,6 +351,15 @@ bool KindIsHarmless(const char* kind);
 // только на "uEm", люди были невидимы и для счётчика, и для мутаций.
 bool KindIsEnemy(const char* kind);
 
+// 85.64: два явных списка вместо захардкоженных имён.
+//   KindIsHarmless   — мирная живность (олень, лань, вол, крыса, кабан,
+//                      лагерная мелочь, неопознанная мелочь): не угроза, но существо;
+//   KindIsStructural — предметы окружения и части составных боссов (em8100,
+//                      «грудь Даймона» em7002): не враг.
+// Оба сравнивают по префиксу с границей, чтобы ловить варианты вида (uEm8500_00).
+bool KindIsHarmless(const char* kind);
+bool KindIsStructural(const char* kind);
+
 int KindCategory(const char* kind);
 
 // Собирает WorldReport из снимка актёров и публикует его в CombatBus.

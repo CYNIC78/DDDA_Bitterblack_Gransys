@@ -1,5 +1,13 @@
+// LogMem.cpp — журнал в оперативке с фоновым сбросом на диск: строки копятся в
+// буфере (8 МБ, дальше тихий truncate), а std::endl больше не бьёт по диску на
+// каждой строке. При сбое буфер сливается из обработчика — без повторной кучи.
+//
+// Писатели (тик пешек и кадр F12) сериализуются критической секцией; полевой
+// пакет и сводки сессии собирает подсистема LogMemSession (85.63).
+
 #include "stdafx.h"
 #include "LogMem.h"
+#include "LogMemSession.h"
 #include "MemProbe.h"
 #include <tlhelp32.h>
 #include <streambuf>
@@ -298,11 +306,18 @@ static LONG WINAPI OnVeh(EXCEPTION_POINTERS* info)
         return EXCEPTION_CONTINUE_SEARCH;
     g_vehLastDumpMs = now;
     ++g_vehDumps;
-    char buf[256];
-    sprintf_s(buf, "\n[VEH] dump #%u: faults=%u sites=%d\n",
-              g_vehDumps, g_vehFaults, g_nSites);
-    logFile << buf;
-    g_buf.Dump();
+    // 85.62: дамп пишем ОДИН раз за сессию. Дальше защита работает ровно так же,
+    // но лог не растёт: в поле 85.58 эти строки приходили 11 раз за сессию и
+    // ничего нового не сообщали. Число срабатываний и площадок видно в итоговой
+    // строке сессии (LogMem: session fault-handling summary ... dumps= sites=).
+    if (g_vehDumps == 1) {
+        char buf[256];
+        sprintf_s(buf, "\n[VEH] dump #%u: faults=%u sites=%d"
+                       " (дальше такие дампы только считаются, итог в конце сессии)\n",
+                  g_vehDumps, g_vehFaults, g_nSites);
+        logFile << buf;
+        g_buf.Dump();
+    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -337,9 +352,121 @@ void SetWorkerThreadId(DWORD tid)
     g_workerThreadId = tid;
 }
 
+// === 85.63: ПОЛЕВОЙ ПАКЕТ =====================================================
+//
+// ЗАЧЕМ БУФЕР, А НЕ ПЕЧАТЬ НА МЕСТЕ. Порядок выгрузки задан вызовами Shutdown()
+// в Unitialize(), и переставлять его в DllMain нельзя. Буфер даёт контурность,
+// не трогая порядок: каждая сводка форматируется в свой момент (цифры — те же),
+// а на диск уходит один блок в самом конце.
+//
+// Почему 8 КБ: в поле 85.58 все сводки вместе — около 3 КБ. Запас на рост есть,
+// а переполнение не молчит: строка об усечении печатается внутри блока.
+static char   s_pack[8 * 1024];
+static size_t s_packLen = 0;
+static int    s_packLines = 0;
+static bool   s_packCut = false;
+
+// 85.64: отдельный список откатов. Отдельный, а не общий, потому что у него
+// другой смысл: сводки — «сколько чего было», откаты — «что вернули движку».
+// Меньший буфер: откатов за сессию единицы, а не десятки.
+static char   s_rb[2 * 1024];
+static size_t s_rbLen = 0;
+static int    s_rbLines = 0;
+static bool   s_rbCut = false;
+
+void SessionNote(const char* line)
+{
+    if (!line || !line[0]) return;
+    const size_t n = strlen(line);
+    if (s_packLen + n + 2 > sizeof(s_pack)) { s_packCut = true; return; }
+    memcpy(s_pack + s_packLen, line, n);
+    s_packLen += n;
+    s_pack[s_packLen++] = '\n';
+    ++s_packLines;
+}
+
+void SessionNoteRollback(const char* line)
+{
+    if (!line || !line[0]) return;
+    const size_t n = strlen(line);
+    if (s_rbLen + n + 2 > sizeof(s_rb)) { s_rbCut = true; return; }
+    memcpy(s_rb + s_rbLen, line, n);
+    s_rbLen += n;
+    s_rb[s_rbLen++] = '\n';
+    ++s_rbLines;
+}
+
+void SessionFlush()
+{
+    char head[128];
+    sprintf_s(head, "=== SESSION === %d summaries, the whole session in one block",
+              s_packLines);
+    logFile << head << std::endl;
+    if (s_packLen) logFile.write(s_pack, (std::streamsize)s_packLen);
+    if (s_packCut)
+        logFile << "(packet truncated: more summaries than the buffer holds)"
+                << std::endl;
+    // 85.64: что вернули движку. Строки те же, что были в сессии, — здесь они
+    // собраны вместе, чтобы откат не приходилось искать по всему логу.
+    if (s_rbLines > 0) {
+        char rh[96];
+        sprintf_s(rh, "--- ROLLBACKS (same lines as above, gathered) %d ---",
+                  s_rbLines);
+        logFile << rh << std::endl;
+        logFile.write(s_rb, (std::streamsize)s_rbLen);
+        if (s_rbCut)
+            logFile << "(rollback list truncated: more entries than the buffer holds)"
+                    << std::endl;
+    }
+    logFile << "=== END OF SESSION ===" << std::endl;
+}
+
+#ifdef DDDA_LOGMEM_PORTABLE_FIXTURE
+// Только для фикстуры (tools/tcomp/session_pack_test.cpp): тот же макрос.
+// В релизной сборке MSVC этого кода нет вовсе. Нужен потому, что под шимом
+// запись на диск не производится — а свойства, которые можно проверить лишь
+// чтением блока (целые строки при переполнении, счётчик, порядок), стоят того,
+// чтобы их поймать здесь, а не в поле.
+const char* SessionPackForTests(int* linesOut, bool* cutOut)
+{
+    if (linesOut) *linesOut = s_packLines;
+    if (cutOut)   *cutOut   = s_packCut;
+    return s_pack;
+}
+
+const char* RollbackPackForTests(int* linesOut, bool* cutOut)
+{
+    if (linesOut) *linesOut = s_rbLines;
+    if (cutOut)   *cutOut   = s_rbCut;
+    return s_rb;
+}
+#endif
+
 unsigned VEH_Faults()
 {
     return g_vehFaults;
+}
+
+// 85.63: СВОДКИ СЕССИИ (PACKBUF v1). Эти объявления — не «мёртвый код», а
+// якорь: файлы продукта, пишущие в пакет, вызывают SessionNote()/SessionFlush(),
+// и без ссылок на них линкер вправе выбросить это определение, оставив вызовы
+// без тела. Ровно так однажды уже потерялся SetWorkerThreadId (см. LogMem.h).
+void SessionNote_KeepLink();
+void SessionFlush_KeepLink();
+void SessionNote_KeepLink() {}
+void SessionFlush_KeepLink() {}
+
+// 85.62: сколько раз сработала защита и сколько разных площадок найдено. Нужны
+// для итоговой строки сессии: сама последовательность «[VEH] dump #N» в поле
+// 85.58 приходила 11 раз и ничего нового не сообщала.
+unsigned VEH_Dumps()
+{
+    return g_vehDumps;
+}
+
+unsigned VEH_Sites()
+{
+    return (unsigned)g_nSites;
 }
 
 } // namespace LogMem

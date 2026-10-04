@@ -9,6 +9,7 @@
 #include "AggroWatch.h"
 #include "Runtime.h"
 #include "MemProbe.h"
+#include "LogMemSession.h"   // 85.63: сводки — в полевой пакет
 
 namespace Runtime {
 namespace Aggro {
@@ -1891,13 +1892,14 @@ void Shutdown()
     s_nSecResponders = 0;
     // One bounded footer keeps the automatic mutation evidence available
     // even when successful per-card research lines were intentionally quiet.
-    logFile << "Aggro: shutdown summary directorWrites=" << s_directorWrites
-            << " pin=" << s_pinWrites
-            << " supp=" << s_pinSuppWrites
-            << " fakehit=" << s_pinFakehitWrites
-            << " unsafeSkips=" << s_pinUnsafeSkips
-            << " rollbacks=" << s_pinRollbacks
-            << " targetSwitches=" << s_switchTotal << std::endl;
+    // 85.63: строка уходит в полевой пакет (печатается блоком в конце сессии).
+    char ag[320];
+    sprintf_s(ag, "Aggro: shutdown summary directorWrites=%d pin=%d supp=%d"
+                  " fakehit=%d unsafeSkips=%d rollbacks=%d targetSwitches=%d",
+              s_directorWrites, s_pinWrites, s_pinSuppWrites,
+              s_pinFakehitWrites, s_pinUnsafeSkips, s_pinRollbacks,
+              s_switchTotal);
+    LogMem::SessionNote(ag);
 
     // Штырь снимается молча: процесс завершается, а поле и так затухнет.
     s_pinMember = MEMBER_NONE;

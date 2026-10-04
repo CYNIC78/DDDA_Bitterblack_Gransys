@@ -11,6 +11,13 @@ std::ofstream logFile("/tmp/goblin_fakehit_test.log");
 BYTE** pBase = 0;
 IniConfigStub config;
 
+// 85.66: AggroWatch с 85.63 складывает сводки сессии через LogMem::SessionNote.
+// LogMem живёт в ГЛОБАЛЬНОМ пространстве имён (см. LogMem.h) — стаб обязан быть
+// там же, иначе линкуется Runtime::LogMem::SessionNote и ссылка остаётся висеть.
+namespace LogMem {
+void SessionNote(const char*) {}
+}
+
 namespace Runtime {
 // Мир пуст: unit-тесты трогают только чистую функцию гейта.
 int EnemyCount() { return 0; }

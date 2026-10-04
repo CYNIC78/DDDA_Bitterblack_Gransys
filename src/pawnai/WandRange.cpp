@@ -13,6 +13,7 @@
 #include "../runtime/Runtime.h"
 #include "../runtime/RuntimeInternal.h"
 #include "../CombatBus.h"
+#include "../runtime/LogMemSession.h"   // 85.63: сводки — в полевой пакет
 #include <math.h>
 
 namespace PawnAI {
@@ -729,13 +730,19 @@ void Restore(const char* why)
     s_nLive = s_nSeen = s_nBand = 0;
     memset(s_tracker, 0, sizeof(s_tracker));
     lstrcpynA(s_why, why ? why : "restored", sizeof(s_why));
-    if (had)
+    if (had) {
         logFile << "WandRange: restored (" << s_why << ")" << std::endl;
+        // 85.64: и в подраздел ROLLBACKS полевого пакета (см. LogMemSession.h).
+        char rb[160];
+        sprintf_s(rb, "WandRange: restored (%s)", s_why);
+        LogMem::SessionNoteRollback(rb);
+    }
 }
 
 void Init()
 {
-    s_enabled = config.getBool("errata", "wandRange", false);
+    // 85.67: умолчание = on, как в эталоне ([errata] wandRange = on).
+    s_enabled = config.getBool("errata", "wandRange", true);
     s_nukeGating = config.getBool("errata", "nukeGating", true);
     s_firstApplyLogged = false;
     s_firstWaitLogged = false;
@@ -893,15 +900,18 @@ void Shutdown()
     const bool report = s_enabled || s_applyEvents || s_waitRetries || s_boltsCharged || s_spellsChanted;
     Restore("shutdown");
     if (report) {
-        logFile << "WandRange: shutdown summary applyEvents=" << s_applyEvents
-                << " waitRetries=" << s_waitRetries
-                << " firstApply=" << (s_firstApplyLogged ? 1 : 0)
-                << std::endl;
-        logFile << "CasterWatch: session summary boltsCharged=" << s_boltsCharged
-                << " boltsFired=" << s_boltsFired
-                << " spellsChanted=" << s_spellsChanted
-                << " spellsCompleted=" << s_spellsCompleted
-                << std::endl;
+        // 85.63: обе строки уходят в полевой пакет.
+        char wr[260];
+        sprintf_s(wr, "WandRange: shutdown summary applyEvents=%d waitRetries=%d"
+                      " firstApply=%d",
+                  s_applyEvents, s_waitRetries, s_firstApplyLogged ? 1 : 0);
+        LogMem::SessionNote(wr);
+        char cw[260];
+        sprintf_s(cw, "CasterWatch: session summary boltsCharged=%d boltsFired=%d"
+                      " spellsChanted=%d spellsCompleted=%d",
+                  s_boltsCharged, s_boltsFired, s_spellsChanted,
+                  s_spellsCompleted);
+        LogMem::SessionNote(cw);
     }
 }
 

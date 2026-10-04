@@ -76,10 +76,17 @@ def load_bestiary_py():
 # типов types.tsv и листингов 29 архивов:
 #   - Дракониды (59XX): 5900 Drake, 5901 Wyrm, 5902 Wyvern, 5906 Cursed Dragon
 #   - Дракон (58XX): 5800 Grigori, 5801 Ur-Dragon
-#   - Скелеты (20XX/21XX): 2000 Skeleton, 2001 Knight, 2002 Lord, 2003 Brute,
-#                          2004 Golden, 2005 Silver, 2006 Living Armor, 2100 Mage, 2101 Sorcerer
-#   - Нежить (05XX): 0500 Undead, 0501 Stout, 0502 Warrior, 0503 Giant,
-#                    0504 Poisoned, 0505 Banshee, 0506 Eliminator
+#   - Скелеты (20XX/21XX): 2000 Skeleton, 2001 Knight, 2002 Lord,
+#                          2003 Skeleton (второе тело), 2004 Brute, 2005 Golden,
+#                          2006 Silver, 2007 Living Armor, 2100 Mage, 2101 Sorcerer
+#   - Нежить (05XX): 0500 Undead, 0501 Undead (второе тело), 0502 Stout,
+#                    0503 Warrior, 0504 Giant, 0505 Poisoned, 0506 Banshee,
+#                    0507 Eliminator
+#     ЭРРАТА 85.65: до этого ярлыки 05XX и 20XX шли со сдвигом на одно тело
+#     (0501 «Stout», 0502 «Warrior», …; 2003 «Brute», 2004 «Golden», …) — так
+#     выходило из нумерации bestiary.py, а не из файлов игры. Числа карточек
+#     (HP из .rst + atk/def/matk/mdef из _cmn.prp) показывают, что настоящий
+#     Stout Undead — это 0502, Brute — 2004 и так далее. Сверка — docs/SPECIES_HUNT.md.
 #   - Гарпии (06XX): 0600 Harpy, 0601 Snow Harpy, 0602 Succubus, 0603 Gargoyle, 0604 Strigoi, 0605 Siren
 #   - Призраки (07XX): 0700 Phantom, 0701 Phantasm, 0702 Specter, 0703 Wraith
 #   - Огры (09XX): 0900 Ogre, 0901 Elder Ogre
@@ -102,9 +109,9 @@ BESTIARY_UEM_MAP = {
     13: ("uEm0402", "Saurian"),     # Geo Saurians
     14: ("uEm0403", "Saurian"),     # Saurian Sages
     15: ("uEm0500", "Undead"),      # Undead (Zombies)
-    16: ("uEm0501", "Undead"),      # Stout Undead
-    17: ("uEm0502", "Undead"),      # Undead Warriors
-    18: ("uEm0503", "Undead"),      # Giant Undead
+    16: ("uEm0502", "Undead"),      # Stout Undead      (85.65: было uEm0501)
+    17: ("uEm0503", "Undead"),      # Undead Warriors   (85.65: было uEm0502)
+    18: ("uEm0504", "Undead"),      # Giant Undead      (85.65: было uEm0503)
     19: ("uEm0600", "Harpy"),       # Harpies
     20: ("uEm0601", "Harpy"),       # Snow Harpies
     21: ("uEm0602", "Harpy"),       # Succubi
@@ -114,7 +121,9 @@ BESTIARY_UEM_MAP = {
     25: ("uEm0702", "Ghost"),       # Specters
     26: ("uHumanEnemy", "Human"),   # Hostile Soldiers
     27: ("uHumanEnemy", "Human"),   # Hostile Bandits
-    28: ("uEm9100", "Human"),       # Enemy Wizard
+    28: ("uHumanEnemy", "Human"),   # Enemy Wizard — человек-волшебник,
+                                    #   класс человеческий (85.65). uEm9100 —
+                                    #   это Липворм, а не волшебник.
     29: ("uEm5000", "Cyclops"),     # Cyclopes
     30: ("uEm0900", "Ogre"),        # Ogres
     31: ("uEm5100", "Golem"),       # Golems
@@ -138,21 +147,23 @@ BESTIARY_UEM_MAP = {
     49: ("uHumanEnemy", "Human"),   # Enemy Person
     50: ("uEm0103", "BBI-Goblin"),  # Greater Goblins / Goblin Shamans
     52: ("uEm0203", "BBI-Wolf"),    # Wargs / Garm
-    53: ("uEm2003", "BBI-Skeleton"),# Skeleton Brutes
-    54: ("uEm2004", "BBI-Skeleton"),# Golden Knights
-    55: ("uEm2005", "BBI-Skeleton"),# Silver Knights
-    56: ("uEm2006", "BBI-Armor"),   # Living Armor
+    53: ("uEm2004", "BBI-Skeleton"),# Skeleton Brutes  (85.65: было uEm2003)
+    54: ("uEm2005", "BBI-Skeleton"),# Golden Knights   (85.65: было uEm2004)
+    55: ("uEm2006", "BBI-Skeleton"),# Silver Knights   (85.65: было uEm2005)
+    56: ("uEm2007", "BBI-Armor"),   # Living Armor     (85.65: было uEm2006)
     57: ("uEm0404", "BBI-Saurian"), # Pyre Saurians
-    58: ("uEm0504", "BBI-Undead"),  # Poisoned Undead
-    59: ("uEm0505", "BBI-Undead"),  # Banshees
-    60: ("uEm0506", "BBI-Undead"),  # Eliminators
+    58: ("uEm0505", "BBI-Undead"),  # Poisoned Undead  (85.65: было uEm0504)
+    59: ("uEm0506", "BBI-Undead"),  # Banshees         (85.65: было uEm0505)
+    60: ("uEm0507", "BBI-Undead"),  # Eliminators      (85.65: было uEm0506)
     61: ("uEm0604", "BBI-Harpy"),   # Strigoi
     62: ("uEm0605", "BBI-Harpy"),   # Sirens
     63: ("uEm0703", "BBI-Ghost"),   # Wraiths
     64: ("uEm5001", "BBI-Cyclops"), # Gorecyclopes
     65: ("uEm0901", "BBI-Ogre"),    # Elder Ogres
     66: ("uEm5502", "BBI-EvilEye"), # Gazers
-    67: ("uEm5500_00", "BBI-Misc"), # Maneaters
+    67: ("uEm5500C", "BBI-Misc"),   # Maneaters — мимик-сундук: архив em5500C,
+                                    #   карточка em5503_00 = 3800/500/2000/700.
+                                    #   (85.65: было uEm5500_00 — это щупальца Сглаза.)
     68: ("uEm6002", "BBI-Wight"),   # Dark Bishops
     69: ("uEm6003", "BBI-Boss"),    # Death
     70: ("uEm5906", "BBI-Dragon"),  # Cursed Dragons
@@ -163,7 +174,9 @@ BESTIARY_UEM_MAP = {
 # Greater Goblins и Goblin Shamans оба 50. Дед-дуп по bid оставляет только
 # первый вид слота и молча выбрасывает остальные.
 #   * Goblin Shamans сворачиваем в Greater Goblins (тот же uEm0103) — это
-#     осознанный выбор: один класс, один архив.
+#     осознанный выбор: один класс, один архив. Карточка шамана при этом лежит
+#     в архиве em0103 отдельным файлом (em0104_cmn.prp = 5500/650/280/1500/1350,
+#     85.65), но своего класса в exe у em0104 нет, поэтому и строки нет.
 #   * Garm — НЕ вариант Warg: у него свой класс uEm0204, свой gid 0x91
 #     и своя mStudyIdx-полоса (4218..4222). Возвращаем его отдельной строкой.
 # Ключ — bid слота; значение — список (имя в bestiary.py, имя для вывода,
@@ -257,14 +270,27 @@ def generate_bestiary_headers(types_map, bestiary_list):
                     o.write(f'    {{ {extra["bestiaryId"]:>2}, 0x{gid2:02X}, {extra["mStudyIdx"]:>3}, "{disp}", "{family}", "{uem}", 0x{vt2:06X} }},\n')
 
         # Wildlife / Animals
+        # 85.65: ярлыки живности приведены к числам карточек. Доказано:
+        #   em8200/em8201 — олень и лань (HP 1100/1000 из .rst, карточка 180/55/1/20),
+        #   em8300 — вол (HP 2200, карточка 300/50/10/50),
+        #   em8501 — крыса (HP 200, карточка 180/40/1/10),
+        #   em8700 — кабан (HP 1000, карточка 120/20/1/10 = строка вики Wild Boar).
+        # НЕ доказано: em8500, em8600, em8601, em8602 — у всех карточка 1/1/1/1
+        # (у 8600/8602 действия Fly* — значит летают). Прежние «Deer / Hare /
+        # Snake / Bat» были чужими ярлыками: олень на самом деле в 8200. Поэтому
+        # вместо догадки пишем «Critter (unidentified)» — владелец просил не
+        # уточнять мелкую фауну, но и врать в логах не надо.
         wildlife = [
-            ("Deer / Stag", "Wildlife", "uEm8500"),
-            ("Doe", "Wildlife", "uEm8501"),
-            ("Hare / Rabbit", "Wildlife", "uEm8600"),
-            ("Snake / Critter", "Wildlife", "uEm8601"),
-            ("Bat / Crow", "Wildlife", "uEm8602"),
-            ("Ox / Boar", "Wildlife", "uEm8700"),
+            ("Deer / Stag", "Wildlife", "uEm8200"),
+            ("Doe", "Wildlife", "uEm8201"),
+            ("Ox", "Wildlife", "uEm8300"),
+            ("Large Rat", "Wildlife", "uEm8501"),
+            ("Wild Boar", "Wildlife", "uEm8700"),
             ("Camp Critter", "Wildlife", "uEm8000"),
+            ("Critter (unidentified)", "Wildlife", "uEm8500"),
+            ("Flying critter (unidentified)", "Wildlife", "uEm8600"),
+            ("Critter (unidentified)", "Wildlife", "uEm8601"),
+            ("Flying critter (unidentified)", "Wildlife", "uEm8602"),
         ]
         o.write("\n    // Wildlife / Animals (uEm8000, uEm8500 - uEm8700)\n")
         for w_name, w_fam, w_uem in wildlife:
