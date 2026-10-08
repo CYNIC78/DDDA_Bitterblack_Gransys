@@ -6,7 +6,9 @@ Runtime AI platform for **Dragon's Dogma: Dark Arisen** (Steam/GOG, x86).
 
 ---
 
-## 🎯 Текущий Milestone: Build 85.95 (`85.95-auditplan`)
+## 🎯 Текущий Milestone: Build 86.18 (`86.18-noscan`)
+
+Директор наконец видит всё поле: таблицу актёров заполняли объекты карты, и за бой он ни разу не видел больше восьми хобов при двадцати. Чёрный список декораций заменён белым списком актёров; параллельные приказы (пачка делится между двумя событиями) включены по умолчанию.
 
 **День 04.10 — ранги стали настоящей системой опасности, а не табличкой.** За
 сессию 85.70 → 85.93. Главное по итогам поля:
@@ -565,6 +567,7 @@ bash    tools/syntax_check.sh                    # g++ modules + ASCII UI
 | [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) §13 | открытые пробелы |
 | [`docs/SOURCE_OF_TRUTH.md`](docs/SOURCE_OF_TRUTH.md) | подтверждённые контракты |
 | [`docs/FIELD_MAP.md`](docs/FIELD_MAP.md) | offsets |
+| [`docs/RIFTSTONE_RECON.md`](docs/RIFTSTONE_RECON.md) | разведка соседнего мода Riftstone: сосуществование и наши пределы на 32 актёра |
 | [`CHANGELOG.md`](CHANGELOG.md) | мастер-индекс по дням (детали — `docs/changelog/`) |
 
 ## Принципы безопасности

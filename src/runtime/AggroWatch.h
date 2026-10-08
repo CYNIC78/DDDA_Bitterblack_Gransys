@@ -45,7 +45,10 @@ namespace Runtime {
 namespace Aggro {
 
 enum {
-    kMaxRows     = 32,  // особей под наблюдением
+    // 86.08: было 32 — вместе с g_act[32] это молча отсекало часть особей
+    // (AggroWatch.cpp: `if (s_nRow >= kMaxRows) return 0;`). Поднято вместе с
+    // kMaxAct; см. комментарий там и docs/RIFTSTONE_RECON.md.
+    kMaxRows     = 80,  // особей под наблюдением
     kMaxSlots    = 12,  // target slots + forced goblin-family roster (4 cards)
     kMaxParty    = 4,   // Аризен + до трёх пешек
     kMemberSlots = 5    // + графа «неразрешённая пешка», см. MEMBER_OTHERPAWN

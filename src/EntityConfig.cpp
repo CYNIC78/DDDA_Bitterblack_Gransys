@@ -92,14 +92,10 @@ static void SetVanilla(Tuning& t)
     t.sightRadius = 0.0f;
     t.sightAngle  = 0.0f;
     t.hearRadius  = 0.0f;
-    t.speedMin    = 1.0f;
-    t.speedMax    = 1.0f;
     t.leashScale  = 1.0f;
     t.returnSpeed = 1.0f;
-    t.returnFight = false;
     t.returnArmor = true;
     t.returnArmorMult = 4.0f;
-    t.returnDamageCut = 0.80f;
     t.scaleMin    = 1.0f;
     t.scaleMax    = 1.0f;
     t.scaleJitter = 0.0f;
@@ -124,10 +120,6 @@ static void ReadSection(iniConfig& cfg, const char* section, Tuning& t)
     float ang = cfg.getFloat(section, "sightAngle", t.sightAngle);
     t.sightAngle = (ang <= 0.0f) ? 0.0f : ClampAngle(ang);
 
-    t.speedMin = ClampSpeed(cfg.getFloat(section, "speedMin", t.speedMin));
-    t.speedMax = ClampSpeed(cfg.getFloat(section, "speedMax", t.speedMax));
-    if (t.speedMax < t.speedMin) t.speedMax = t.speedMin;  // защита от перепутанных границ
-
     t.scaleMin = ClampScale(cfg.getFloat(section, "scaleMin", t.scaleMin));
     t.scaleMax = ClampScale(cfg.getFloat(section, "scaleMax", t.scaleMax));
     if (t.scaleMax < t.scaleMin) t.scaleMax = t.scaleMin;
@@ -143,19 +135,12 @@ static void ReadSection(iniConfig& cfg, const char* section, Tuning& t)
         t.leashScale = ls;
     }
     t.returnSpeed = ClampSpeed(cfg.getFloat(section, "returnSpeed", t.returnSpeed));
-    t.returnFight = cfg.getBool(section, "returnFight", t.returnFight);
     t.returnArmor = cfg.getBool(section, "returnArmor", t.returnArmor);
     {
         float ram = cfg.getFloat(section, "returnArmorMult", t.returnArmorMult);
         if (ram < 1.0f) ram = 1.0f;
         if (ram > 20.0f) ram = 20.0f;
         t.returnArmorMult = ram;
-    }
-    {
-        float rdc = cfg.getFloat(section, "returnDamageCut", t.returnDamageCut);
-        if (rdc < 0.0f) rdc = 0.0f;
-        if (rdc > 0.95f) rdc = 0.95f;
-        t.returnDamageCut = rdc;
     }
     t.attackMult        = ClampCombat(cfg.getFloat(section, "attackMult",        t.attackMult));
     t.defenseMult       = ClampCombat(cfg.getFloat(section, "defenseMult",       t.defenseMult));
@@ -228,6 +213,10 @@ void Load()
 
     s_enabled = cfg.getBool("global", "enabled", true);
     // Запись выключена по умолчанию: читать и смотреть безопасно всегда.
+    // 86.03, ПРОВЕРЕНО: поставляемый ddda_entities.ini и вшитый
+    // DefaultEntitiesIni.h уже несут allowWrites = on, то есть на чистой
+    // установке запись включена и менять дефолт кода не нужно — он срабатывает
+    // только если ключ из файла удалён, а там «только смотрю» уместнее.
     s_allowWrites = cfg.getBool("global", "allowWrites", false);
 
     int schema = cfg.getInt("global", "schema", 1);

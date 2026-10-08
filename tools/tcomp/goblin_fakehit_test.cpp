@@ -58,7 +58,31 @@ int main()
     assert(!Runtime::Aggro::LiveGoblinCardMode(0u, 0u, &cap, &mx));
     assert(!Runtime::Aggro::LiveGoblinCardMode(1u, 1u, &cap, &mx));
     assert(!Runtime::Aggro::LiveGoblinCardMode(1u, 2u, &cap, &mx));
-    fprintf(stderr, "Goblin card mode 84.17 fixture passed "
-                    "(low-byte flag, fC4=300/fC5=484, fail-closed).\n");
+    // ГЕЙТ ВИДА. 86.03: хоб ВЕРНУТ, и вот почему это важная проверка.
+    //
+    // В 86.02 хоб был отсюда исключён по выводу «гейт гоблинской карты у хоба
+    // не проходит никогда» — его подсказали 20 аномалий «not live goblin head»
+    // в логе 86.00, где «флаг» читался как float-координата. Вывод был
+    // неправ: у тела несколько слотов ростера, гейт формы проверяется ПО СЛОТУ,
+    // часть слотов отбивается, часть пишется. Прямое доказательство — 27 строк
+    // «fakehit-signal ... first write @11125540», а 0x11125540 это uEm0101;
+    // фейк-хит вызывается только после успешного пина. Исключение вида
+    // выключило работающий механизм, то есть было регрессией.
+    //
+    // Проверка держит обе стороны: хоб обязан быть в гейте (иначе регрессия
+    // вернётся), а шум от переходных слотов гасится охлаждением попыток, а не
+    // исключением вида.
+    assert(Runtime::Aggro::IsPinnableKind("uEm0200", false));  // волк: всегда
+    assert(Runtime::Aggro::IsPinnableKind("uEm0200", true));
+    assert(!Runtime::Aggro::IsPinnableKind("uEm0100", false)); // без директора — нет
+    assert(Runtime::Aggro::IsPinnableKind("uEm0100", true));   // гоблин: проверен
+    assert(Runtime::Aggro::IsPinnableKind("uEm0101", true));   // ХОБ: вернули (86.03)
+    assert(!Runtime::Aggro::IsPinnableKind("uEm0101", false));
+    assert(Runtime::Aggro::IsPinnableKind("uEm0400", true));   // ящер: 84.29
+    assert(!Runtime::Aggro::IsPinnableKind(0, true));          // fail-closed
+    assert(!Runtime::Aggro::IsPinnableKind("uEm5000", true));  // без карточки — нет
+    fprintf(stderr, "Goblin card mode 84.17/86.03 fixture passed "
+                    "(low-byte flag, fC4=300/fC5=484, fail-closed; "
+                    "pinnable: wolf always, goblin/hob/saurian with director).\n");
     return 0;
 }

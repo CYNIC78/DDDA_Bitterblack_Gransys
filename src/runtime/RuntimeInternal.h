@@ -47,6 +47,7 @@ inline bool KindIsLiveEnemyBody(const char* n)
     return false;
 }
 
+
 namespace Runtime {
 
 // Фундамент лежит во вложенном Runtime::Mem, а вложенное пространство имён
@@ -92,7 +93,26 @@ struct ActorDump {
     // строковую константу для заранее известных vtable.
     char        kindBuf[40];
 };
-extern ActorDump g_act[32];
+// 86.08: СКОЛЬКО АКТЁРОВ ДЕРЖИМ. Было 32 — под ванильный лимит 10 врагов.
+//
+// Зачем поднимать. Соседний мод Riftstone снимает лимит движка (10 -> 30
+// по умолчанию, до 64), см. docs/RIFTSTONE_RECON.md. Но 32 нам мешали бы и
+// без него: в g_act лежат НЕ ТОЛЬКО враги — там же пешки, игрок и NPC
+// (EnemyCount() фильтрует по KindIsEnemy). То есть 30 врагов + партия +
+// игрок в 32 уже не влезают.
+//
+// 80 = их максимум 64 врага + партия (kPartyMaxBodies = 24) + запас.
+//
+// Чем это НЕ является: не снятие лимита движка. Мы по-прежнему видим только
+// тех, кого движок сделал активными. Снять лимит — это патч exe на 164
+// инструкции, он у них уже сделан и проверен байт в байт; переписывать его
+// у себя смысла нет (docs/RIFTSTONE_RECON.md §8.8).
+//
+// Почему адреса от их патча не едут: мы не индексируем менеджер спавна, а
+// ходим по связному списку тел через next/prev (DumpActorsFrom), и читаем
+// поля самого врага, а не менеджера (§5.5 того же разбора).
+static const int kMaxAct = 80;
+extern ActorDump g_act[kMaxAct];
 extern uintptr_t g_pawnCombatTarget;
 extern int g_nAct;
 extern uintptr_t g_pollAddr;
@@ -108,6 +128,10 @@ static const uint32_t kPartyBodySize       = 0x5A10;
 static const uint32_t kCmcBodySize         = 0x58E0;
 static const uint32_t kPawnManagerSize     = 5512;
 static const int      kPartyMaxBodies      = 24;
+
+// 86.08: буферы семян обхода (RewalkActors/Tick) держат и актёров, и партию —
+// значит размер от обеих констант, иначе партия вытесняла бы врагов.
+static const int kSeedCap = kMaxAct + kPartyMaxBodies;
 static const int      kPartyExactSlots     = 4;  // Arisen + three fixed pawn records
 static const int      kPartyMaxChildren    = 96;
 static const int      kPartyMaxValueHits   = 96;
@@ -291,6 +315,11 @@ struct ScanStats {
 };
 ScanStats ScanGetStats();
 void      ScanResetStats();
+
+// 86.10: итог таблицы актёров за сессию — одна строка в полевой пакет
+// (ёмкость, сколько проходов уперлось в потолок, сколько тел отброшено).
+// Зовётся из PawnAI_Shutdown(), когда поток тактов уже остановлен.
+void      ScanSessionSummary();
 
 // ---------------------------------------------------------------------------
 // Точка подключения исследовательского слоя.

@@ -120,7 +120,10 @@ void Init()
     s_burstsWeapon = 0;
     s_burstsDetector = 0;
 
-    s_enabled = config.getBool("pawnHaste", "enabled", false);
+    // 86.03: дефолт ВКЛЮЧЁН (решение владельца). Модуль задуман как компенсация:
+    // темп монстров поднят директором, пешкам даётся то же в окне подхода.
+    // Раньше он был выключен по умолчанию, и владелец включал его руками.
+    s_enabled = config.getBool("pawnHaste", "enabled", true);
     s_factor  = config.getFloat("pawnHaste", "factor", 1.20f);
     s_minDist = config.getFloat("pawnHaste", "minDistanceM", 5.0f);
     s_maxDist = config.getFloat("pawnHaste", "maxDistanceM", 40.0f);

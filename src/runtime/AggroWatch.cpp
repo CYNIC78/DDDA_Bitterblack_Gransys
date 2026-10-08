@@ -630,11 +630,95 @@ static bool InSecondaryResponderSet(uintptr_t body)
     return false;
 }
 
+// 86.03: хоб (uEm0101) ВЕРНУТ. Исключение его в 86.02 было ошибкой, и вот
+// разбор — он важен, потому что выглядит правдоподобно и в обе стороны.
+//
+// Что навело на исключение. Лог 86.00: 20 аномалий «not live goblin head»,
+// «флаг» карты у хоба читается как 3188594944 / 3212836864 / 0 / 3223143424,
+// то есть как float -0.1388 / -1.0 / -2.4572 — координаты, младший бит
+// нулевой, гейт (flag & 1) не проходит. Вывод «пин у хоба не работает вообще»
+// казался прямым.
+//
+// Почему он неверен. У тела НЕСКОЛЬКО слотов ростера (R.nSlots), и гейт формы
+// проверяется ПО СЛОТУ. Часть слотов хоба в переходном состоянии и честно
+// отбивается, часть — живая и пишется. Увидеть это в логе не получалось по
+// двум причинам сразу: PinAnomaly троттлится до одной строки в 10 с на ВЕСЬ
+// процесс, а успешная запись пина не логируется вовсе — строку «Aggro: PIN @»
+// печатает фейк-хит, и она же закрыта гейтом cardwatch, который был off.
+//
+// Прямое доказательство, что запись у хоба шла: 27 строк
+// «DIRECTOR fakehit-signal ... first write @11125540», а 0x11125540 — это
+// uEm0101 (EnemyTuner: scale 1.494 base 1.470 LEADER -> uEm0101 0x11125540).
+// Фейк-хит вызывается ТОЛЬКО после успешного пина (rc == 0), значит пин на
+// этом теле проходил. Ещё 25 успешных записей на 0x10de2b70 и 8 на 0x11230060.
+//
+// То есть 86.02 выключил у хоба работающий фейк-хит — регрессия. Шум
+// unsafeSkips лечится не исключением вида, а охлаждением повторных попыток на
+// пару тело+слот (см. kShapeRetryCooldownMs ниже).
 static bool IsPinnableKind(const char* kind, bool director)
 {
     if (!kind) return false;
     if (strcmp(kind, "uEm0200") == 0) return true;
     return director && (IsGoblinFamily(kind) || IsSaurianKind(kind));
+}
+
+// 86.03: охлаждение повторной попытки записи в ОДИН слот ОДНОГО тела.
+//
+// Зачем. Гейт формы отбивает слот в переходном состоянии — это правильно и
+// безопасно (записи нет). Но попытка повторялась каждый кадр, и за бой 86.00
+// набралось 3315 отбитых попыток на 1735 записей: счётчик unsafeSkips тонул в
+// шуме, и настоящий отказ в нём было не разглядеть.
+//
+// Почему охлаждение, а не «запомнить и больше не пробовать». Карта слота
+// оживает: пустая оболочка гоблина 0/0/0/0 поднимается в 1/4 (wake), боевой
+// режим сменяет восприятие. Вечный отказ означал бы, что тело, которое
+// через секунду стало записываемым, осталось бы без штыря до конца боя.
+//
+// 86.05: окно было 250 мс — и оно не сработало. 250 мс короче разрыва между
+// приказами: за сессию 86.05 было 13 приказов, и к каждому следующему окно
+// успевало истечь, так что каждый приказ заново пробовал все мёртвые слоты.
+// Итог: unsafeSkips=929 при writes=932 — половина попыток впустую, счётчик
+// снова утонул в шуме. Теперь 2 с: это ~15 кадров вместо каждого, и окно
+// переживает разрыв между приказами.
+//
+// 2 с всё ещё короче того, ради чего слот оживает (wake, смена режима), так
+// что тело не теряется. Ключ общий на все пути отказа одного слота: wake,
+// гейт формы, фейк-хит. УСПЕШНУЮ запись окно не трогает — иначе lease
+// фейк-урона (7000 мс) успевал бы затухнуть между попытками.
+const DWORD kShapeRetryCooldownMs = 2000;
+
+struct ShapeRetry { uintptr_t body; uintptr_t off; DWORD until; };
+static ShapeRetry s_shapeRetry[64];
+static int        s_nShapeRetry = 0;
+
+static bool ShapeRetryBlocked(uintptr_t body, uintptr_t off, DWORD now)
+{
+    for (int i = 0; i < s_nShapeRetry; ++i) {
+        ShapeRetry& r = s_shapeRetry[i];
+        if (r.body != body || r.off != off) continue;
+        if ((int)(now - r.until) < 0) return true;   // ещё в охлаждении
+        r.until = 0;                                 // срок вышел — пробуем
+        return false;
+    }
+    return false;
+}
+
+static void ShapeRetryArm(uintptr_t body, uintptr_t off, DWORD now)
+{
+    for (int i = 0; i < s_nShapeRetry; ++i) {
+        ShapeRetry& r = s_shapeRetry[i];
+        if (r.body == body && r.off == off) { r.until = now + kShapeRetryCooldownMs; return; }
+    }
+    // Таблица полна — заменяем самую старую по сроку: лучше потерять учёт у
+    // одного слота, чем перестать гасить шум вовсе.
+    int victim = 0;
+    for (int i = 1; i < s_nShapeRetry; ++i)
+        if ((int)(s_shapeRetry[i].until - s_shapeRetry[victim].until) < 0) victim = i;
+    if (s_nShapeRetry < (int)(sizeof(s_shapeRetry)/sizeof(s_shapeRetry[0])))
+        victim = s_nShapeRetry++;
+    s_shapeRetry[victim].body = body;
+    s_shapeRetry[victim].off  = off;
+    s_shapeRetry[victim].until = now + kShapeRetryCooldownMs;
 }
 
 // Goblin live card heads (84.17, лог 24 — GOBCARD-HEAD строки):
@@ -780,6 +864,8 @@ static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
 {
     if (!IsGoblinFamily(R.kind)) return -1;
     if (!IsEm0100RosterOff(S.off)) return -1;
+    // 86.05: слот мог только что отказать — не долбимся повторно.
+    if (ShapeRetryBlocked(R.body, S.off, GetTickCount())) return -1;
     const uintptr_t card = R.body + S.off;
     uint32_t flag = 0, mode = 0;
     float att = 0.0f, weight = 0.0f;
@@ -802,6 +888,7 @@ static int TryGoblinEmptyCardWake(Row& R, Slot& S, const char* who)
         WrSafe((void*)(card + 0x0C), &mode, 4);
         WrSafe((void*)(card + 0x10), &att, 4);
         WrSafe((void*)(card + 0x14), &weight, 4);
+        ShapeRetryArm(R.body, S.off, GetTickCount());   // 86.05
         PinAnomaly(R.body, "goblin-card-wake: WrSafe failed");
         return 1;
     }
@@ -857,6 +944,8 @@ static int TrySaurianEmptyCardWake(Row& R, Slot& S, const char* who)
 {
     if (!IsSaurianKind(R.kind)) return -1;
     if (!IsEm0100RosterOff(S.off)) return -1;
+    // 86.05: слот мог только что отказать — не долбимся повторно.
+    if (ShapeRetryBlocked(R.body, S.off, GetTickCount())) return -1;
     const uintptr_t card = R.body + S.off;
     uint32_t flag = 0, mode = 0;
     float att = 0.0f, weight = 0.0f;
@@ -879,6 +968,7 @@ static int TrySaurianEmptyCardWake(Row& R, Slot& S, const char* who)
         WrSafe((void*)(card + 0x0C), &mode, 4);
         WrSafe((void*)(card + 0x10), &att, 4);
         WrSafe((void*)(card + 0x14), &weight, 4);
+        ShapeRetryArm(R.body, S.off, GetTickCount());   // 86.05
         PinAnomaly(R.body, "saurian-card-wake: WrSafe failed");
         return 1;
     }
@@ -1224,9 +1314,15 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
     }
     const uintptr_t card = R.body + S.off;
 
+    // 86.03: слот недавно отбит гейтом формы — не долбим его каждый кадр.
+    // Возврат БЕЗ increments unsafeSkips: попытка не совершалась, и счётчик
+    // обязан показывать настоящие отказы, а не наше собственное терпение.
+    if (ShapeRetryBlocked(R.body, S.off, now)) return 2;
+
     uint32_t flag = 0, c4 = 0;
     if (!Rd((void*)(card + 0x08), &flag, 4)
         || !Rd((void*)(card + 0x0C), &c4, 4)) {
+        ShapeRetryArm(R.body, S.off, now);
         PinAnomaly(R.body, "shape: unreadable head");
         return 1;
     }
@@ -1261,6 +1357,7 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
         else
             sprintf_s(buf, "shape: f8=%u fC=%u 10=%.1f w=%.2f (not live 1/4 or 1/2)",
                       flag, c4, f10, f14);
+        ShapeRetryArm(R.body, S.off, now);
         PinAnomaly(R.body, buf);
         return 1;
     }
@@ -1273,12 +1370,14 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
     // the perception ceiling 300 into it would LOWER attention, so pin uses
     // the mode's own ceiling.
     if (cur < -0.001f || cur > maxNative) {
+        ShapeRetryArm(R.body, S.off, now);
         PinAnomaly(R.body, "attention value out of native range");
         return 1;
     }
 
     // Запись -> readback -> при рассинхроне откат к прочитанному.
     if (!WrSafe((void*)att, &writeWant, 4)) {
+        ShapeRetryArm(R.body, S.off, now);
         PinAnomaly(R.body, "WrSafe failed");
         return 1;
     }
@@ -1349,16 +1448,21 @@ static int PinWriteCard(Row& R, Slot& S, const char* who, float want, DWORD now,
 // чтобы не мешать штырю на той же карточке.
 static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, int orderScope)
 {
+    // 86.05: отказ фейк-хита тоже ставит слот на паузу (ключ общий с формой).
+    if (ShapeRetryBlocked(R.body, S.off, now)) return;
     if (orderScope && !OrderIdentityExactNow(orderScope)) {
         OrderIdentityDrop(orderScope);
         return;
     }
+    // 86.05: отказ фейк-хита тоже ставит слот на паузу (ключ общий с формой).
+    if (ShapeRetryBlocked(R.body, S.off, now)) return;
     const uintptr_t card = R.body + S.off;
 
     // Флаг 274: живое целое 0/1.
     uint32_t flagCur = 0;
     if (!Rd((void*)(card + 0x274), &flagCur, 4)
         || (flagCur != 0 && flagCur != 1)) {
+        ShapeRetryArm(R.body, S.off, now);   // 86.05
         PinAnomaly(R.body, "fakehit: 274 flag is not 0/1");
         return;
     }
@@ -1366,6 +1470,7 @@ static void PinFakehitCard(Row& R, Slot& S, const char* who, DWORD now, int orde
     float valCur = 0.0f;
     if (!Rd((void*)(card + 0x27C), &valCur, 4)
         || valCur < -0.001f || valCur > 600.0f) {
+        ShapeRetryArm(R.body, S.off, now);   // 86.05
         PinAnomaly(R.body, "fakehit: 27c out of native range");
         return;
     }
@@ -1477,6 +1582,7 @@ static void GoblinFakehitCard(Row& R, Slot& S, const char* who, DWORD now,
     float valCur = 0.0f;
     if (!Rd((void*)(card + 0x27C), &valCur, 4)
         || valCur < -0.001f || valCur > 600.0f) {
+        ShapeRetryArm(R.body, S.off, now);   // 86.05
         PinAnomaly(R.body, "goblin-fakehit: 27C out of native range");
         return;
     }
@@ -1680,7 +1786,9 @@ static void PinRow(Row& R, const PartyRef* party, int nParty, DWORD now,
             }
         } else if (suppress) {
             const int rc = PinWriteCard(R, S, who, kSuppValue, now, orderScope);
-            if (rc != 0)
+            // 2 = слот в охлаждении после недавнего отказа: попытки не было,
+            // поэтому и дамп формы не нужен — иначе шум вернётся сюда.
+            if (rc == 1)
                 PinShapeDump(R, party, nParty, now);
         }
     }

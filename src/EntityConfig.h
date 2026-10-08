@@ -34,17 +34,17 @@ struct Tuning {
     float sightAngle;    // 0 = ваниль. Градусы. 60 ваниль, >120 убивает стелс
     float hearRadius;    // 0 = ваниль
 
-    // темп действий (cMotionCtrl). ОПАСНО выше 1.5 — рассинхрон хитбокса
-    float speedMin;      // нижняя граница разброса на особь
-    float speedMax;      // верхняя
+    // 86.00: speedMin/speedMax УБРАНЫ. Они читались из ини в эту структуру и
+    // не применялись ничем: настоящий темп живёт в ddda_ai_overhaul.ini
+    // ([monsterTempo] + карточки видов). Ключ без потребителя хуже отсутствия.
 
     // поводок / возврат домой (DDON Sanctuary)
     float leashScale;    // множитель радиуса возврата, 1.0 = ваниль
     float returnSpeed;   // множитель темпа на возврате (DDON-style рывок)
-    bool  returnFight;   // огрызаться на отходе (ActThrowStone и т.п.)
     bool  returnArmor;   // DDON Sanctuary: многократная защита при возврате
     float returnArmorMult; // множитель физ/маг брони при возврате (напр. 4.0 = 400%)
-    float returnDamageCut; // срез входящего урона (0.0..0.95)
+    // 86.00: returnFight и returnDamageCut убраны тем же основанием —
+    // consumers не было, ключи в ини лишь обещали поведение.
 
     // размер особи (cCharParamEnemy +0x12C スケール値). 1.0 = ваниль.
     // Разброс на особь: заметно глазом мгновенно.

@@ -9,7 +9,7 @@
 
 namespace Runtime {
 
-ActorDump g_act[32];
+ActorDump g_act[kMaxAct];
 uintptr_t g_pawnCombatTarget = 0;
 int       g_nAct = 0;
 uintptr_t g_pollAddr = 0x10000000u;

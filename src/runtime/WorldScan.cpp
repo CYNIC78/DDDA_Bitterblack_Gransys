@@ -6,6 +6,7 @@
 #include "RuntimeInternal.h"
 #include "MonsterTempo.h"
 #include "AggroWatch.h"
+#include "LogMemSession.h"   // 86.10: сводка таблицы актёров — в полевой пакет
 #include "../ActMap.Generated.h"
 #include "../CombatBus.h"
 
@@ -71,6 +72,28 @@ bool KindIsCreature(const char* kind)
     if (!kind) return false;
     if (kind[0] == 'u' && kind[1] == 'E' && kind[2] == 'm') return true;
     return strcmp(kind, "uHumanEnemy") == 0;
+}
+
+// 86.12: КТО ВООБЩЕ ЗАНИМАЕТ СЛОТ ТАБЛИЦЫ АКТЁРОВ — белый список.
+//
+// Причина в поле, а не в вкусе: 86.10 показал, что таблицу на 94 % заполняют
+// объекты карты (uOmObj11000=32 uOmSwingInstancing=32 … против uEm0101=8), и
+// директор за бой ни разу не увидел больше восьми хобов при двадцати. 86.11
+// отсек семейство «uO» — и на его место встало следующее (uFmSwingBase=46,
+// uStageSplitMdl=25, uSkyGrass=5, uStageLowMdl=4). Чёрный список здесь не
+// работает в принципе: движок всегда найдёт, чем занять 80 слотов.
+//
+// Что остаётся: существа (KindIsCreature: uEm*, uHumanEnemy — враги И мирная
+// живность, она нужна тем же потребителям) и партия: uPlayer/uCmc/uNpc ищут в
+// снимке мира подписчики шины (CombatIntel.cpp:191, WandRange.cpp:513-514).
+// Безымянное «?» и «u?84» не остаются: KindIsEnemy их и так не принимает, то
+// есть слот они занимали впустую.
+static bool KindBelongsInActorTable(const char* kind)
+{
+    if (KindIsCreature(kind)) return true;
+    if (!kind) return false;
+    return !strcmp(kind, "uPlayer") || !strcmp(kind, "uCmc")
+        || !strcmp(kind, "uNpc");
 }
 
 // ── 85.64: МИРНАЯ ЖИВНОСТЬ — ЯВНЫЙ СПИСОК ───────────────────────────────────
@@ -183,7 +206,22 @@ void PublishWorldFromActors()
     w.timestampMs = MsNow();
     w.dominantCategory = -1;
     int best = -1;
-    for (int i = 0; i < g_nAct && w.count < 32; ++i) {
+    // 86.09: ПРЕДЕЛ — ЁМКОСТЬ ПРИЁМНИКА, А НЕ РАЗМЕР СПИСКА АКТЁРОВ.
+    //
+    // В 86.08 я поднял эту границу на kMaxAct (80) вместе с остальными
+    // тридцать-двумя — и это был краш игры. `w.units` объявлен как
+    // `WorldPresence units[32]` в CombatBus.h, то есть запись
+    // `w.units[w.count]` при w.count = 32..79 лила ЗА КОНЕЦ структуры
+    // WorldReport (WorldPresence ~80 байт, перелив до ~3.8 КБ).
+    //
+    // Проявилось ровно так, как должно было: на первом бою всё нормально
+    // (актёров меньше 32), краш — когда подошёл ко второй точке спавна и
+    // список перевалил за 32.
+    //
+    // Ёмкость берём из самого массива через sizeof, а не литералом: тогда
+    // граница не может разойтись с приёмником ни при каком kMaxAct.
+    const int kUnitsCap = (int)(sizeof(w.units) / sizeof(w.units[0]));
+    for (int i = 0; i < g_nAct && w.count < kUnitsCap; ++i) {
         if (!g_act[i].ptr) continue;
         // Труп — не участник боя. Без этого счётчик в PawnAI показывает
         // "1 враг" над свежим трупом, пока движок не выгрузит тело.
@@ -745,17 +783,157 @@ void ScanActSlot(ActorDump& A)
     if (A.actOff) g_actSlotOff = A.actOff;   // remember for the cheap path
 }
 
+// 86.08: переполнение таблицы актёров сообщается ОДИН раз за сессию, а не на
+// каждое отброшенное тело — при 64 врагах это были бы сотни строк за бой.
+static bool s_actOverflowLogged = false;
+
+// 86.10: ЧЕМ ЗАНЯТА ТАБЛИЦА АКТЁРОВ.
+//
+// Поле 86.09: «actor table FULL at 80» сработало в ВАНИЛЬНОЙ сессии, где врагов
+// было 23 (Tempo: rank summary total=23) плюс партия из четырёх. Значит 80
+// слотов занимают не только враги, и поднимать kMaxAct дальше вслепую нельзя:
+// 86.08 показал, чем кончается поднятие границы без понимания того, что именно
+// она ограничивает. Сначала состав — он виден из того же прохода бесплатно.
+//
+// Гистограмма живёт один проход (сбрасывается в DumpActorsFrom) и печатается
+// вместе с первым переполнением. Счётчики сессии живут до выгрузки и уходят
+// одной строкой в полевой пакет: по ним видно, был ли переполнением один такт
+// на загрузке или таблица полна весь бой.
+struct KindTally { char name[40]; int n; };
+static const int kKindTallyCap = 32;
+static KindTally s_tally[kKindTallyCap];
+static int  s_nTally        = 0;
+static int  s_tallyOther    = 0;   // 86.11: тела, чей вид не влез в гистограмму
+static int  s_tallyDropped  = 0;   // отброшено в этом проходе
+static int  s_actScanPasses = 0;   // сколько проходов сделано за сессию
+static int  s_actFullPasses = 0;   // сколько из них уперлись в потолок
+static int  s_actDroppedTotal = 0;
+static int  s_actDroppedWorst = 0;
+static int  s_nonActorSkipped = 0; // 86.12: кто не пущен в таблицу (не актёр)
+static int  s_blindTicks      = 0; // 86.12: такты «партия известна, актёров нет»
+static int  s_pollFinds       = 0; // 86.14: сколько раз поллинг дал новое семя
+
+// 86.12: нужен ли обход на этом такте. Семена берутся из таблицы актёров И из
+// тел партии (RewalkActors), поэтому пустая таблица при известной партии — не
+// повод молчать. Отдельной функцией — чтобы условие можно было проверить
+// фикстурой: именно его поломка ослепила сессию 86.12.
+static bool RewalkNeeded() { return g_nAct > 0 || g_nParty > 0; }
+
+// 86.14: ИЩЕМ, ПОКА НЕ НАШЛИ ХОТЬ ОДНО СУЩЕСТВО.
+//
+// Поле 86.13 (после починки обхода): passes=1858, blindTicks=0 — обход жив, но
+// maxActors=4 (одна партия), nonActors=8 и directorWrites=0 при настоящей
+// драке. Арифметика простая: горячее кольцо 0x10000000..0x18000000 — это
+// 128 МБ, а лёгкий срез 256 КБ раз в 2 с покрывает его за 17 минут. Сессия
+// шла 6.6 минуты, то есть поллинг не прошёл и половины кольца.
+//
+// Раньше это не мешало: тяжёлый режим (8 МБ/тик, кольцо за 2.4 с) выключался
+// при появлении партии, но найденное за первые секунды тело обрастало
+// декорациями, и обход жил на этом субстрате. Белый список 86.12 субстрат
+// убрал — значит искать обязан поллинг, и останавливать его по принципу
+// «таблица не пуста» больше нельзя: партия в таблице есть всегда.
+static bool SearchingForActors()
+{
+    for (int i = 0; i < g_nAct; ++i)
+        if (g_act[i].ptr && KindIsCreature(g_act[i].kind)) return false;
+    return true;
+}
+
+static void TallyReset() { s_nTally = 0; s_tallyOther = 0; s_tallyDropped = 0; }
+
+static void TallyAdd(const char* kind)
+{
+    if (!kind || !kind[0]) kind = "?";
+    for (int i = 0; i < s_nTally; ++i)
+        if (!strcmp(s_tally[i].name, kind)) { ++s_tally[i].n; return; }
+    // 86.11: ячеек не хватило — тело всё равно посчитано. В поле 86.10
+    // гистограмма на 16 ячеек молча потеряла хвост: в показанных восьми видах
+    // было 105 тел, а в проходе 162 (80 в таблице + 82 отброшено). Состав
+    // обязан сходиться с итогом, иначе по нему нельзя принимать решение.
+    if (s_nTally >= kKindTallyCap) { ++s_tallyOther; return; }
+    lstrcpynA(s_tally[s_nTally].name, kind, sizeof(s_tally[s_nTally].name));
+    s_tally[s_nTally].n = 1;
+    ++s_nTally;
+}
+
+// Состав прохода: виды по убыванию числа тел, не больше восьми. Сортировка
+// выбором по копии порядка — ячеек 32, дороже некуда, и это строка на одно
+// переполнение за сессию.
+static void TallyComposition(char* out, int cap)
+{
+    if (!out || cap <= 0) return;
+    out[0] = 0;
+    int order[kKindTallyCap];
+    int nOrd = 0;
+    for (int i = 0; i < s_nTally && nOrd < kKindTallyCap; ++i) order[nOrd++] = i;
+    for (int a = 0; a + 1 < nOrd; ++a) {
+        int best = a;
+        for (int b = a + 1; b < nOrd; ++b)
+            if (s_tally[order[b]].n > s_tally[order[best]].n) best = b;
+        if (best != a) { const int t = order[a]; order[a] = order[best]; order[best] = t; }
+    }
+    const int shown = nOrd < 8 ? nOrd : 8;
+    int used = snprintf(out, (size_t)cap, "composition");
+    for (int i = 0; i < shown && used < cap; ++i)
+        used += snprintf(out + used, (size_t)(cap - used), " %s=%d",
+                         s_tally[order[i]].name, s_tally[order[i]].n);
+    if (nOrd > shown && used < cap)
+        used += snprintf(out + used, (size_t)(cap - used), " +%d more kinds",
+                         nOrd - shown);
+    // 86.11: тела, которым не хватило ячейки гистограммы, — отдельным числом,
+    // а не в никуда. Без этого состав расходился с итогом прохода.
+    if (s_tallyOther > 0 && used < cap)
+        used += snprintf(out + used, (size_t)(cap - used), " other=%d",
+                         s_tallyOther);
+    if (s_nTally >= kKindTallyCap && used < cap)
+        used += snprintf(out + used, (size_t)(cap - used), " (tally full at %d)",
+                         kKindTallyCap);
+}
+
+// 86.10: итог таблицы актёров — в полевой пакет (см. LogMemSession.h). Строка
+// нужна и когда переполнений не было: по «passes» видно, что обход вообще шёл,
+// а нули в «fullPasses/dropped*» тогда читаются как «хватало всем», а не как
+// «мы ничего не мерили».
+// 86.12: «nonActors» — сколько объектов не пущено в таблицу белым списком. По
+// нему видно и работу фильтра, и его цену: ноль означал бы, что фильтр не
+// встретил ни одного постороннего, а не что он сломался молча.
+// «blindTicks» — такты, где партия была известна, а актёров не было вовсе.
+// Ноль — норма; большое число значит, что мод не видел поле (86.12: 2257 из
+// 2257, passes=4, директор не написал ничего за всю драку).
+// «pollFinds» — сколько раз поллинг памяти дал новое семя. Это единственный
+// независимый от таблицы источник открытий, поэтому ноль при живом бое значит,
+// что поиск не работает (86.13: passes=1858, обход здоров, pollFinds=0,
+// maxActors=4 — одна партия).
+void ScanSessionSummary()
+{
+    // 86.12: строка нужна и при НУЛЕ проходов — именно тогда она и важнее всего
+    // (слепая сессия). Раньше возвращались молча, и полная слепота читалась бы
+    // только по отсутствию строки.
+    if (!s_actScanPasses && !s_blindTicks) return;
+    char l[220];
+    snprintf(l, sizeof(l), "WorldScan: actor table summary cap=%d passes=%d"
+             " fullPasses=%d droppedTotal=%d droppedWorst=%d nonActors=%d"
+             " blindTicks=%d pollFinds=%d",
+             (int)kMaxAct, s_actScanPasses, s_actFullPasses,
+             s_actDroppedTotal, s_actDroppedWorst, s_nonActorSkipped,
+             s_blindTicks, s_pollFinds);
+    LogMem::SessionNote(l);
+}
+
 void DumpActorsFrom(uintptr_t* seed, int ns)
 {
     g_nAct = 0;
+    TallyReset();
     if (!seed || ns <= 0) return;
+    ++s_actScanPasses;
 
     // Обход шире списка: Devilfire 84.24 — 32 слота заняли
     // uEmDragonBase::DragonAttackRange (44 B) и uEm5000_1; Дрейк uEm5900
     // в g_act не попал. Деталь не кладём, но next/prev обязаны остаться
     // в walk — иначе тело, видимое только как сосед компоненты, теряется.
-    // Вызывать seed[] за 32 нельзя: у RewalkActors/Tick массив ровно 32.
-    uintptr_t walk[96];
+    // 86.08: 192 вместо 96. Обход обязан быть ШИРЕ списка, а список вырос с
+    // 32 до kMaxAct=80; прежние 96 дали бы запас в 16 ячеек вместо трёхкратного.
+    uintptr_t walk[192];
     const int kWalkCap = (int)(sizeof(walk) / sizeof(walk[0]));
     int nw = 0;
     for (int i = 0; i < ns && nw < kWalkCap; ++i) {
@@ -814,7 +992,31 @@ void DumpActorsFrom(uintptr_t* seed, int ns)
         if (kind[0] == 'u' && kind[1] == 'E' && kind[2] == 'm'
             && !KindIsLiveEnemyBody(kind))
             continue;
-        if (g_nAct >= 32) continue;
+        // 86.12: В ТАБЛИЦЕ — ТОЛЬКО АКТЁРЫ. Белый список вместо чёрного.
+        //
+        // В 86.11 я отсекал объекты карты по префиксу «uO». Поле 86.11:
+        //   worldObjects=86660, droppedTotal 104494 -> 43745, droppedWorst 112 -> 40
+        // и таблица ВСЁ РАВНО полна на 1143 проходах из 1214, потому что на место
+        // uO* встал следующий слой декораций:
+        //   composition uFmSwingBase=46 uStageSplitMdl=25 uEm0101=8 uSkyGrass=5
+        //               uStageLowMdl=4 uCmc=3 uEm5000=1 uEm5900=1
+        // Отсекать по имени — это игра в whack-a-mole с движком: семейство
+        // декораций найдётся всегда. Поэтому правило перевёрнуто: слот занимают
+        // только существа (uEm*, uHumanEnemy) и партия (uPlayer/uCmc/uNpc — они
+        // нужны подписчикам шины, см. CombatIntel.cpp:191, WandRange.cpp:513).
+        // Всё остальное, включая безымянное «?», не нужно ни одному продуктовому
+        // потребителю: EnemyCount/EnemyBodyAt и KindIsEnemy(u.kind) их и так не
+        // видели, а слоты и семена обхода они съедали.
+        if (!KindBelongsInActorTable(kind)) { ++s_nonActorSkipped; continue; }
+        TallyAdd(kind);   // 86.10: считаем и тех, кому слота не хватило
+        if (g_nAct >= kMaxAct) {
+            // 86.08: было молчаливым `continue`, и это ровно тот класс дефекта,
+            // который дорого искать: часть врагов просто не существует для
+            // директора и агро, а в логе ни строчки. Так мы в 86.04 искали
+            // directorWrites=0. Одна строка за сессию, не на каждое тело.
+            ++s_tallyDropped;
+            continue;
+        }
 
         ActorDump& A = g_act[g_nAct];
         memset(&A, 0, sizeof(A));
@@ -843,13 +1045,33 @@ void DumpActorsFrom(uintptr_t* seed, int ns)
         ScanActSlot(A);
         g_nAct++;
     }
+
+    // 86.10: переполнение — в сессионные счётчики всегда, а строка с составом
+    // одна на сессию. Состав печатаем ПОСЛЕ прохода, а не в момент отказа:
+    // на середине обхода гистограмма была бы неполной и врала бы о причинах.
+    if (s_tallyDropped > 0) {
+        ++s_actFullPasses;
+        s_actDroppedTotal += s_tallyDropped;
+        if (s_tallyDropped > s_actDroppedWorst) s_actDroppedWorst = s_tallyDropped;
+        if (!s_actOverflowLogged) {
+            s_actOverflowLogged = true;
+            char comp[400];
+            TallyComposition(comp, sizeof(comp));
+            logFile << "WorldScan: actor table FULL at " << kMaxAct
+                    << " - dropped " << s_tallyDropped
+                    << " actor(s) in this pass; while the table stays full they"
+                       " are INVISIBLE to director/aggro (raise kMaxAct only if"
+                       " this shows up without an enemy-cap mod). "
+                    << comp << std::endl;
+        }
+    }
 }
 
 void RewalkActors()
 {
-    uintptr_t seed[32];
+    uintptr_t seed[kSeedCap];
     int ns = 0;
-    for (int i = 0; i < g_nAct && ns < 32; ++i)
+    for (int i = 0; i < g_nAct && ns < kSeedCap; ++i)
         if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
 
     // ТЕЛА ПАРТИИ КАК СЕМЕНА ОБХОДА.
@@ -863,7 +1085,7 @@ void RewalkActors()
     // Аризен и главная пешка известны всегда и лежат в том же списке
     // живых объектов. Добавляем их семенами: тогда новый лагерь виден
     // на первом же тике после загрузки, без ожидания поллинга.
-    for (int i = 0; i < g_nParty && ns < 32; ++i) {
+    for (int i = 0; i < g_nParty && ns < kSeedCap; ++i) {
         const uintptr_t p = g_party[i].ptr;
         if (!p) continue;
         bool dup = false;
@@ -1183,35 +1405,61 @@ void WorldScan_Tick()
     // Build 69.2: с этой точки начинается тяжёлая часть тика — её и мерим.
     ScanTimer scanTimer;
     last = now;
-    if (g_nAct)
+    // 86.12: ОБХОД ЖИВЁТ, ПОКА ЖИВ ХОТЬ ОДИН ИСТОЧНИК СЕМЯН — а не только таблица.
+    //
+    // Было `if (g_nAct)`. Поле 86.12 (белый список актёров): таблица очистилась
+    // от декораций — и вместе с ней исчез источник семян, потому что
+    // RewalkActors() набирает семена из g_act. Дальше сработала вторая половина
+    // ловушки: needUrgentPoll требует ПУСТОЙ партии, а партия была известна,
+    // поэтому тяжёлый поллинг тоже не включился. Итог за сессию:
+    //   passes=4 nonActors=8 maxActors=0 noWorldTicks=2257 directorWrites=0
+    // То есть мод всю драку не видел ни одного монстра. Декорации в таблице были
+    // не мусором, а субстратом обхода — выкинуть их, не отвязав семена от
+    // таблицы, значит ослепнуть.
+    //
+    // Партия известна всегда и лежит в том же списке живых объектов (это и есть
+    // смысл семян из g_party внутри RewalkActors), поэтому её одной достаточно.
+    if (RewalkNeeded())
         RewalkActors();
+    // 86.12: слепые окна — 150-мс такты, где партия известна, а актёров нет.
+    // Ровно то состояние, в котором 86.12 провёл всю сессию; в логе оно читалось
+    // только по косвенным признакам (passes=4 при 2257 тактах).
+    if (!g_nAct && g_nParty > 0) ++s_blindTicks;
     // Поллинг горячего кольца:
     // Когда список пуст и семян нет — активный поиск (8 МБ/тик).
     // Когда актёры уже есть или известна партия — RewalkActors обходит всех
     // по связному списку в микросекунды, а поллинг спит и делает редкий
     // лёгкий срез раз в 2 секунды (256 КБ), исключая микрофризы в бою.
+    // 86.14: режим поллинга зависит от того, нашли ли мы хоть одно СУЩЕСТВО,
+    // а не от того, пуста ли таблица (см. SearchingForActors).
     static DWORD lastPollMs = 0;
-    const bool needUrgentPoll = (!g_nAct && !g_nParty);
-    if (!needUrgentPoll && lastPollMs && now - lastPollMs < 2000) return;
+    const bool searching = SearchingForActors();
+    const DWORD pollEveryMs = searching ? 0 : 2000;
+    if (pollEveryMs && lastPollMs && now - lastPollMs < pollEveryMs) return;
     lastPollMs = now;
 
-    static int fruitless = 0;              // подряд тиков без новой находки
+    // Бюджет: старт до появления партии — прежние 8 МБ/тик; поиск существа —
+    // 1 МБ на такт (кольцо 128 МБ обходится за ~19 с, срез стоит ~5 мс); когда
+    // существо найдено — прежний лёгкий срез 256 КБ раз в 2 с.
     uint32_t budget;
-    if (needUrgentPoll) { budget = 0x800000u; fruitless = 0; }
-    else                { budget = 0x40000u; }
+    if (!g_nAct && !g_nParty) budget = 0x800000u;
+    else if (searching)       budget = 0x100000u;
+    else                      budget = 0x40000u;
     g_pollBudget = budget;
 
+    // (Счётчик «подряд тиков без находки» убран: он увеличивался, но нигде не
+    // читался — режим поллинга от него всё равно не зависел.)
     uintptr_t s = PollSeedSlice(budget);
-    if (!s) { if (fruitless < 3) ++fruitless; return; }
+    if (!s) return;
     int have = 0;
     for (int i = 0; i < g_nAct; ++i)
         if (g_act[i].ptr == s) { have = 1; break; }
-    if (have) { if (fruitless < 3) ++fruitless; return; }
-    fruitless = 0;                         // нашли новое — снова во весь опор
-    uintptr_t seed[32];
+    if (have) return;
+    ++s_pollFinds;
+    uintptr_t seed[kSeedCap];
     int ns = 0;
     seed[ns++] = s;
-    for (int i = 0; i < g_nAct && ns < 32; ++i)
+    for (int i = 0; i < g_nAct && ns < kSeedCap; ++i)
         if (g_act[i].ptr) seed[ns++] = g_act[i].ptr;
     DumpActorsFrom(seed, ns);
     PublishWorldFromActors();

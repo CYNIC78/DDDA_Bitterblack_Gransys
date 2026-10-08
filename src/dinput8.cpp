@@ -108,6 +108,14 @@ void Initialize()
             << "  log=RAM-until-exit" << std::endl;
     logFile << "MH_Initialize: " << MH_StatusToString(MH_Initialize()) << std::endl;
 
+    // 85.97: «конфига нет» печатаем ЗДЕСЬ, а не в конструкторе iniConfig. Тот
+    // объект глобальный и конструируется до DllMain, где logFile (extern из
+    // другой единицы трансляции) может быть ещё не построен — запись в него и
+    // давала 0xc0000142 при отсутствующем ini.
+    if (config.FileMissing())
+        logFile << "Config: " << config.Path() << " not found - fresh install,"
+                << " missing keys will be written with defaults" << std::endl;
+
     InitHooks();
 
     // Конфиг сущностей: своя папка, hot-reload по mtime.

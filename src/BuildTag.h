@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "85.95-auditplan"
+#define MOD_BUILD_TAG "86.18-noscan"

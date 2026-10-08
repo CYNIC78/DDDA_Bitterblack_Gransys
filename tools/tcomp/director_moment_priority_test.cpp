@@ -17,6 +17,22 @@ SpeciesTempoNumbers SpeciesTempoFromIni(SpeciesIniReader&, const SpeciesCard&,
     n.rageEnabled = false;     // безопасный путь продукта: нет строки в ini — нет темпа
     return n;
 }
+
+// 86.03, шаг D: база вида может прийти из ini ([species.<kind>] baseLoco*/
+// baseAnim*). Фикстура проверяет ПРИОРИТЕТЫ МОМЕНТОВ, а не числа темпа, поэтому
+// стаб честно делегирует прежнему правилу (карточка + общий сдвиг): ключей вида
+// в подменённом конфиге нет, значит SpeciesBaseRangeEffective дала бы ровно это.
+// Настоящее чтение ключей проверяет species_tuning_test.cpp.
+void SpeciesBaseRangeEffective(BackfillingIniReader&, const SpeciesCard* card,
+                               float globalLocoLo, float globalLocoHi,
+                               float globalAnimLo, float globalAnimHi,
+                               float* locoLo, float* locoHi,
+                               float* animLo, float* animHi)
+{
+    SpeciesBaseRangeFor(card, globalLocoLo, globalLocoHi,
+                        globalAnimLo, globalAnimHi,
+                        locoLo, locoHi, animLo, animHi);
+}
 } // namespace MonsterAI
 
 std::ofstream logFile("/tmp/director_moment_priority_test.log");
@@ -35,6 +51,9 @@ static std::map<uintptr_t, MobilizationCall> g_overrides; // currently held
 static std::map<uintptr_t, MobilizationCall> g_decaying;
 static std::vector<uintptr_t> g_cleared; // release/reset audit trail
 static uintptr_t g_overrideFailBody = 0;
+// 86.01: тело, у которого допуск перечитал вид живьём и не совпал (движок
+// переиспользовал слот). Это отказ ПРО ТЕЛО, а не системный.
+static uintptr_t g_staleKindBody = 0;
 static bool g_tempoReady = true;
 static const char* g_tempoReason = "ready";
 static uintptr_t g_identityBody[4] = {};
@@ -128,6 +147,10 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
                                const char** reasonOut)
 {
     if (receipt) memset(receipt, 0, sizeof(*receipt));
+    if (body && body == g_staleKindBody) {
+        if (reasonOut) *reasonOut = "director-mobilization-kind-mismatch";
+        return false;
+    }
     if (!body || !exactKind
         || (strcmp(exactKind, "uEm0200") && strcmp(exactKind, "uEm0100")
             && strcmp(exactKind, "uEm0101") && strcmp(exactKind, "uEm0400"))
@@ -406,6 +429,7 @@ static void FreshDirector()
     g_decaying.clear();
     g_cleared.clear();
     g_overrideFailBody = 0;
+    g_staleKindBody = 0;
     g_tempoReady = true;
     g_tempoReason = "ready";
     g_focusMember = -1;
@@ -414,12 +438,26 @@ static void FreshDirector()
     g_focusResponse = Runtime::Aggro::DIRECTOR_RESPONSE_NONE;
     strcpy(g_focusKind, "uEm0200");
     g_observerDemand = false;
+    // 86.03: дефолт [monsterAI] enabled стал true — чистая установка стартует с
+    // работающим директором. Фикстуре же нужно выключенное начало: она
+    // проверяет переход выкл -> включён и спрос наблюдателя. Ключ задаётся
+    // словарём boolKeys, а НЕ forceBool: forceBool рассчитан на один ключ и
+    // сбрасывается после Init, а этот тест сам подменяет им parallelOrders.
+    config.boolKeys["enabled"] = false;
+    // 86.05: то же про wolfActuator. Дефолт стал true, потому что это главный
+    // рубильник привода (при off ApplyPolicies снимает любой приказ), и чистая
+    // установка обязана стартовать с работающим директором. Фикстура же
+    // проверяет переход выкл -> включён, поэтому задаёт off явно.
+    config.boolKeys["wolfActuator"] = false;
     Init();
     assert(!Enabled());
     SetEnabled(true);
     assert(g_observerDemand);
     assert(!ActuatorEnabled());
     assert(GameplayWriteCount() == 0);
+    // Привод здесь НЕ включается намеренно: каждый тест, которому он нужен,
+    // зовёт SetActuatorEnabled(true) сам. Проверка «default-off = ни одной
+    // записи» (TestBuild012SynchronizedMobilization) опирается именно на это.
 }
 
 static void TestPriorityAndHysteresis()
@@ -1836,7 +1874,14 @@ static void TestFallenGuardSituation()
     assert(PolicyEngaged());
     assert(g_focusMember == Runtime::PARTY_HIRED2);
     assert(g_focusBody == g_snapshot.member[Runtime::PARTY_HIRED2].body);
-    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALERT);
+    // 85.96: АССЕРТ ПРИВЕДЁН К КОДУ. Здесь стоял ALERT — так было до поля 85.91.
+    // Теперь добивание лежащей пешки идёт в ALARM у всех четырёх видов
+    // (TacticalCues.cpp, правила "tactical-pawn-finish", приоритеты 70/69/68/67):
+    // ALARM включает suppress, без него монстр, сбивший пешку, тут же видел
+    // другую цель и отходил по ванильной логике — «такую добычу надо добивать
+    // активно, а не пятиться» (наблюдение владельца). Ошибка не всплывала,
+    // потому что скрипт падал раньше — на сверке секций [monsterAI] в двух ini.
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALARM);
     assert(!strcmp(g_focusKind, "uEm0100"));
 
     // Пешка ВСТАЛА — добивать некого, событие кончается в тот же скан.
@@ -1970,15 +2015,21 @@ static void TestPawnFinishUnitsAndBlockers()
     assert(scan.finish.reason
            && !strcmp(scan.finish.reason, "no-pawn-on-ground-awake"));
 
-    // Сбита с ног, но монстров рядом нет: ближайший в 12 м при пределе 10 м.
+    // Сбита с ног, но монстров рядом нет: ближайший в 14 м при пределе 12 м.
+    //
+    // 85.96: было 12 м при пределе 10 м. В поле 85.91 круг исполнителей
+    // добивания расширен 10 -> 12 м (TacticalCues.cpp, поле радиуса в правилах
+    // "tactical-pawn-finish"), и 12 м перестало быть «дальше предела» —
+    // ситуация стала совпадать. Берём 14 м: заведомо за кругом при любом из
+    // двух пределов, так что тест проверяет причину, а не конкретное число.
     party[1].downedAwake = true;
     party[1].act = "cPlActDmgDown";
-    mobs[0].x = 1500.0f;
-    mobs[1].x = 1600.0f;
+    mobs[0].x = 1700.0f;
+    mobs[1].x = 1800.0f;
     ScanTacticalSituations(party, 3, mobs, 2, &scan);
     assert(!scan.matched);
     assert(scan.finish.reason && !strcmp(scan.finish.reason, "no-mob-at-pawn"));
-    assert(std::fabs(scan.finish.nearestKindM - 12.0f) < 0.001f);
+    assert(std::fabs(scan.finish.nearestKindM - 14.0f) < 0.001f);
 
     // Ключ 0: механизм выключен целиком — даже когда всё сошлось.
     mobs[0].x = 500.0f;
@@ -2204,10 +2255,15 @@ static void TestParallelOrdersSplit()
             assert(g_overrides.size() == g_focusSetBodies.size()
                                          + g_secondaryBodies.size());
             // СИЛУ РЕШАЕТ КОНТЕКСТ, а не «всем поровну»: уровень разгона — это
-            // urgency самого события. «Пешка упала, добей» (0.85) сильнее, чем
-            // «услышал рог, иди посмотри» (0.65) — та самая лестница, ради
-            // которой всё и делалось.
-            assert(Near(g_overrides.find(s_view[1].body)->second.urgency, 0.85f));
+            // urgency самого события. «Пешка упала, добей» сильнее, чем «услышал
+            // рог, иди посмотри» (0.65) — та самая лестница, ради которой всё и
+            // делалось.
+            //
+            // 85.96: 0.85 -> 1.00. В поле 85.91 ярость добивания поднята до
+            // максимума: «лежащая пешка — лучшая цель на поле» (TacticalCues.cpp,
+            // поле urgency в правилах "tactical-pawn-finish"). Ступенька
+            // относительно 0.65 осталась, поэтому смысл проверки не изменился.
+            assert(Near(g_overrides.find(s_view[1].body)->second.urgency, 1.00f));
             assert(Near(g_overrides.find(g_secondaryBodies[0])->second.urgency, 0.65f));
         }
     }
@@ -2243,6 +2299,84 @@ static void TestParallelOrdersSplit()
         assert(sawRelease);
     }
     config.forceBool = false;
+}
+
+// 86.12: ДЕЛЕНИЕ НЕ ДОЛЖНО ОТНИМАТЬ ГЛАВНЫЙ ПРИКАЗ.
+//
+// Особь уходит к тому событию, которое ближе. Значит при одном свободном теле
+// главному приказу может не достаться никого: EngagePolicy() берёт
+// nResponder = s_parallel.nPrimary, видит ноль и снимает приказ
+// (*-pack-no-free-responder). Включённое деление в этом случае не добавило бы
+// пачке вторую задачу, а отняло бы первую. В поле 86.11 половина строк
+// политики шла с responders=1, то есть случай рабочий, а не теоретический.
+static void TestParallelSplitKeepsPrimaryAlive()
+{
+    using namespace MonsterAI;
+
+    config.forceBool = true;
+    config.forceKey = "parallelOrders";
+    config.forceValue = true;
+    FreshDirector();
+    config.forceBool = false;
+
+    // Партия: кастующий игрок ДАЛЕКО (30 м), «слышащий» рог — у самой пачки.
+    TacticalPartyActor party[2];
+    memset(party, 0, sizeof(party));
+    party[0].slot = Runtime::PARTY_ARISEN;  party[0].body = 0x5000u;
+    party[0].positionValid = true;
+    party[0].x = -3000.0f; party[0].y = 0.0f; party[0].z = 0.0f;
+    party[1].slot = Runtime::PARTY_HIRED2;  party[1].body = 0x5300u;
+    party[1].positionValid = true;
+    party[1].x = 0.0f; party[1].y = 0.0f; party[1].z = 0.0f;
+
+    // Два гоблина: до рога 0 и 1 м, до кастующего 30 и 31 м.
+    SetGoblins(2);
+    s_view[0].x = 0.0f;   s_view[0].y = 0.0f; s_view[0].z = 0.0f;
+    s_view[1].x = 100.0f; s_view[1].y = 0.0f; s_view[1].z = 0.0f;
+
+    TacticalScan scan;
+    memset(&scan, 0, sizeof(scan));
+    scan.matched  = true;
+    scan.situation = TACTICAL_SITUATION_PLAYER_CHANT_HARASS;
+    scan.match.situation     = TACTICAL_SITUATION_PLAYER_CHANT_HARASS;
+    scan.match.targetSlot    = Runtime::PARTY_ARISEN;
+    scan.match.targetBody    = 0x5000u;      // якорь — ЧЛЕН ПАРТИИ, не монстр
+    scan.match.responderKind = "uEm0100";
+    scan.altCount = 1;
+    scan.alts[0].situation     = TACTICAL_SITUATION_GOB_HORN_ALERT;
+    scan.alts[0].targetSlot    = Runtime::PARTY_HIRED2;
+    scan.alts[0].targetBody    = 0x5300u;
+    scan.alts[0].responderKind = "uEm0100";
+
+    ComputeParallelSplit(scan, party, 2);
+
+    // По близости обе особи ушли бы второму приказу (0 и 1 м против 30 и 31 м),
+    // и главному не осталось бы никого: EngagePolicy берёт
+    // nResponder = s_parallel.nPrimary, видит ноль и снимает приказ
+    // (goblin-no-free-responder). Случай рабочий именно потому, что якорь
+    // главного — член партии: у событий с якорем-монстром (рог, добивание)
+    // держатель якоря всегда ближе всех к нему и в долю главного попадает сам.
+    assert(s_parallel.nPrimary == 1);
+    assert(s_parallel.nResponder == 1);
+    assert(s_parallel.active);
+    assert(s_parallel.situation == TACTICAL_SITUATION_GOB_HORN_ALERT);
+    // Вернулся ближайший к главному событию, а не «кто подвернулся».
+    assert(s_parallel.primary[0] == s_view[0].body);
+    assert(s_parallel.responders[0] == s_view[1].body);
+    assert(s_parallel.primary[0] != s_parallel.responders[0]);
+
+    // Одна особь неделима: деление не происходит вовсе, пачка идёт одним
+    // приказом, как до 85.33.
+    SetGoblins(1);
+    s_view[0].x = 0.0f; s_view[0].y = 0.0f; s_view[0].z = 0.0f;
+    ComputeParallelSplit(scan, party, 2);
+    assert(s_parallel.nPrimary == 1);
+    assert(s_parallel.nResponder == 0);
+    assert(!s_parallel.active);
+    assert(s_parallel.primary[0] == s_view[0].body);
+
+    config.forceBool = false;
+    std::cout << "  parallel split: главный приказ не остаётся без исполнителя\n";
 }
 
 // 85.29: единицы и причины отказа — на уровне матчера, без Директора.
@@ -2354,6 +2488,93 @@ static void TestFallenGuardUnitsAndBlockers()
     party[1].z = 400.0f;
 }
 
+// 86.01: ПРОТУХШЕЕ ТЕЛО НЕ СНИМАЕТ ПРИКАЗ СО ВСЕХ.
+//
+// Поле 86.00: адрес 0x11307470 был циклопом (uEm5000), а к моменту приказа стал
+// хобом — движок переиспользовал слот между сбором списка исполнителей и
+// допуском. Допуск перечитывает вид живьём и отбивает такое тело (правильно:
+// писать в чужой вид нельзя), но прежняя реакция снимала приказ ЦЕЛИКОМ:
+// responders=3 tempoOwned=1, и остальные теряли разгон из-за чужого адреса.
+static void TestStaleResponderDoesNotVoidOrder()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+    SetMember(0, 1200.0f, 1200.0f, true);
+    SetMember(1, 100.0f, 1000.0f, true);
+    SetMember(2, 1000.0f, 1000.0f, true);
+    SetMember(3, 1100.0f, 1100.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetActuatorEnabled(true);
+    SetWolves(2);
+    Decide(400000);
+
+    // Контроль: без протухшего тела приказ берёт обоих исполнителей.
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(g_overrides.size() == 2);
+    assert(g_overrides.count(0x9000u) == 1 && g_overrides.count(0x9100u) == 1);
+
+    // То же событие, но один адрес к этому моменту ушёл другому виду.
+    FreshDirector();
+    g_staleKindBody = 0x9000u;      // ПОСЛЕ сброса: FreshDirector обнуляет рычаг
+    SetMember(0, 1200.0f, 1200.0f, true);
+    SetMember(1, 100.0f, 1000.0f, true);
+    SetMember(2, 1000.0f, 1000.0f, true);
+    SetMember(3, 1100.0f, 1100.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+    SetActuatorEnabled(true);
+    SetWolves(2);
+    Decide(500000);
+    ApplyPolicies();
+    assert(PolicyEngaged());                 // приказ жив
+    assert(g_overrides.size() == 1);         // аренда только у живого тела
+    assert(g_overrides.count(0x9000u) == 0); // протухшее не получило ничего
+    assert(g_overrides.count(0x9100u) == 1);
+    g_staleKindBody = 0;
+}
+
+// 86.01: ОТВЕТ КАСТЕРУ — ALARM, А НЕ PIN-ONLY.
+//
+// Поле 86.00: правило срабатывало честно (23 приказа, детектор ловил стойку
+// жезла cPlActWpnWandBase, то есть и не-боевой каст вроде Anodyne), но отклик
+// был ALERT: подавление в AggroWatch даётся только на ALARM
+// (activeSuppress = directorAlarm), а пин не снимает монстра с текущей цели.
+// Владелец-маг стоял в стороне и без помех заряжал тяжёлое заклинание.
+// Проверяем, что приказ ДЕЙСТВИТЕЛЬНО несёт ALARM до Aggro, а не только что
+// событие поднялось: g_focusResponse — это ровно то, что получит DirectorFocusSet.
+static void TestChantHarassRespondsWithAlarm()
+{
+    using namespace MonsterAI;
+    FreshDirector();
+
+    SetMember(0, 1200.0f, 1200.0f, true);      // Arisen
+    SetMember(1, 1000.0f, 1000.0f, true);
+    SetMember(2, 1000.0f, 1000.0f, true);
+    SetMember(3, 1000.0f, 1000.0f, true);
+    for (int i = 0; i < 4; ++i) g_identityBody[i] = g_snapshot.member[i].body;
+
+    g_snapshot.member[0].vocation = 3;                          // Mage
+    strcpy(g_snapshot.member[0].liveAct, "cPlActWpnWandBase");  // kPlayerCasterActs
+
+    SetWolves(2);
+    s_view[0].x = 1000.0f;    // 10 м от Аризена, внутри радиуса 14 м
+    s_view[1].x = 1500.0f;
+
+    UpdateTacticalSituations(400000);
+    assert(s_tactical.active);
+    assert(s_tactical.situation == TACTICAL_SITUATION_PLAYER_CHANT_HARASS);
+    assert(s_tactical.response == TACTICAL_RESPONSE_ALARM);
+
+    SetActuatorEnabled(true);
+    Decide(400000);
+    ApplyPolicies();
+    assert(PolicyEngaged());
+    assert(std::string(PolicyStatus()) == "tactical-player-chant-harass");
+    assert(g_focusMember == Runtime::PARTY_ARISEN);
+    assert(g_focusResponse == Runtime::Aggro::DIRECTOR_RESPONSE_ALARM);
+    assert(g_overrides.size() == 2);
+}
+
 int main()
 {
     TestPriorityAndHysteresis();
@@ -2375,6 +2596,9 @@ int main()
     TestPawnFinishUnitsAndBlockers();
     TestProximityWeightedArbitration();
     TestParallelOrdersSplit();
+    TestParallelSplitKeepsPrimaryAlive();
+    TestStaleResponderDoesNotVoidOrder();
+    TestChantHarassRespondsWithAlarm();
     MonsterAI::Shutdown();
     assert(!MonsterAI::Enabled());
 

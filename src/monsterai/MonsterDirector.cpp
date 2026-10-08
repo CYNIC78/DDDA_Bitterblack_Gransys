@@ -57,7 +57,7 @@ struct TargetScore {
 // Отдельная прослойка нужна не для красоты: рантайм-фикстура директора
 // подменяет конфиг своим двойником, и модуль SpeciesTuning не должен знать ни
 // про iniConfig, ни про этот двойник.
-struct IniSpeciesReader : MonsterAI::SpeciesIniReader,
+struct IniSpeciesReader : MonsterAI::BackfillingIniReader,
                           Runtime::Tempo::RanksIniReader {
     float Float(const char* section, const char* key, float defValue) override {
         return config.getFloat(section, key, defValue);
@@ -65,6 +65,10 @@ struct IniSpeciesReader : MonsterAI::SpeciesIniReader,
     bool Bool(const char* section, const char* key, bool defValue) override {
         return config.getBool(section, key, defValue);
     }
+    // 86.03: шаг D читает «записан ли ключ?» без дописки, поэтому переключатель
+    // автодописки проброшен к настоящему iniConfig.
+    bool AutoBackfill() const override { return config.autoBackfill; }
+    void SetAutoBackfill(bool on) override { config.autoBackfill = on; }
 };
 
 static Runtime::PartyCombatSnapshot s_party;
@@ -165,9 +169,16 @@ static float       s_fallenGuardRadius = 10.0f;  // 0 = выключено
 // не берёт. Так проверенный механизм главного приказа не получает ни одной новой
 // ветки, а пачка получает вторую задачу.
 //
-// Ключ `parallelOrders`: 0 (по умолчанию в этой сборке) = деление только
-// ЗАПИСЫВАЕТСЯ в лог, мир не меняется; 1 = деление исполняется.
-static bool        s_parallelOrders = false;
+// Ключ `parallelOrders`: 0 = деление только ЗАПИСЫВАЕТСЯ в лог, мир не
+// меняется; 1 (по умолчанию с 86.12) = деление исполняется.
+//
+// 86.12: почему включено по умолчанию. Механизм до этого два поля подряд только
+// логировался: 86.10 — 4 строки SPLIT с actuate=0, 86.11 — 7 (четырежды второй
+// задачей было давление на кастующего, дважды — добивание лежащей пешки, раз —
+// FALLEN-GUARD). Исполнение при этом асимметричное по построению: второй приказ
+// берёт только внимание (агрессию), аренды темпа у него нет, списки исполнителей
+// разделены, а главный с 86.12 ещё и не может остаться без исполнителя.
+static bool        s_parallelOrders = true;
 
 // 85.34: исполнители второго приказа, которым выдан темп (а с ним и адреналин).
 // Список нужен ровно для одного: снять оболочки у тех, кто выбыл из набора.
@@ -623,6 +634,8 @@ static void ComputeParallelSplit(const MonsterAI::TacticalScan& scan,
     float secondD[kMaxViews];
     int   nPrimary = 0;
     int   nSecond = 0;
+    uintptr_t giveBack = 0;      // 86.12: кого можно вернуть главному приказу
+    float     giveBackD = -1.0f;
     for (int i = 0; i < s_nView; ++i) {
         const MonsterView& v = s_view[i];
         if (!v.body || v.dead || !v.positionValid) continue;
@@ -645,6 +658,42 @@ static void ComputeParallelSplit(const MonsterAI::TacticalScan& scan,
             if (nPrimary < kMaxViews) { s_parallel.primary[nPrimary] = v.body; primaryD[nPrimary] = d[0]; ++nPrimary; }
         } else {
             if (nSecond < kMaxViews) { s_parallel.responders[nSecond] = v.body; secondD[nSecond] = d[1]; ++nSecond; }
+            // 86.12: запоминаем, кого из ушедших можно вернуть главному — тот,
+            // кто ближе всех к его якорю. Годится только особь, подходящая
+            // ОБЕИМ событиям по виду: у горна и у добивания разные responderKind.
+            if (eligible[0] && (giveBackD < 0.0f || d[0] < giveBackD)) {
+                giveBack = v.body;
+                giveBackD = d[0];
+            }
+        }
+    }
+
+    // 86.12: ГЛАВНЫЙ ПРИКАЗ НЕ ДОЛЖЕН УМИРАТЬ ИЗ-ЗА ДЕЛЕНИЯ.
+    //
+    // Особь уходит к тому событию, которое ближе. Если якорь главного события —
+    // ЧЛЕН ПАРТИИ (давление на кастующего, встреча у тела), а пачка стоит ближе
+    // ко второму якорю, главному не достаётся никого вовсе. Дальше EngagePolicy()
+    // берёт nResponder = s_parallel.nPrimary, видит ноль и снимает приказ
+    // (*-pack-no-free-responder): включённое деление не добавило бы пачке вторую
+    // задачу, а отняло бы первую.
+    //
+    // Граница случая честная: у событий с якорем-монстром (рог, вой, добивание)
+    // держатель якоря всегда на нулевом расстоянии от него и в долю главного
+    // попадает сам, поэтому там nPrimary >= 1 всегда. Рабочий случай — именно
+    // якорь-партиец, а владелец играет магом, то есть давление на кастующего у
+    // него самое частое второе событие (поле 86.11: четыре строки SPLIT из семи).
+    //
+    // Возвращаем ровно одного и ровно того, кому ближе к главному событию.
+    if (nPrimary == 0 && nSecond > 0 && giveBack) {
+        for (int i = 0; i < nSecond; ++i) {
+            if (s_parallel.responders[i] != giveBack) continue;
+            s_parallel.primary[0] = giveBack;
+            primaryD[0] = giveBackD;
+            nPrimary = 1;
+            s_parallel.responders[i] = s_parallel.responders[nSecond - 1];
+            secondD[i] = secondD[nSecond - 1];
+            --nSecond;
+            break;
         }
     }
 
@@ -709,7 +758,7 @@ static void ComputeParallelSplit(const MonsterAI::TacticalScan& scan,
                 << " rule=closest-to-its-own-event"
                 << " actuate=" << (s_parallelOrders ? 1 : 0)
                 << (s_parallelOrders ? ""
-                    : " (лог; ключ parallelOrders = 1 включает исполнение)")
+                    : " (лог; исполнение выключено ключом parallelOrders = 0)")
                 << std::endl;
     }
 }
@@ -1972,20 +2021,55 @@ static void ApplyPolicies()
             s_responderWolf[s_nResponderWolf++] = responders[i];
 
         if (wantTempo) {
+            // 86.01: ПРОПУСКАЕМ ПРОТУХШЕЕ ТЕЛО, А НЕ СНИМАЕМ ПРИКАЗ СО ВСЕХ.
+            //
+            // Список исполнителей собирается по таблице вида и уже отфильтрован
+            // по нему, но допуск ПЕРЕЧИТЫВАЕТ вид живьём — и между этими двумя
+            // чтениями движок успевает переиспользовать слот тела: в поле 86.00
+            // адрес 0x11307470 был циклопом (uEm5000), а к моменту приказа стал
+            // хобом. Допуск такое тело отбил правильно — писать в тело чужого
+            // вида нельзя, — но прежняя реакция снимала приказ ЦЕЛИКОМ:
+            // responders=3 tempoOwned=1, и два оставшихся хоба теряли разгон
+            // из-за чужого адреса.
+            //
+            // Пропуск безопасен: проверка вида стоит ДО любых записей, а
+            // s_ownedWolf и s_responderWolf не сопоставлены по индексу — первый
+            // нужен для снятия аренды, второй для агро.
+            const char* firstTempoReason = 0;
             for (int i = 0; i < nResponder; ++i) {
                 Runtime::Tempo::DirectorMobilizationReceipt receipt;
                 const char* tempoReason = 0;
                 if (!Runtime::Tempo::AdmitDirectorMobilization(
                         responders[i], responderKind, urgency, kPolicyTtlMs,
                         &receipt, &tempoReason)) {
-                    ReleasePolicy(tempoReason ? tempoReason
-                                              : "tempo-mobilization-admit-failed",
-                                  true);
-                    return;
+                    const char* why = tempoReason
+                                    ? tempoReason
+                                    : "tempo-mobilization-admit-failed";
+                    // Пропустить можно ТОЛЬКО отказ про конкретное тело:
+                    // вид не совпал (слот переиспользован), тело не читается,
+                    // адрес нулевой. Системные отказы — стол полон, профиль
+                    // вида не зарегистрирован, общий хук темпа не найден —
+                    // относятся ко всем сразу, и приказ надо снимать целиком,
+                    // иначе он повиснет с частичной арендой.
+                    const bool staleBody =
+                        !strcmp(why, "director-mobilization-kind-mismatch")
+                     || !strcmp(why, "director-mobilization-body-not-readable")
+                     || !strcmp(why, "director-mobilization-body-invalid");
+                    if (!staleBody) {
+                        ReleasePolicy(why, true);
+                        return;
+                    }
+                    if (!firstTempoReason) firstTempoReason = why;
+                    continue;
                 }
                 IncludeReceipt(receipt, s_nOwnedWolf == 0);
                 s_ownedWolf[s_nOwnedWolf++] = responders[i];
                 ++s_gameplayWrites;
+            }
+            // Не допущено НИ ОДНОГО тела — приказу не на кого действовать.
+            if (s_nOwnedWolf == 0) {
+                ReleasePolicy(firstTempoReason, true);
+                return;
             }
         }
     } else {
@@ -2191,8 +2275,22 @@ static int RegisterRankSpecies(bool live)
 
 void Init()
 {
-    s_enabled = config.getBool("monsterAI", "enabled", false);
-    s_actuatorEnabled = config.getBool("monsterAI", "wolfActuator", false);
+    // 86.03: дефолт ВКЛЮЧЁН. Директор — ядро мода, и до этой правки чистая
+    // установка стартовала с ним выключенным: владелец каждый раз включал его
+    // руками. Исследовательские и читерские переключатели (aggro/watch,
+    // devtools, camera, nightmare, errata) остались выключенными — они не
+    // часть продукта и в полевом логе владельца были off.
+    s_enabled = config.getBool("monsterAI", "enabled", true);
+    // 86.05: дефолт ВКЛЮЧЁН. ИМЯ КЛЮЧА ВРЁТ, и это стоило владельцу боя.
+    // «wolfActuator» звучит как привод для волков, на деле это ГЛАВНЫЙ
+    // рубильник привода директора: s_actuatorEnabled = off -> ApplyPolicies()
+    // делает ReleasePolicy("actuator-off") и снимает ЛЮБОЙ приказ, у всех
+    // видов. observerOnly в логе — это он же, просто инверсия:
+    //     observerOnly = (s_actuatorEnabled ? 0 : 1)
+    // Поле 86.04: свежий ini дал wolfActuator = off, и за сессию директор не
+    // издал ни одного приказа (directorWrites=0), хотя был включён, видел
+    // hobs=8 и марку выбрал. Бой вышел пустым.
+    s_actuatorEnabled = config.getBool("monsterAI", "wolfActuator", true);
     // 85.23: 0 = все подходящие (прежнее поведение), N = N ближайших к очагу.
     s_policyResponderMax = config.getInt("monsterAI", "responderMax", 0);
     if (s_policyResponderMax < 0) s_policyResponderMax = 0;
@@ -2203,14 +2301,14 @@ void Init()
     // 85.91: радиус подхода 10 -> 14 м. Десять метров — это буквально три
     // шага от тела, игрок успевал поднять пешку, не входя в круг. Ключ в ini
     // остаётся главным: у кого он уже прописан, тот получит своё значение.
-    s_fallenGuardRadius = config.getFloat("monsterAI", "fallenGuardRadius", 14.0f);
+    s_fallenGuardRadius = config.getFloat("monsterAI", "fallenGuardRadius", 10.0f);
     if (!(s_fallenGuardRadius == s_fallenGuardRadius) || s_fallenGuardRadius < 0.0f)
         s_fallenGuardRadius = 14.0f;   // NaN/мусор из ini — не оставляем без защиты
     MonsterAI::SetFallenGuardRadius(s_fallenGuardRadius);
     s_pawnFinish = config.getBool("monsterAI", "pawnFinish", true);
     // 85.33: параллельные приказы. По умолчанию ВЫКЛЮЧЕНО: сначала владелец
     // смотрит в логе деление (SPLIT), потом включает этот ключ без пересборки.
-    s_parallelOrders = config.getBool("monsterAI", "parallelOrders", false);
+    s_parallelOrders = config.getBool("monsterAI", "parallelOrders", true);
     MonsterAI::SetPawnFinishEnabled(s_pawnFinish);
     MonsterAI::SetNearestPairFallback(s_chantNearest);
     if (s_policyResponderMax > kMaxPolicyWolves)
@@ -2255,8 +2353,23 @@ void Init()
             const SpeciesCard* card = &kSpeciesCards[i];
             if (!card->tempoRage) continue;
 
+            // 85.96: зажим сверяется с базой ВИДА, а не с общей. Иначе вид с
+            // намеренно низкой базой (хоб: спокойно 1.02..1.15) получал бы
+            // «rageLocoMax raised(1.15->1.20)» и карточка молча переставала
+            // действовать — ровно то, что аудит 04.10 назвал перегрузом ручки.
+            // 86.03, шаг D: база вида читается через SpeciesBaseRangeEffective,
+            // то есть ключ [species.<kind>] baseLoco*/baseAnim* важнее карточки
+            // и АБСОЛЮТЕН. Тот же вызов стоит в MonsterTempo.cpp — правило одно
+            // на обоих потребителей, иначе допуск сверялся бы с одной базой, а
+            // тело жило с другой, и приказ отбивался молча.
+            float spLocoMin, spLocoMax, spAnimMin, spAnimMax;
+            MonsterAI::SpeciesBaseRangeEffective(reader, card,
+                                                 baseLocoMin, baseLocoMax,
+                                                 baseAnimMin, baseAnimMax,
+                                                 &spLocoMin, &spLocoMax,
+                                                 &spAnimMin, &spAnimMax);
             const MonsterAI::SpeciesTempoNumbers n = MonsterAI::SpeciesTempoFromIni(
-                reader, *card, baseLocoMin, baseLocoMax, baseAnimMin, baseAnimMax);
+                reader, *card, spLocoMin, spLocoMax, spAnimMin, spAnimMax);
 
             if (!n.rageEnabled) {
                 logFile << "Monster Director: species " << card->kind
@@ -2296,7 +2409,7 @@ void Init()
             << " decision=500ms; situationScan=150ms; hold=2500ms;"
             << " grabAlert=GrabStart/750ms/pin-only-Aggro;"
             << " goblinGrab=GrabStart|Hagaijime/4000ms/pin+goblin-fakehit+std-rush-no-suppress+empty-card-wake+live-gate(f8&1,fC45);"
-            << " hobPack=uEm0101 PackMark+HOB-GRAB/pin+goblin-family-card/2FA0-28C;"
+            << " hobPack=uEm0101 PackMark+HOB-GRAB/pin+goblin-family-card/2FA0-28C partial-slots(86.03)+250ms-retry-cooldown;"
             << " saurPack=uEm0400 PackMark-only/no-grab/pin+saurian-head;"
             << " groundAlarm=Hagaijime4Feet/4000ms/independent;"
             << " liftAlarm=literal-lift/2500ms/separate;"

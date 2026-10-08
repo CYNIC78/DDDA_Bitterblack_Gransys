@@ -20,6 +20,17 @@ const float kMinGap = 0.01f;
 
 bool IsBad(float v) { return !(v == v); }   // NaN: ключа нет или в файле мусор
 
+// Тихий NaN. Так же, как в devtools/AnimProbe.cpp: константное 0.0f/0.0f
+// компилятор считает делением на ноль и ругается НА ЭТАПЕ КОМПИЛЯЦИИ
+// (MSVC C2124), поэтому берём битовую маску напрямую.
+float QNaN()
+{
+    const uint32_t bits = 0x7FC00000u;
+    float f = 0.0f;
+    memcpy(&f, &bits, 4);
+    return f;
+}
+
 // Дописать кусок в примечание. fmt — ровно с "%s %.2f %.2f" (имя, было, стало).
 void Append(char* buf, int cap, const char* fmt, const char* name,
             float was, float now)
@@ -39,6 +50,45 @@ float Clamp(float v, float lo, float hi)
     if (v < lo) return lo;
     if (v > hi) return hi;
     return v;
+}
+
+// 86.03, шаг D: «ключ вида записан в ini?» — и дописывание.
+//
+// iniConfig::getFloat при отсутствии ключа возвращает дефолт И дописывает ключ
+// в файл (iniConfig.cpp, «ДОСЫЛКА НЕДОСТАЮЩИХ КЛЮЧЕЙ»). Отсюда два требования,
+// которые приходится разводить по двум чтениям:
+//
+//   1. Узнать, записан ли ключ. Для этого дефолтом идёт NaN — значение,
+//      которого в файле быть не может; вернулся NaN — ключа нет.
+//   2. Дописать в файл ЧИСЛО КАРТОЧКИ, а не NaN. Именно за это отвечает второе
+//      чтение: оно идёт уже с нормальным дефолтом, и iniConfig допишет его.
+//
+// Первая версия шага D читала один раз с дефолтом NaN — и поле 86.03 показало
+// результат: 16 строк «Config: added missing key [species.uEmXXXX]
+// baseLocoMin = nan». Ключи появлялись в файле, но мусором, который нельзя ни
+// прочитать, ни поправить осмысленно. Первое чтение теперь идёт с выключенной
+// автодопиской, чтобы зонд вообще ничего не писал в файл.
+//
+// outPresent сообщает, было ли значение вписано владельцем: по правилу шага D
+// записанный ключ абсолютен и общий сдвиг [monsterTempo] к нему не применяется.
+float ReadSpeciesBound(BackfillingIniReader& ini, const char* section,
+                       const char* key, float cardValue, float clampLo,
+                       float clampHi, bool* outPresent)
+{
+    // 1. Зонд. Автодописка выключена: NaN не должен попасть в файл.
+    const bool saved = ini.AutoBackfill();
+    ini.SetAutoBackfill(false);
+    const float probe = ini.Float(section, key, QNaN());
+    ini.SetAutoBackfill(saved);
+
+    const bool present = !IsBad(probe);
+    if (outPresent) *outPresent = present;
+    if (present) return Clamp(probe, clampLo, clampHi);
+
+    // 2. Ключа нет: второе чтение с дефолтом КАРТОЧКИ. Вот оно и допишет ключ
+    //    в файл — так новая опция появляется в ini сама, без ручной правки.
+    ini.Float(section, key, cardValue);
+    return cardValue;
 }
 
 struct Pair {
@@ -85,6 +135,70 @@ void Sanitize(Pair& p, float baseLo, float baseHi, float clampLo, float clampHi,
 }
 
 } // namespace
+
+// 86.03, шаг D. База вида: карточка + общий сдвиг, НО ключ вида важнее и
+// абсолютно. Правило и его причину см. в объявлении (SpeciesTuning.h).
+void SpeciesBaseRangeEffective(BackfillingIniReader& ini, const SpeciesCard* card,
+                               float globalLocoLo, float globalLocoHi,
+                               float globalAnimLo, float globalAnimHi,
+                               float* locoLo, float* locoHi,
+                               float* animLo, float* animHi)
+{
+    // Вид без карточки (87 из 91): общий диапазон как есть, ключей у него нет.
+    const bool has = card && card->locoHi > card->locoLo
+                           && card->animHi > card->animLo;
+    if (!has) {
+        SpeciesBaseRangeFor(card, globalLocoLo, globalLocoHi,
+                            globalAnimLo, globalAnimHi,
+                            locoLo, locoHi, animLo, animHi);
+        return;
+    }
+
+    char section[64];
+    snprintf(section, sizeof(section), "species.%s", card->kind);
+
+    // Правило пары: пока не записан НИ ОДИН ключ — обе границы остаются
+    // сдвинутой парой (прежнее поведение, общая ручка работает). Как только
+    // записан хотя бы один — пара собирается из карточки, и общая ручка на
+    // этот вид больше не действует. Поэтому вписавший только baseLocoMax
+    // получает низ из карточки, а не уехавший за общей ручкой.
+    const float shiftLlo = card->locoLo + (globalLocoLo - kGlobalLocoRefLo);
+    const float shiftLhi = card->locoHi + (globalLocoLo - kGlobalLocoRefLo);
+    const float shiftAlo = card->animLo + (globalAnimLo - kGlobalAnimRefLo);
+    const float shiftAhi = card->animHi + (globalAnimLo - kGlobalAnimRefLo);
+
+    bool setLlo = false, setLhi = false, setAlo = false, setAhi = false;
+    const float vLlo = ReadSpeciesBound(ini, section, "baseLocoMin", card->locoLo,
+                                        kLocoClampMin, kLocoClampMax, &setLlo);
+    const float vLhi = ReadSpeciesBound(ini, section, "baseLocoMax", card->locoHi,
+                                        kLocoClampMin, kLocoClampMax, &setLhi);
+    const float vAlo = ReadSpeciesBound(ini, section, "baseAnimMin", card->animLo,
+                                        kAnimClampMin, kAnimClampMax, &setAlo);
+    const float vAhi = ReadSpeciesBound(ini, section, "baseAnimMax", card->animHi,
+                                        kAnimClampMin, kAnimClampMax, &setAhi);
+
+    const bool locoSet = setLlo || setLhi;
+    const bool animSet = setAlo || setAhi;
+    float llo = locoSet ? card->locoLo : shiftLlo;
+    float lhi = locoSet ? card->locoHi : shiftLhi;
+    float alo = animSet ? card->animLo : shiftAlo;
+    float ahi = animSet ? card->animHi : shiftAhi;
+    if (setLlo) llo = vLlo;
+    if (setLhi) lhi = vLhi;
+    if (setAlo) alo = vAlo;
+    if (setAhi) ahi = vAhi;
+
+    // Перевёрнутая пара — типовая опечатка в конфиге; чиним обменом, как в
+    // Sanitize у ярости. Равные границы допустимы: «темп вида постоянен» —
+    // законное желание, в отличие от ярости, где нужен строгий зазор.
+    if (llo > lhi) { const float t = llo; llo = lhi; lhi = t; }
+    if (alo > ahi) { const float t = alo; alo = ahi; ahi = t; }
+
+    if (locoLo) *locoLo = llo;
+    if (locoHi) *locoHi = lhi;
+    if (animLo) *animLo = alo;
+    if (animHi) *animHi = ahi;
+}
 
 SpeciesTempoNumbers SpeciesTempoFromIni(SpeciesIniReader& ini,
                                         const SpeciesCard& card,

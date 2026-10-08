@@ -5,7 +5,8 @@
 #include "MonsterTempo.h"
 #include "LogMemSession.h"   // 85.63: сводки — в полевой пакет
 #include "../TypeAtlas.Generated.h"
-#include "../monsterai/SpeciesCard.h"   // 85.94: потолок темпа берём из карточки вида
+#include "../monsterai/SpeciesCard.h"   // 85.94: темп вида берём из карточки
+#include "../monsterai/SpeciesTuning.h" // 85.96: SpeciesBaseRangeFor — база вида
 
 // Границы кода игры — из dinput8.cpp, там же, где их берёт FindSignature.
 extern BYTE *codeBase, *codeEnd;
@@ -1320,6 +1321,35 @@ static int s_slowWorstMs = 0;
 static int s_slowAbove250 = 0;
 static int s_slowOurs    = 0;
 
+// 86.08: СТОИМОСТЬ НАШЕГО ТАКТА НА КАЖДОМ ТАКТЕ, А НЕ ТОЛЬКО НА МЕДЛЕННЫХ.
+//
+// Зачем. Подняли kMaxAct с 32 до 80 под соседний мод, снимающий лимит врагов
+// (docs/RIFTSTONE_RECON.md). Сразу встал вопрос: не превратится ли бой на 30+
+// тел в слайдшоу. Спорить об этом мнениями бессмысленно — GetThreadTimes уже
+// вызывается на каждом такте (PawnAI.cpp), просто результат выбрасывался,
+// кроме тактов медленнее 40 мс. Теперь считаем всегда и пишем худший такт
+// ВМЕСТЕ с числом актёров в нём: тогда из одного полевого лога видно и
+// абсолютную цену, и то, при каком количестве тел она достигнута.
+static int      s_tickCount      = 0;
+static uint32_t s_tickCpuWorstUs = 0;
+static int      s_tickWorstAct   = 0;   // актёров в худшем такте
+static uint64_t s_tickCpuSumUs   = 0;
+static int      s_tickActWorstSeen = 0; // максимум актёров за сессию
+
+// 86.10: ХУДШИЙ ТАКТ БЕЗ МИРА — ЭТО НЕ ЦЕНА БОЯ.
+//
+// Поле 86.09: `cpuWorst=15359375us(@0 actors)`. Пятнадцать секунд на такте без
+// единого актёра — и причина лежала в том же логе строкой ниже:
+// `PartyRecon: priority profile auto-discovery ... findMs=15406`, разовый
+// полный ценз памяти при загрузке. Число честное (это действительно наша
+// работа), но вопрос «не будет ли слайдшоу на 30+ тел» оно не закрывает:
+// к бою оно отношения не имеет. Поэтому худший такт теперь считается дважды:
+// вообще и отдельно среди тактов, где мир был (хоть один актёр). Второй и
+// есть цена боя; первый остаётся, чтобы разовые сканы не прятались.
+static int s_tickLiveWorstUs = 0;   // худший такт С МИРОМ
+static int s_tickLiveWorstAct = 0;
+static int s_tickNoWorld     = 0;   // сколько тактов прошло без актёров
+
 struct PackBossRec { int cx, cz, count; };
 static const int kPackBossCells = 64;
 static PackBossRec s_packBoss[kPackBossCells];
@@ -1332,6 +1362,33 @@ void NoteSlowTick(int msWall, int cpuUs, bool ours)
     if (msWall > s_slowWorstMs) s_slowWorstMs = msWall;
     if (msWall >= 250) ++s_slowAbove250;
     if (ours) ++s_slowOurs;
+}
+
+void NoteTickCost(uint32_t cpuUs, int nAct)
+{
+    ++s_tickCount;
+    s_tickCpuSumUs += cpuUs;
+    if (nAct > s_tickActWorstSeen) s_tickActWorstSeen = nAct;
+    if (cpuUs > s_tickCpuWorstUs) { s_tickCpuWorstUs = cpuUs; s_tickWorstAct = nAct; }
+    // 86.10: такт без актёров — загрузка, меню, ценз партии. В «цену боя» он
+    // не идёт, но из общего худшего и из среднего не выбрасывается.
+    if (nAct <= 0) { ++s_tickNoWorld; return; }
+    if (cpuUs > (uint32_t)s_tickLiveWorstUs) {
+        s_tickLiveWorstUs = (int)cpuUs;
+        s_tickLiveWorstAct = nAct;
+    }
+}
+
+void TickCostSummary(char* out, int cap)
+{
+    if (!out || cap <= 0) return;
+    if (!s_tickCount) { snprintf(out, cap, "none"); return; }
+    snprintf(out, cap, "ticks=%d cpuAvg=%uus cpuWorst=%uus(@%d actors)"
+             " cpuWorstLive=%dus(@%d actors) maxActors=%d noWorldTicks=%d",
+             s_tickCount, (unsigned)(s_tickCpuSumUs / (uint64_t)s_tickCount),
+             (unsigned)s_tickCpuWorstUs, s_tickWorstAct,
+             s_tickLiveWorstUs, s_tickLiveWorstAct,
+             s_tickActWorstSeen, s_tickNoWorld);
 }
 
 void NotePackSetBody(int idx)
@@ -1597,37 +1654,141 @@ static float HashUnit(uintptr_t body, uint32_t salt)
 static const uint32_t kSaltLoco = 0x00000000u;   // как было: поведение не меняется
 static const uint32_t kSaltAtk  = 0x9E3779B9u;
 
-// 85.94: ПОТОЛОК ВИДА ДЕЙСТВУЕТ И НА БАЗОВЫЙ ТЕМП, А НЕ ТОЛЬКО В ЯРОСТИ.
+// БАЗОВЫЙ ТЕМП ВИДА — СВОЙ, А НЕ ОБЩИЙ (85.96).
 //
-// Наблюдение владельца: у хоба бросается в глаза не замах, а КРИК ЯРОСТИ —
-// размашистая анимация рук и сабли, разогнанная до комичного. Разбор:
-// cEm0100ActThreatHowl в ActMap помечен как "taunt", то есть множитель
-// замаха (scope=ATTACKS-ONLY) его не трогает. Ускоряет локомоционный
-// множитель: он патчит ОБЩИЙ путь воспроизведения и действует независимо от
-// текущего действия — в поле 85.93 он применился к телу с tickAct=ActSit.
+// История в две правки. 85.94: у хоба бросался в глаза не замах, а КРИК ЯРОСТИ —
+// размашистая анимация рук и сабли, разогнанная до комичного. Разбор показал:
+// cEm0100ActThreatHowl в ActMap помечен как "taunt", то есть множитель замаха
+// (scope=ATTACKS-ONLY) его не трогает; ускоряет локомоционный множитель, потому
+// что он патчит ОБЩИЙ путь воспроизведения и действует независимо от текущего
+// действия — в поле 85.93 он применился к телу с tickAct=ActSit. Тогда единственный
+// доступный способ был один: сделать rageLocoHi ещё и потолком базового броска.
 //
-// Беда в том, что базовый темп особи брался из ГЛОБАЛЬНОГО диапазона
-// (1.05..1.20) без оглядки на вид, и потолок карточки работал только в
-// ярости. То есть спокойно стоящий хоб всё равно мог вытянуть 1.20.
-// Теперь потолок вида — это потолок: он режет и базовый бросок.
+// Цена той правки и есть причина этой. Параметр получил две роли, и правка
+// «спокойный темп» опустила ярость вместе с собой: ролл ярости 1.15..1.20
+// оказался НИЖЕ базового 1.15..1.20, и допуск его отбил — разгон
+// хоба отбивался молча (director-mobilization-baseline-outside-profile).
+// Теперь база живёт в карточке своей парой (locoLo/locoHi, animLo/animHi), а
+// ярость вернулась к одной роли.
 //
-// Радиус поражения минимальный: у волка карточный потолок 1.25, у гоблина и
-// сауриана 1.20 и 1.22 — все выше глобального максимума, то есть для них
-// ничего не меняется. Реально правка касается только хоба.
-static float SpeciesLocoCeiling(uintptr_t body)
+// Глобальный [monsterTempo] factorMin/Max и animFactorMin/Max ОСТАЮТСЯ
+// умолчанием для видов без карточки: карточек четыре, видов в таблице баз 91,
+// и для остальных это единственный источник разброса.
+// Базовый (СПОКОЙНЫЙ) темп вида. Объявление живёт в MonsterTempo.h, но в
+// неймспейсе MonsterAI: карточка вида — словарь monsterai, и правило «чья
+// база» логичнее держать рядом с ней. Определить член MonsterAI изнутри
+// Runtime::Tempo нельзя (C++ требует, чтобы определение стояло в окружающем
+// неймспейсе), поэтому блок ниже закрывает и снова открывает Runtime::Tempo.
+//
+// Чистая функция: карточка + глобальный диапазон -> базовый диапазон вида.
+// Вынесена из чтения тела, чтобы её можно было проверить фикстурой: без живого
+// тела Mem::NameOfLiveObject не работает, а само правило проверить надо.
+// 86.03, шаг D: база вида теперь читается из ini ([species.<kind>]
+// baseLocoMin/Max, baseAnimMin/Max), но НЕ на каждое тело: iniConfig ходит в
+// файл, а SpeciesBaseRange зовётся из FactorFor/AnimFactorFor на каждый ролл.
+// Значения берутся из таблицы, заполненной один раз в Init.
+struct SpeciesBaseIniReader : MonsterAI::BackfillingIniReader {
+    float Float(const char* section, const char* key, float defValue) override {
+        return config.getFloat(section, key, defValue);
+    }
+    bool Bool(const char* section, const char* key, bool defValue) override {
+        return config.getBool(section, key, defValue);
+    }
+    // 86.03: шаг D читает «записан ли ключ?» без дописки, поэтому переключатель
+    // автодописки проброшен к настоящему iniConfig.
+    bool AutoBackfill() const override { return config.autoBackfill; }
+    void SetAutoBackfill(bool on) override { config.autoBackfill = on; }
+};
+
+struct SpeciesBaseCached { float locoLo, locoHi, animLo, animHi; };
+static SpeciesBaseCached s_speciesBase[16];
+static bool s_speciesBaseLoaded = false;
+
+// Заполняет таблицу и предупреждает, если общий рычаг сдвинут, а у вида уже
+// записан свой ключ: по правилу шага D записанный ключ абсолютен, и общая
+// ручка на этот вид больше не действует. Молча оставлять это нельзя —
+// владелец рычагом сравнивает сборки.
+static void LoadSpeciesBaseFromIni()
+{
+    SpeciesBaseIniReader reader;
+    bool anyOverride = false;
+    const int n = MonsterAI::SpeciesCardCount();
+    for (int i = 0; i < n && i < (int)(sizeof(s_speciesBase)/sizeof(s_speciesBase[0])); ++i) {
+        const MonsterAI::SpeciesCard* c = &MonsterAI::kSpeciesCards[i];
+        MonsterAI::SpeciesBaseRangeEffective(reader, c,
+                                             g_factorLo, g_factorHi,
+                                             g_animLo, g_animHi,
+                                             &s_speciesBase[i].locoLo,
+                                             &s_speciesBase[i].locoHi,
+                                             &s_speciesBase[i].animLo,
+                                             &s_speciesBase[i].animHi);
+        // Карточное значение без общего сдвига — то, что записывается в ini
+        // при первом запуске. Отличие от него означает «ключ вида в файле».
+        float cLlo, cLhi, cAlo, cAhi;
+        MonsterAI::SpeciesBaseRangeFor(c, MonsterAI::kGlobalLocoRefLo,
+                                       MonsterAI::kGlobalLocoRefHi,
+                                       MonsterAI::kGlobalAnimRefLo,
+                                       MonsterAI::kGlobalAnimRefHi,
+                                       &cLlo, &cLhi, &cAlo, &cAhi);
+        const float kEps = 0.0005f;
+        const bool differs =
+            s_speciesBase[i].locoLo < cLlo - kEps || s_speciesBase[i].locoLo > cLlo + kEps ||
+            s_speciesBase[i].locoHi < cLhi - kEps || s_speciesBase[i].locoHi > cLhi + kEps ||
+            s_speciesBase[i].animLo < cAlo - kEps || s_speciesBase[i].animLo > cAlo + kEps ||
+            s_speciesBase[i].animHi < cAhi - kEps || s_speciesBase[i].animHi > cAhi + kEps;
+        if (differs) anyOverride = true;
+        logFile << "Tempo: species base " << c->kind
+                << " loco " << s_speciesBase[i].locoLo << ".." << s_speciesBase[i].locoHi
+                << " anim " << s_speciesBase[i].animLo << ".." << s_speciesBase[i].animHi
+                << (differs ? "  (ini key overrides the card; global shift not applied)"
+                            : "  (card)")
+                << std::endl;
+    }
+    if (anyOverride
+        && (g_factorLo < MonsterAI::kGlobalLocoRefLo - 0.0005f
+         || g_factorLo > MonsterAI::kGlobalLocoRefLo + 0.0005f
+         || g_animLo   < MonsterAI::kGlobalAnimRefLo - 0.0005f
+         || g_animLo   > MonsterAI::kGlobalAnimRefLo + 0.0005f))
+        logFile << "Tempo: [monsterTempo] factorMin/animFactorMin сдвинуты, но у видов"
+                   " с карточкой записаны baseLoco*/baseAnim* — по правилу 86.03 ключ вида"
+                   " абсолютен, общий сдвиг на них НЕ действует. Удалите ключ вида, чтобы"
+                   " вернуть его под общую ручку." << std::endl;
+    s_speciesBaseLoaded = true;
+}
+
+static bool SpeciesBaseRange(uintptr_t body, float* locoLo, float* locoHi,
+                             float* animLo, float* animHi)
 {
     char nm[48] = {};
-    if (!Mem::NameOfLiveObject(body, nm, sizeof(nm))) return 0.0f;
-    const MonsterAI::SpeciesCard* c = MonsterAI::FindSpeciesCard(nm);
-    return c ? c->rageLocoHi : 0.0f;
+    const MonsterAI::SpeciesCard* c = 0;
+    if (Mem::NameOfLiveObject(body, nm, sizeof(nm)))
+        c = MonsterAI::FindSpeciesCard(nm);
+    // Таблица ещё не заполнена ( Init не отработал ) — прежнее правило, чтобы
+    // ранний ролл не получил мусор вместо диапазона.
+    int idx = -1;
+    if (c) {
+        for (int i = 0; i < MonsterAI::SpeciesCardCount(); ++i)
+            if (MonsterAI::kSpeciesCards[i].kind == c->kind) { idx = i; break; }
+    }
+    if (s_speciesBaseLoaded && idx >= 0) {
+        if (locoLo) *locoLo = s_speciesBase[idx].locoLo;
+        if (locoHi) *locoHi = s_speciesBase[idx].locoHi;
+        if (animLo) *animLo = s_speciesBase[idx].animLo;
+        if (animHi) *animHi = s_speciesBase[idx].animHi;
+        return true;
+    }
+    MonsterAI::SpeciesBaseRangeFor(c, g_factorLo, g_factorHi, g_animLo, g_animHi,
+                                   locoLo, locoHi, animLo, animHi);
+    return c != 0;
 }
 
 static float FactorFor(uintptr_t body)
 {
     const float unit = HashUnit(body, kSaltLoco);
-    float f = g_factorLo + (g_factorHi - g_factorLo) * unit;  // равномерно в диапазоне
-    const float ceil = SpeciesLocoCeiling(body);
-    if (ceil > 0.01f && f > ceil) f = ceil;
+    // 85.96: диапазон СПОКОЙНОГО темпа берётся у вида, а не у общего ini.
+    float lo, hi;
+    SpeciesBaseRange(body, &lo, &hi, 0, 0);
+    float f = lo + (hi - lo) * unit;                     // равномерно в диапазоне
     if (f < kFactorMin) f = kFactorMin;
     if (f > kFactorMax) f = kFactorMax;
 
@@ -1685,7 +1846,12 @@ static float AnimFactorFor(uintptr_t body)
         }
     }
 
-    float f = g_animLo + (g_animHi - g_animLo) * unit;
+    // 85.96: как и у бега — базовый диапазон замаха свой у вида. Хоб здесь
+    // медленнее гоблина (1.00..1.10 против 1.05..1.15): решение владельца
+    // «крупнее = чуть медленнее», раньше выразить было нечем.
+    float alo, ahi;
+    SpeciesBaseRange(body, 0, 0, &alo, &ahi);
+    float f = alo + (ahi - alo) * unit;
     if (f < kAnimMin) f = kAnimMin;
     if (f > kAnimMax) f = kAnimMax;
     return f;
@@ -2164,6 +2330,11 @@ void Init()
     if (g_factorHi > kFactorMax) g_factorHi = kFactorMax;
     if (g_factorLo > g_factorHi) { const float s = g_factorLo; g_factorLo = g_factorHi; g_factorHi = s; }
 
+    // 86.03, шаг D: база вида из ini. Заполняется ПОСЛЕ зажима общих границ и
+    // ДО возможного раннего выхода по wantHooks — иначе темп вида остался бы
+    // карточным при выключенных хуках движения.
+    LoadSpeciesBaseFromIni();
+
     // Build 008: install every configured movement path independently of
     // the current consumer state. With no table entries the hook is a cheap,
     // harmless no-op; keeping it installed is what makes the F12 movement
@@ -2275,6 +2446,19 @@ void Shutdown()
         char ls[200];
         sprintf_s(ls, "Tempo: slow-ticks count=%d worst=%dms above250=%d ofWhichOurs=%d",
                   s_slowTicks, s_slowWorstMs, s_slowAbove250, s_slowOurs);
+        LogMem::SessionNote(ls);
+
+        // 86.08: отдельной строкой — цена нашего такта на КАЖДОМ такте и число
+        // актёров в худшем такте. Это число закрывает вопрос «не будет ли
+        // слайдшоу на 30+ тел»: цена в микросекундах при N актёрах.
+        // 16.7 мс = кадр при 60 fps, но наш такт идёт раз в 150 мс и в своём
+        // потоке, так что сравнивать надо с 150000 мкс, а не с кадром.
+        // 86.10: читать надо cpuWorstLive — худший такт, в котором мир БЫЛ.
+        // cpuWorst без уточнения ловит и разовые сканы при загрузке (поле
+        // 86.09 дало там 15.4 с на цензе партии), а они к бою не относятся.
+        char tc[200];
+        TickCostSummary(tc, sizeof(tc));
+        sprintf_s(ls, "Tempo: tick-cost %s", tc);
         LogMem::SessionNote(ls);   // 85.63: в пакет
     }
 
@@ -2444,10 +2628,21 @@ bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
                      * HashUnit(body, kSaltLoco);
     fresh.rageAnim = prof->animLo + (prof->animHi - prof->animLo)
                      * HashUnit(body, kSaltAtk);
-    // A configured baseline above the validated first profile must not be
-    // silently slowed, clamped into a false endpoint, or used to ratchet it.
-    if (!(fresh.rageLoco > fresh.stableLoco)
-        || !(fresh.rageAnim > fresh.stableAnim)) {
+    // БАЗА НЕ ДОЛЖНА БЫТЬ ВЫШЕ ЯРОСТИ: иначе приказ молча ЗАМЕДЛИТ тело.
+    //
+    // 85.99: НЕРАВЕНСТВО СТАЛО НЕСТРОГИМ. Ролл у базы и у ярости ОДИН
+    // (HashUnit с той же солью), поэтому разница «ярость - база» линейна по
+    // роллу и равна нулю может быть только на краю, где тело УЖЕ на потолке
+    // ярости. Приказ такому телу нечего ускорять, но и замедлить он его не
+    // может — прежний строгий знак отбивал его зря, и цена была высокой:
+    // вызывающий код на отказ делает ReleasePolicy() и снимает приказ со ВСЕЙ
+    // пачки. У гоблина rageLocoHi 1.20 совпал с baseLocoHi 1.20, то есть
+    // одно тело с верхним роллом отбивало разгон всему отряду.
+    //
+    // Проверка осталась нужной: при rageHi < baseHi тело с верхним роллом
+    // приказом ЗАМЕДЛЯЕТСЯ, и вот это допуск обязан отбить по-прежнему.
+    if (!(fresh.rageLoco >= fresh.stableLoco)
+        || !(fresh.rageAnim >= fresh.stableAnim)) {
         if (reasonOut) *reasonOut = "director-mobilization-baseline-outside-profile";
         return false;
     }

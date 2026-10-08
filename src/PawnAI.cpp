@@ -29,6 +29,7 @@
 #include "runtime/PartyStatus.h"
 #include "runtime/LogMem.h"
 #include "runtime/LogMemSession.h"   // 85.63: сводки — в полевой пакет
+#include "pawnai/ModuleCost.h"      // 86.15: кто из модулей съедает такт
 #include "pawnai/PawnHaste.h"
 #include "pawnai/DashWatch.h"
 #include "pawnai/WandRange.h"
@@ -83,9 +84,43 @@ static void ProductWorldUnload(const char* reason)
     __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
 
+// 86.15: учёт времени цепочки модулей — логика в pawnai/ModuleCost.h (она без
+// платформы, поэтому накопление и сортировку исполняет фикстура
+// tools/tcomp/module_cost_test.cpp, а не только компилятор). Здесь остаются
+// только часы: QueryPerformanceCounter, и вызовы ModEnter перед каждым модулем.
+namespace {
+static uint64_t ModNowUs()
+{
+    static LARGE_INTEGER freq = {};
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    if (freq.QuadPart <= 0) return 0;
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return (uint64_t)((t.QuadPart * 1000000LL) / freq.QuadPart);
+}
+static void ModEnter(int idx) { PawnAI::ModEnterAt(idx, ModNowUs()); }
+static void ModuleCostSummary()
+{
+    char l[240];
+    if (PawnAI::ModuleCostFormat(l, (int)sizeof(l)) > 0) LogMem::SessionNote(l);
+}
+using PawnAI::kModNone;
+using PawnAI::kModWorldScan;     using PawnAI::kModPackObserve;
+using PawnAI::kModCardRecon;     using PawnAI::kModPartyStatus;
+using PawnAI::kModPossession;    using PawnAI::kModCombatIntel;
+using PawnAI::kModInclSelf;      using PawnAI::kModEntityCfg;
+using PawnAI::kModEnemyTuner;    using PawnAI::kModMonsterAI;
+using PawnAI::kModAggro;         using PawnAI::kModHaste;
+using PawnAI::kModDashWatch;     using PawnAI::kModWandRange;
+using PawnAI::kModErrata;        using PawnAI::kModGuardian;
+using PawnAI::kModNexus;         using PawnAI::kModRescue;
+using PawnAI::kModOrderWatch;    using PawnAI::kModOrchestrator;
+} // namespace
+
 void UpdatePawnAI(){
     // DevTools owns rollback-safe diagnostics. Let it observe world unload
     // before the gameplay guards return, even when Pawn AI itself is disabled.
+    ModEnter(kModWorldScan);
     __try { Runtime::WorldScan_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
     // P0-1: Director/Pack sidecar сбрасывается на переходе даже если
@@ -131,27 +166,33 @@ void UpdatePawnAI(){
         }
     }
     // Read-only night instrument. Must run even if pawn AI / Director are off.
+    ModEnter(kModPackObserve);
     __try { MonsterAI::PackObserveTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
     // 84.16/84.18: универсальный card recon (GOBCARD/CARDRECON).
     // Read-only; работает при выключенном Director.
+    ModEnter(kModCardRecon);
     __try { Runtime::Aggro::CardReconTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
     // 84.16 dual-observe: статусы партии + downed/revive FSM (PS: строки).
     // Read-only; нужен Director-снапшоту (downedValid/downedRevivable).
+    ModEnter(kModPartyStatus);
     __try { Runtime::PartyStatus::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
     // Possession WATCH/unload-clear even if Pawn AI master is off.
+    ModEnter(kModPossession);
     __try { PawnAI::Possession::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     if(!g_enabled || !pBase || !*pBase) {
+        ModEnter(kModNone);
         PawnAI::WandRange::Restore("pawn AI off");
         PawnAI::GuardianStackLogReset();
         PawnAI::Nexus::Shutdown();
         return;
     }
     if(!IsInActiveGameplay()) {
+        ModEnter(kModNone);
         PawnAI::WandRange::Restore("not in gameplay");
         PawnAI::GuardianStackLogReset();
         PawnAI::Nexus::Shutdown();
@@ -159,64 +200,80 @@ void UpdatePawnAI(){
     }
 
     // Каждый модуль вызываем в собственном SEH — никакого каскадного падения
+    ModEnter(kModCombatIntel);
     __try { CombatIntel_Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) { /* следующий тик догонит */ }
 
     // Самопроверка записи склонностей: живёт в тике, а не в отрисовке
     // панели, иначе закрытие окна оборвало бы опыт на середине.
+    ModEnter(kModInclSelf);
     __try { HiredInclSelfTestTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
+    ModEnter(kModEntityCfg);
     __try { EntityCfg::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
+    ModEnter(kModEnemyTuner);
     __try { EnemyTuner::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Режиссёр стороны монстров. Симметричен оркестратору пешек: читает ту
     // же шину, управляет своими примитивами. Свой SEH — чтобы его ошибка
     // не уронила соседей.
+    ModEnter(kModMonsterAI);
     __try { MonsterAI::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Прибор «на кого смотрит пачка» (docs/AGGRO_RECON.md, этап 1).
     // Только читает; по умолчанию выключен и стоит ноль.
+    ModEnter(kModAggro);
     __try { Runtime::Aggro::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Рывок пешки: латаем дыру с отсутствующим спринтом множителем
     // передвижения (docs/PAWN_SPRINT_RECON.md).
+    ModEnter(kModHaste);
     __try { PawnAI::Haste::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Наблюдатель за рывками: приёмочный тест для будущей правки GOAP.
+    ModEnter(kModDashWatch);
     __try { PawnAI::DashWatch::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
+    ModEnter(kModWandRange);
     __try { PawnAI::WandRange::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Build 57.1: динамический Guardian-фикс (включён только при guardianFix=on).
+    ModEnter(kModErrata);
     __try { Runtime::ErrataTick(); }
     __except (EXCEPTION_EXECUTE_HANDLER) {}
+    ModEnter(kModGuardian);
     __try { PawnAI::GuardianDoctrineTick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Nexus Doctrine: защита союзных пешек (кастеры/штурмовая двойка)
+    ModEnter(kModNexus);
     __try { PawnAI::Nexus::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // Party Emergency Rescue: общепартийное спасение Аризена при захватах/падениях
+    ModEnter(kModRescue);
     __try { PawnAI::Rescue::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
     // OrderWatch: наблюдение за командами D-pad (Ко мне / Вперед / Помогите)
+    ModEnter(kModOrderWatch);
     __try { PawnAI::OrderWatch::Tick(); }
     __except(EXCEPTION_EXECUTE_HANDLER) {}
 
+    ModEnter(kModOrchestrator);
     float incl[I_COUNT]; ReadAllIncl(incl, 0);
     g_orch.Tick(incl);
     WriteAllIncl(incl, 0);
+    ModEnter(kModNone);
 }
 
 static HANDLE g_pawnTickThread = nullptr;
@@ -240,8 +297,31 @@ static DWORD WINAPI PawnTickThread(LPVOID){
         UpdatePawnAI();
         GetThreadTimes(GetCurrentThread(), &ftCreate, &ftExit, &ftKernel1, &ftUser1);
         const DWORD tickMs = GetTickCount() - tickBegin;
+
+        // 86.08: цену такта считаем ВСЕГДА, а не только на медленных.
+        // GetThreadTimes уже вызван выше, так что замер бесплатный; раньше
+        // результат выбрасывался, если такт быстрее 40 мс, и про обычную
+        // нагрузку мы не знали ничего. Нужно это, чтобы вопрос «не будет ли
+        // слайдшоу на 30+ тел» (kMaxAct поднят с 32 до 80 под соседний мод,
+        // docs/RIFTSTONE_RECON.md) решался числом из лога, а не мнением.
+        // Число актёров берём из того же снимка, что и scanUs ниже, — один
+        // вызов на такт, а не два.
+        const Runtime::ScanStats scanSt = Runtime::ScanGetStats();
+        {
+            const uint64_t ck0 = ((uint64_t)ftKernel0.dwHighDateTime << 32)
+                               | ftKernel0.dwLowDateTime;
+            const uint64_t cu0 = ((uint64_t)ftUser0.dwHighDateTime << 32)
+                               | ftUser0.dwLowDateTime;
+            const uint64_t ck1 = ((uint64_t)ftKernel1.dwHighDateTime << 32)
+                               | ftKernel1.dwLowDateTime;
+            const uint64_t cu1 = ((uint64_t)ftUser1.dwHighDateTime << 32)
+                               | ftUser1.dwLowDateTime;
+            Runtime::Tempo::NoteTickCost((uint32_t)(((ck1 - ck0) + (cu1 - cu0)) / 10),
+                                         scanSt.actors);
+        }
+
         if (tickMs >= 40) {
-            const uint32_t scanUs = Runtime::ScanGetStats().maxUs;
+            const uint32_t scanUs = scanSt.maxUs;
             // 85.25: время НА СТЕНЕ против времени НА ПРОЦЕССОРЕ. Поле 85.24
             // показало такты по 300-420 мс и ни одного в середине диапазона —
             // и сразу встал вопрос: это мы столько считаем или нас вытеснили?
@@ -262,15 +342,57 @@ static DWORD WINAPI PawnTickThread(LPVOID){
             const bool ours = !(cpuUs * 1000 < tickMs * 700);
             Runtime::Tempo::NoteSlowTick((int)tickMs, (int)cpuUs, ours);
             static int s_slowLogged = 0;
-            if (s_slowLogged < 3) {
+            // 86.11: ПЕЧАТАЕМ И НОВЫЙ РЕКОРД СЕССИИ, А НЕ ТОЛЬКО ПЕРВЫЕ ТРИ.
+            //
+            // Поле 86.10: cpuWorstLive=5156250us(@80 actors) — 5.16 с нашего
+            // потока на ОДНОМ такте в бою. Это не ценз партии (тот дал
+            // cpuWorst=15468750us(@0 actors) и виден в PartyRecon findMs=15531).
+            // Разобрать его нечем: первые три медленных такта этой сессии были
+            // по 47 мс и давно напечатаны, а рекордный такт не печатался вовсе.
+            // Новый максимум сессии падает редко (за 284 с — единицы раз), так
+            // что строки не множатся, а худший такт всегда попадает в лог.
+            static int s_slowWorstLogged = 0;
+            // 86.12: РЕКОРД СЕССИИ ДОЛЖЕН БЫТЬ ДВУХ ВИДОВ — ИНАЧЕ ЕГО НЕТ ВОВСЕ.
+            //
+            // Поле 86.11: cpuWorstLive=1484375us(@80 actors), а в логе ни строки.
+            // Правило «печатать новый рекорд» сработало ровно один раз — на цензе
+            // партии (15484 мс, строка напечатана и показала scanUs=3235, то есть
+            // скан ни при чём). После него ни один боевой такт рекордом стать уже
+            // не может: планка стоит на 15.5 с. Тот же дефект, что и с cpuWorst
+            // против cpuWorstLive, только в печати.
+            //
+            // Плюс пять строк на обычные боевые подтормаживания (>= 250 мс при
+            // живом мире): рекорд — это одна точка, а в поле 86.11 таких тактов
+            // было 28 из 1560, и по одному максимуму распределение не видно.
+            static int s_slowLiveWorstLogged = 0;   // рекорд среди тактов с миром
+            static int s_slowCombatLogged = 0;      // напечатано боевых проб
+            const bool inWorld     = scanSt.actors > 0;
+            const bool isRecord    = tickMs > (uint32_t)s_slowWorstLogged;
+            if (isRecord) s_slowWorstLogged = (int)tickMs;
+            const bool isLiveRecord = inWorld && tickMs > (uint32_t)s_slowLiveWorstLogged;
+            if (isLiveRecord) s_slowLiveWorstLogged = (int)tickMs;
+            const bool combatSample = inWorld && tickMs >= 250 && s_slowCombatLogged < 5;
+            if (combatSample) ++s_slowCombatLogged;
+            if (s_slowLogged < 3 || isRecord || isLiveRecord || combatSample) {
                 ++s_slowLogged;
+                // 86.11: scanMaxUs — худший скан С МОМЕНТА СБРОСА, и на вопрос
+                // «где именно сгорели эти секунды» он ответить не может (в поле
+                // 86.10 он был 3300 мкс на такте в 15.5 с — то есть явно не скан,
+                // но какой именно шаг, не видно). Поэтому рядом lastUs (скан ЭТОГО
+                // такта), число актёров и объём поллинга памяти за такт: поллинг
+                // режет горячую кучу порциями, и это второй кандидат на секунды.
                 logFile << "PAWN-TICK SLOW: " << tickMs << " ms wall"
                         << " cpuUs=" << cpuUs
                         << (ours ? " (наша работа)" : " (вытеснены, не считали)")
+                        << " scanUs=" << scanSt.lastUs
                         << " scanMaxUs=" << scanUs
+                        << " actors=" << scanSt.actors
+                        << " pollKb=" << scanSt.pollKb
                         << " writesBlocked=" << Runtime::Mem::BlockedWrites()
+                        << (isLiveRecord ? "  [рекорд в бою]"
+                            : (isRecord ? "  [рекорд сессии]" : ""))
                         << (s_slowLogged == 3
-                            ? "  [дальше такие строки только считаются, итог в конце сессии]"
+                            ? "  [дальше — только рекорды и первые пять боевых >=250 мс]"
                             : "")
                         << std::endl;
             }
@@ -1347,6 +1469,14 @@ void Hooks::PawnAI_Shutdown(){
     PawnAI::Nexus::Shutdown();
     PawnAI::OrderWatch::Shutdown();
     g_orch.Shutdown();
+
+    // 86.10: итог таблицы актёров. Поток тактов остановлен и дождался нас
+    // (WaitForSingleObject выше), поэтому статику обхода читаем без гонки.
+    // Строка нужна в любом случае: «fullPasses=0» при живом обходе означает,
+    // что ёмкости хватало, — и это результат, а не отсутствие замера.
+    Runtime::ScanSessionSummary();
+    ModuleCostSummary();          // 86.15: кто из модулей съедает такт
+    EnemyTuner::CharParamSummary();   // 86.16: сколько раз гонялся перебор cCharParam
 
     // 85.63: СВОДКА ПЕШЕК. Цифры считаются тиками пешек и живут в модуле
     // рывка; порядок выгрузки такой, что PawnAI_Shutdown() идёт ДО Unitialize(),

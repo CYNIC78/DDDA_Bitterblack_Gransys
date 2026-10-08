@@ -316,12 +316,27 @@ static const TacticalRule kRules[] = {
         true,
         false, false, false, false
     },
+    // 86.01: ОТВЕТ КАСТЕРУ ПОДНЯТ С ALERT ДО ALARM (решение владельца).
+    //
+    // Поле 86.00: правило срабатывало честно (23 приказа, детектор ловил стойку
+    // жезла cPlActWpnWandBase, то есть и не-боевой каст вроде Anodyne), но
+    // отклик был pin-only: подавление в AggroWatch даётся только на ALARM
+    // (activeSuppress = directorAlarm), а пин не снимает монстра с текущей
+    // цели. Владелец-маг стоял в стороне и без помех заряжал тяжёлое заклинание.
+    //
+    // Ограничение осталось прежним: casterVocationOnly = true, то есть на
+    // мили-игрока правило не срабатывает вовсе — владелец прямо просил не
+    // переносить это на ближний бой, там расклад другой.
+    //
+    // urgency 0.55 и аренда 3500 мс НЕ тронуты намеренно: меняем одну величину,
+    // чтобы поле показало, чего стоит именно ALARM. Если давления всё ещё мало
+    // — следующим поднимать urgency (0.55 даёт около 45% полосы разгона).
     {
         TACTICAL_SITUATION_PLAYER_CHANT_HARASS,
         "PLAYER-CHANT-HARASS",
         "tactical-player-chant-harass",
         75,
-        TACTICAL_RESPONSE_ALERT,
+        TACTICAL_RESPONSE_ALARM,
         0.55f,
         "uEm0100",
         kPlayerCasterActs,
@@ -338,7 +353,7 @@ static const TacticalRule kRules[] = {
         "PLAYER-CHANT-HARASS",
         "tactical-player-chant-harass",
         75,
-        TACTICAL_RESPONSE_ALERT,
+        TACTICAL_RESPONSE_ALARM,
         0.55f,
         "uEm0200",
         kPlayerCasterActs,
@@ -355,7 +370,7 @@ static const TacticalRule kRules[] = {
         "PLAYER-CHANT-HARASS",
         "tactical-player-chant-harass",
         74,
-        TACTICAL_RESPONSE_ALERT,
+        TACTICAL_RESPONSE_ALARM,
         0.55f,
         "uEm0101",
         kPlayerCasterActs,
@@ -372,7 +387,7 @@ static const TacticalRule kRules[] = {
         "PLAYER-CHANT-HARASS",
         "tactical-player-chant-harass",
         73,
-        TACTICAL_RESPONSE_ALERT,
+        TACTICAL_RESPONSE_ALARM,
         0.55f,
         "uEm0400",
         kPlayerCasterActs,

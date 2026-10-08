@@ -1,14 +1,42 @@
 #include "stdafx.h"
 #include "iniConfig.h"
 
+// 85.97: КОНСТРУКТОР ОБЯЗАН ОСТАВАТЬСЯ ТРИВИАЛЬНЫМ. Только запомнить имя.
+//
+// ЧТО БЫЛО. Конструктор звал GetPrivateProfileSectionNamesA и, если файла не
+// было, печатал «Config: file not found!» в logFile. Оба действия запрещены в
+// этой точке:
+//
+//   * объект `config` — ГЛОБАЛЬНЫЙ (dinput8.cpp), то есть конструируется на
+//     этапе статической инициализации CRT, ДО DllMain. Проект сам это
+//     задокументировал в src/ModPaths.h («Глобальные объекты (logFile, config
+//     в dinput8.cpp) конструируются ДО DllMain... нельзя надёжно вызывать
+//     WinAPI сверх минимума»), но конструктор правила нарушал;
+//   * logFile объявлен в ДРУГОЙ единице трансляции (src/runtime/LogMem.h:
+//     `extern std::ostream logFile`), поэтому порядок их инициализации
+//     стандартом не определён. Запись в ещё не построенный ostream — UB;
+//   * GetPrivateProfileSectionNamesA при отсутствующем файле грузит
+//     shell32/registry-код внутри загрузчика.
+//
+// Как это выглядело в поле (05.10, владелец): удалил ddda_ai_overhaul.ini,
+// чтобы тот создался заново, — DDDA.exe упал с 0xc0000142 (STATUS_DLL_INIT_FAILED)
+// ещё до нашего кода. Вернул файл — игра запустилась. То есть ветка «файла
+// нет» была единственным путём, который падал: пока файл на месте, конструктор
+// ограничивался вызовом API и всё сходило с рук.
+//
+// Лечение: конструктор ничего не делает, кроме присваивания. Диагностика
+// «конфига нет» переехала в Initialize() (dinput8.cpp) — там LogMem::Init()
+// уже отработал, и лог настоящий.
 iniConfig::iniConfig(LPCSTR fileName)
 {
 	this->fileName = fileName;
+}
 
-	SetLastError(ERROR_SUCCESS);
-	GetPrivateProfileSectionNamesA(buffer, sizeof buffer, fileName);
-	if (GetLastError() == ERROR_FILE_NOT_FOUND)
-		logFile << "Config: file not found!" << std::endl;
+// Публичная обёртка: файл отсутствует. Зовётся из Initialize(), не из
+// конструктора (см. выше).
+bool iniConfig::FileMissing() const
+{
+	return GetFileAttributesA(fileName) == INVALID_FILE_ATTRIBUTES;
 }
 
 bool iniConfig::get(LPCSTR section, LPCSTR key, bool allowEmpty)

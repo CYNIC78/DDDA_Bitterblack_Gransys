@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -203,6 +203,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClInclude Include="src\pawnai\OrderWatch.h" />
     <ClInclude Include="src\pawnai\PresetManager.h" />
     <ClInclude Include="src\pawnai\PawnAI_Common.h" />
+    <ClInclude Include="src\pawnai\ModuleCost.h" />
     <ClInclude Include="src\BestiaryData.h" />
     <ClInclude Include="src\Bestiary.Generated.h" />
     <ClInclude Include="src\EnemyTypes.Generated.h" />

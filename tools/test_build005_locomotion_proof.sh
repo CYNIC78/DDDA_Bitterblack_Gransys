@@ -70,7 +70,12 @@ assert 'Need both hooks' not in ui
 # while connecting only the explicitly gated pilot.
 assert 'actionChanged && t.actIsAttack' in tempo
 assert 'observerOnly=' in director and 'writes=0' in director
-assert 'wolfActuator", false' in director
+# 86.05: прежнее «wolfActuator по умолчанию off» ОТМЕНЕНО. Имя ключа врёт:
+# это не привод для волков, а ГЛАВНЫЙ рубильник привода директора
+# (s_actuatorEnabled = off -> ApplyPolicies() делает ReleasePolicy("actuator-off")
+# и снимает любой приказ). observerOnly в логе — его инверсия. Поле 86.04:
+# свежий ini дал off, и за сессию директор не издал ни одного приказа.
+assert 'wolfActuator", true' in director
 assert 'Runtime::Tempo::AdmitDirectorMobilization' in director
 assert 'Runtime::Tempo::ReleaseDirectorMobilization' in director
 assert 'Runtime::Tempo::HardResetAllDirectorMobilization' in director

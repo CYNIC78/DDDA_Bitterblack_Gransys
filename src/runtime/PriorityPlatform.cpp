@@ -501,11 +501,34 @@ void PartyPriorityProfileTick()
             // Поиск, который трижды ничего не нашёл, не найдёт и в
             // четвёртый: профиль просто не для этой сессии. Замолкаем до
             // смены мира или состава партии.
+            // 86.17: ПОЛНЫЙ СКАН ПАМЯТИ ЗДЕСЬ БОЛЬШЕ НЕ ЗАПУСКАЕТСЯ.
+            //
+            // Это хвост тупиковой ветки, и он дорогой. Три факта:
+            //   * PartyPriorityProfileResolveRule() сама говорит: «сначала
+            //     дешёвый путь по живым вёдрам, census — только как запасной»;
+            //   * запасной не сработал ни разу: found=0 в 14 сессиях подряд
+            //     (86.00…86.16, candidates=88-89 каждый раз);
+            //   * стоит он 13.8-16.4 с нашего потока на каждой загрузке мира —
+            //     в 86.16 это WorldScan=16430ms(worst 15555ms), то есть 28 %
+            //     всего CPU сессии, и целиком впустую.
+            // История та же: в 75.23 этот скан стоил 33 с, его урезали до ~15 с
+            // и добавили обходной путь — а выключить забыли.
+            //
+            // Убрать запасной, который ни разу не сработал, — не значит потерять
+            // правило: его и так разрешает ResolveRuleFromLiveBuckets. Если
+            // когда-нибудь понадобится вернуть, функция
+            // PartyPriorityProfileAutoDiscover() цела.
+            static bool s_discoveryOffLogged = false;
+            if (!s_discoveryOffLogged) {
+                s_discoveryOffLogged = true;
+                logFile << "PartyRecon: priority profile full-memory discovery is OFF "
+                           "(86.17): the cheap live-bucket path resolves the rule, and "
+                           "the full scan returned found=0 in 14 sessions in a row while "
+                           "costing ~15 s of our thread on every world load"
+                        << std::endl;
+            }
             static int s_emptyDiscoveries = 0;
-            const bool allowDiscover = s_emptyDiscoveries < 3
-                && now - g_priorityProfileWorldSince >= 5000u
-                && (!g_priorityProfileLastDiscover
-                    || now - g_priorityProfileLastDiscover >= 30000u);
+            const bool allowDiscover = false;
             if (allowDiscover) {
                 g_priorityProfileLastDiscover = now;
                 if (PartyPriorityProfileAutoDiscover()) {

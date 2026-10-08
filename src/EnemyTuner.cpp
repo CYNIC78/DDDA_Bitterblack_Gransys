@@ -8,6 +8,7 @@
 #include "monsterai/SpeciesCard.h"
 #include "TypeAtlas.Generated.h"
 #include "runtime/EnemyFileBase.h"   // 85.60: база вида из файлов игры (автогенерация)
+#include "runtime/LogMemSession.h"   // 86.16: сводка перебора cCharParam — в полевой пакет
 #include <math.h>   // 85.57: floorf для ячейки места
 #include <string.h> // 85.69: strcmp — дедупликация сообщений «один раз на вид»
 
@@ -493,7 +494,30 @@ struct Touched {
     // чтобы не гонять 29-КБ перебор памяти каждый тик для не-гоблинов.
     uint32_t charParamOff;
     bool     charParamSearched;
+    // 86.16: когда скан НЕ нашёл блок. Без этого поля намерение «ищем один раз»
+    // на неудаче ломалось: charParamOff оставался нулём, условие кэша
+    // (charParamSearched && charParamOff) не срабатывало, и перебор 29 КБ
+    // шёл заново КАЖДЫЙ такт, навсегда. Поле 86.15: EnemyTuner=21645ms
+    // (worst 10171ms n=1948) — 41 % всего CPU такта и один вызов на 10 с.
+    DWORD    charParamFailAtMs;
 };
+// 86.18: чем кончилось определение блока cCharParam — по источникам.
+// «fixed» — известное смещение kCharParamOff, это рабочий путь.
+// «noBlock» — у тела блока на известном смещении нет, а запасной перебор
+// выключен (см. CharParamBase): такие тела живут с ванильными пулами.
+static uint32_t s_cpFixed = 0;
+static uint32_t s_cpNoBlock = 0;
+
+void CharParamSummary()
+{
+    char l[220];
+    snprintf(l, sizeof(l), "EnemyTuner: charparam base fixed=%u noBlock=%u"
+             " (fallback 29-KB scan is OFF since 86.18: hits=0 in 17 attempts"
+             " over two sessions, and each attempt cost up to seconds)",
+             s_cpFixed, s_cpNoBlock);
+    LogMem::SessionNote(l);
+}
+
 static const int kMaxTouched = 128;
 static Touched s_touched[kMaxTouched];
 static int     s_nTouched = 0;
@@ -650,6 +674,7 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->combatRollAtk = t->combatRollDef = t->combatRollMAtk = t->combatRollMDef = 1.0f;
     t->charParamOff = 0;
     t->charParamSearched = false;
+    t->charParamFailAtMs = 0;
     return t;
 }
 
@@ -1280,12 +1305,32 @@ static uintptr_t CharParamBase(Touched* rec, uintptr_t body, const char* kind, c
             base = cand;
             rec->charParamOff = kCharParamOff;
             src = "fixed";
+            ++s_cpFixed;   // 86.18: сколько тел живут на известном смещении
         } else {
-            const TypeAtlas::Info* ti = kind ? TypeAtlas::FindByName(kind) : nullptr;
-            const uint32_t bSize = (ti && ti->size) ? ti->size : 29000;
-            base = FindCharParam(body, bSize);
-            rec->charParamOff = base ? (uint32_t)(base - body) : 0;
-            src = "scan";
+            // 86.18: ЗАПАСНОЙ ПЕРЕБОР cCharParam ВЫКЛЮЧЕН.
+            //
+            // Это был фоллбек «на всякий случай», и он не пригодился ни разу:
+            //   86.16  hits=0 misses=13 skippedByCooldown=48
+            //   86.17  hits=0 misses=4  skippedByCooldown=6
+            // Семнадцать попыток за две сессии — ноль попаданий, при этом в логе
+            // обоих полей рабочий путь везде param=fixed. То есть известное
+            // смещение kCharParamOff покрывает всех, а перебор нужен был для
+            // случая, которого не существует.
+            //
+            // Стоит он при этом дорого: тело 29 КБ перебирается шагом 4 с
+            // чтениями, которые могут fault'ить, — именно на нём ездили худшие
+            // такты сессии (86.15: worst 10171ms; после охлаждения 86.16:
+            // 4168ms; 86.17: 3242ms при tick worst 3297ms, то есть весь всплеск
+            // был внутри тюнера).
+            //
+            // Тело без блока остаётся с ванильными пулами яда/горения/сбивания —
+            // ровно то, что происходит и сегодня, только без многократных пауз.
+            // FindCharParam() оставлена цела: вернуть — одна ветка.
+            if (!rec->charParamFailAtMs) {
+                rec->charParamFailAtMs = 1;   // пометка «проверили, блока нет»
+                ++s_cpNoBlock;
+            }
+            src = "scan-off";
         }
         rec->charParamSearched = true;
     }

@@ -30,7 +30,18 @@ assert _re_tag.match(r'^\d+\.\d+', _m_tag.group(1)), 'странный тег: %
 worldscan = (root / 'src/runtime/WorldScan.cpp').read_text(encoding='utf-8')
 assert 'KindIsLiveEnemyBody(nm)' in worldscan
 assert 'KindIsLiveEnemyBody(kind)' in worldscan
-assert 'walk[96]' in worldscan
+# 86.08: было `assert 'walk[96]'` — пин на литерал. Смысл контракта не в числе,
+# а в том, что буфер обхода ШИРЕ списка актёров (иначе next/prev компоненты
+# теряются и тело, видимое только как сосед, пропадает). Проверяем соотношение:
+# тогда следующий подъём kMaxAct не уронит контракт впустую, а настоящий
+# регресс (обход уже списка) — уронит.
+_m_walk = _re_tag.search(r'uintptr_t walk\[(\d+)\]', worldscan)
+assert _m_walk, 'WorldScan.cpp: не найден буфер обхода walk[N]'
+_m_cap  = _re_tag.search(r'static const int kMaxAct = (\d+)', runtime_internal)
+assert _m_cap, 'RuntimeInternal.h: не найден kMaxAct'
+assert int(_m_walk.group(1)) > int(_m_cap.group(1)), (
+    'буфер обхода walk[%s] должен быть ШИРЕ списка актёров kMaxAct=%s'
+    % (_m_walk.group(1), _m_cap.group(1)))
 assert '!KindIsLiveEnemyBody(kind)' in worldscan
 assert 'inline bool KindIsLiveEnemyBody' in runtime_internal
 assert 'uEmDragonBase' in runtime_internal
@@ -80,7 +91,12 @@ assert 'isolation=' in director and 'targetDepth=' in director
 assert 'focusIntent=' in director
 
 # Build 012 retains consent and fail-closed gates.
-assert 'wolfActuator", false' in director
+# 86.05: прежнее «wolfActuator по умолчанию off» ОТМЕНЕНО. Имя ключа врёт:
+# это не привод для волков, а ГЛАВНЫЙ рубильник привода директора
+# (s_actuatorEnabled = off -> ApplyPolicies() делает ReleasePolicy("actuator-off")
+# и снимает любой приказ). observerOnly в логе — его инверсия. Поле 86.04:
+# свежий ini дал off, и за сессию директор не издал ни одного приказа.
+assert 'wolfActuator", true' in director
 assert 'if (!s_actuatorEnabled)' in director
 assert 'ExactPartyIdentity' in director
 for slot in ('Arisen', 'MainPawn', 'Hired1', 'Hired2'):
@@ -213,7 +229,12 @@ assert 's_actLogged < 3' in haste
 assert 'PawnHaste: burst detail limit reached' in haste
 assert 'PawnHaste: session summary' in haste
 
-# Shipped Director sections must remain byte-for-byte synchronized and default off.
+# Shipped Director sections must remain byte-for-byte synchronized.
+# 86.03: прежнее правило «default off» ОТМЕНЕНО решением владельца — директор
+# это ядро мода, и на чистой установке он обязан быть включён. Раньше чистая
+# установка стартовала с выключенным директором, и владелец включал его руками
+# каждый раз. Синхронность секций осталась: это защита от разъезда эталона и
+# рабочей копии.
 def section(path):
     s = path.read_text(encoding='utf-8')
     a = s.index('[monsterAI]')
@@ -222,7 +243,7 @@ def section(path):
 a = section(root / 'ddda_ai_overhaul.ini')
 b = section(root / 'ddda_ai_overhaul.default.ini')
 assert a == b
-assert 'enabled = off' in a and 'wolfActuator = off' in a
+assert 'enabled = on' in a and 'wolfActuator = on' in a
 
 print('Build 004-008 contracts retained in Build 012: PASS (exact slots; HP observer; mobilization cleanup)')
 PY

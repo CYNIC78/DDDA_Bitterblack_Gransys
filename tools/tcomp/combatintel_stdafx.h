@@ -46,6 +46,9 @@ inline void InGameUIAdd(void (*)()) {}
 
 // Двойник iniConfig — те же геттеры/сеттеры, что в проекте (значения не важны).
 struct IniConfigStub {
+    // 86.03: у настоящего iniConfig есть этот переключатель (iniConfig.h:17),
+    // шаг D его дёргает через SpeciesIniReader. В фикстуре просто хранится.
+    bool autoBackfill = true;
     bool  getBool(const char*, const char*, bool d) { return d; }
     float getFloat(const char*, const char*, float d) { return d; }
     int   getInt(const char*, const char*, int d) { return d; }

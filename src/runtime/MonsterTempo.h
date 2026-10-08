@@ -31,6 +31,12 @@
 
 #include <stdint.h>
 
+// Forward-declaration в ГЛОБАЛЬНОМ скоупе: «namespace MonsterAI { ... }» внутри
+// Runtime::Tempo объявило бы Runtime::Tempo::MonsterAI и ЗАТЕНИЛО бы настоящий
+// MonsterAI до конца файла — после этого MonsterAI::FindSpeciesCard в
+// MonsterTempo.cpp переставал находиться.
+namespace MonsterAI { struct SpeciesCard; }
+
 namespace Runtime {
 namespace Tempo {
 
@@ -126,6 +132,7 @@ float DirectorAdrenalineLevelFor(uintptr_t body);
 // встроенным fallback для автономных тестов Tempo.
 void RegisterRageProfile(const char* kind, float locoLo, float locoHi,
                          float animLo, float animHi);
+
 
 bool AdmitDirectorMobilization(uintptr_t body, const char* exactKind,
                                float urgency, uint32_t ttlMs,
@@ -377,6 +384,11 @@ void          NotePackSetBody(int idx);
 // первые три раза, дальше — счётчик, а итог уходит в сводку сессии: в поле 85.58
 // эта строка встречалась 35 раз за сессию, и все об одном и том же.
 void          NoteSlowTick(int msWall, int cpuUs, bool ours);
+// 86.08: цена нашего такта на КАЖДОМ такте (не только на медленных) и число
+// актёров в худшем такте — чтобы спор «не будет ли слайдшоу на 30+ тел»
+// решался числом из полевого лога, а не мнением.
+void          NoteTickCost(uint32_t cpuUs, int nAct);
+void          TickCostSummary(char* out, int cap);
 void          PackSetSummary(char* out, int cap);
 
 // Набор для ячейки карты. -1 = наборов нет (работают веса [ranks]).

@@ -190,7 +190,12 @@ for line in ('enabled = on', 'factorMin = 1.05', 'factorMax = 1.20',
              'animFactorMin = 1.05', 'animFactorMax = 1.15',
              'animCoupling = 0.00'):
     assert line in tempo, line
-assert 'enabled = off' in monster and 'wolfActuator = off' in monster
+# 86.03: директор по умолчанию ВКЛЮЧЁН (решение владельца: чистая установка
+# обязана стартовать с работающим ядром, а не требовать ручного включения).
+# 86.05: wolfActuator тоже включён. Это НЕ привод для волков, а главный
+# рубильник привода директора: при off ApplyPolicies() снимает любой приказ
+# (ReleasePolicy("actuator-off")), и observerOnly в логе становится 1.
+assert 'enabled = on' in monster and 'wolfActuator = on' in monster
 PY
 
 # Linked Director/Aggro/Tempo ownership fixture.

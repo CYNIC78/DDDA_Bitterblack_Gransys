@@ -44,6 +44,35 @@ echo "== 1j2/10 WorldScan.cpp (планировщик пешек) =="
 $GPP -DDDDA_TEMPO_PORTABLE_FIXTURE "-D__try=try" "-D__except(x)=catch(...)" \
      "$ROOT/src/runtime/WorldScan.cpp"
 
+echo "== 1j3/10 WorldScan.cpp: состав таблицы актёров (86.10) =="
+# ЗАЧЕМ ИСПОЛНЯЕМАЯ ПРОВЕРКА, А НЕ ГРЕП. Поле 86.09 дало «actor table FULL at
+# 80» в ВАНИЛЬНОЙ сессии на 23 врага: 80 слотов заняты не только врагами, и
+# поднимать kMaxAct дальше вслепую нельзя после 86.08. Решение принимается по
+# гистограмме состава — значит гистограмма обязана быть верной: порядок по
+# убыванию, пустое имя не теряет тело, переполнение ячеек видно, лишние виды
+# помечены. Фикстура включает WorldScan.cpp целиком, поэтому зовёт настоящие
+# TallyAdd/TallyComposition; недостижимое вырезает --gc-sections (как ranks_test).
+# -Wno-unused-function: в WorldScan.cpp есть static-функции, которые эта
+# единица трансляции не зовёт, а -Werror убил бы шаг не за нашу правку.
+g++ -std=c++11 -Wall -Wextra -Werror -Wno-unused-function \
+    -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" \
+    -D__try=try -D__except\(x\)=catch\(...\) -DDDDA_TEMPO_PORTABLE_FIXTURE \
+    -ffunction-sections -fdata-sections \
+    "$T/worldscan_tally_test.cpp" -Wl,--gc-sections -o /tmp/synchk_wstally
+/tmp/synchk_wstally
+
+echo "== 1j4/10 ModuleCost.h: учёт времени цепочки модулей (86.15) =="
+# ЗАЧЕМ ИСПОЛНЯЕМАЯ ПРОВЕРКА. Счётчик ставится под третий неразобранный
+# максимум подряд (86.10 — 5.16 с, 86.11 — 1.48 с, 86.14 — 1.11 с при
+# scanUs=358 мкс на такте в 1125 мс). Прибор, который врёт, стоит ровно столько
+# же, сколько его отсутствие, а решения по нему принимаются так же, как по
+# гистограмме состава в 86.10. Логика учёта вынесена в хедер без платформы,
+# поэтому здесь исполняется настоящее накопление и настоящая сортировка топа.
+g++ -std=c++11 -Wall -Wextra -Werror \
+    -I"$T" -I"$T/shim" -I"$ROOT" -I"$ROOT/src" \
+    "$T/module_cost_test.cpp" -o /tmp/synchk_modcost
+/tmp/synchk_modcost
+
 echo "== 1c/10 PawnHaste.cpp =="
 $GPP "$T/pawnhaste_t.cpp"
 
@@ -546,6 +575,10 @@ want = [
      ['logFile << "Aggro: shutdown summary']),
     ('src/pawnai/PawnHaste.cpp', ['SessionNote(l)'],
      ['logFile << "PawnHaste: session summary']),
+    # 86.10: итог таблицы актёров. Строка «actor table FULL at N» остаётся
+    # печатью на месте (это событие боя, не сводка), а вот итог — только в пакет.
+    ('src/runtime/WorldScan.cpp', ['SessionNote(l)'],
+     ['logFile << "WorldScan: actor table summary']),
 ]
 for path, needs, forbids in want:
     src = open(path, encoding='utf-8').read()
@@ -569,6 +602,10 @@ if 'LogMem::SessionNote' not in pai:
     bad.append('PawnAI: сводки пешек нет в пакете')
 if 'DDDA_SESSION_TESTS' in pai:
     bad.append('PawnAI: вернулся мёртвый тест-блок (не собирается ни в MSVC, ни в гейте)')
+# 86.10: сводку мало определить — её надо позвать, и зовётся она из Shutdown,
+# когда поток тактов уже остановлен. Потерянный вызов = молчаливая пустота.
+if 'Runtime::ScanSessionSummary();' not in pai:
+    bad.append('PawnAI: итог таблицы актёров не вызывается (нет ScanSessionSummary)')
 for b in bad: print(' ', b)
 sys.exit(1 if bad else 0)
 PYCHK

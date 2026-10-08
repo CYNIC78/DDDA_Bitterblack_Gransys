@@ -14,7 +14,7 @@ DWORD g_tempoTestNow = 0;
 IniConfigStub config;
 
 namespace Runtime {
-ActorDump g_act[32] = {};
+ActorDump g_act[kMaxAct] = {};   // 86.08: размер берём из рантайм-заголовка
 int g_nAct = 0;
 bool KindIsEnemy(const char* kind) { return kind && kind[0] == 'u'; }
 namespace Mem {
@@ -139,7 +139,13 @@ int main()
     HardResetDirectorMobilization(body);
     assert(DirectorMobilizationCount() == 0);
     assert(AdmitDirectorMobilization(body, "uEm0200", 1.0f, 600, &r, &reason));
-    assert(r.stableLoco >= 0.80f && r.stableLoco <= 0.90f);
+    // 85.96: верх 0.95, а не 0.90. База темпа теперь берётся из КАРТОЧКИ вида и
+    // СДВИГАЕТСЯ общей ручкой, а не заменяется ею: у волка полоса 1.05..1.20
+    // (0.15), ручка здесь 0.80..0.90 (0.10), поэтому после сдвига на -0.25
+    // получается 0.80..0.95. Пол совпадает с ручкой, разброс вида — с карточкой:
+    // «опустить темп всей игре» не должно превращать пачку в одинаковых особей.
+    // Замах у волка ровно 1.05..1.15 (0.10), поэтому там верх остаётся 0.90.
+    assert(r.stableLoco >= 0.80f && r.stableLoco <= 0.95f);
     assert(r.stableAnim >= 0.80f && r.stableAnim <= 0.90f);
     assert(!Near(r.stableLoco, beforeReset.rageLoco));
     assert(!Near(r.stableAnim, beforeReset.rageAnim));
@@ -210,6 +216,35 @@ int main()
     g_tempoTestNow = 5800;
     HardResetAllDirectorMobilization();
     assert(Near(DirectorAdrenalineLevelFor(0x50000u), 0.0f));
+
+    // --- 85.99: ТЕЛО НА ПОТОЛКЕ ЯРОСТИ ПРИКАЗ ПРОХОДИТ ----------------------
+    //
+    // Ролл у базы и у ярости ОДИН (HashUnit с той же солью), поэтому равны они
+    // только на краю полосы. Край достижим: перебор всех 2^28 допустимых
+    // body>>4 даёт наибольший хеш 0xFFFFFFF5, а 0xFFFFFFF5 / 4294967295.0f в
+    // float32 округляется ровно до 1.0. Адрес ниже подобран обратным
+    // финализатором murmur3 под этот ролл (проверено: HashUnit == 1.0f).
+    //
+    // Профиль регистрируем с ВЕРХОМ, СОВПАДАЮЩИМ С БАЗОЙ, — как у гоблина
+    // (rageLocoHi 1.20 == baseLocoHi 1.20): именно там старый строгий знак
+    // отбивал тело, а вызывающий код снимал приказ со всей пачки.
+    // Блок стоит последним, чтобы перерегистрация профиля никому не мешала.
+    {
+        HardResetAllDirectorMobilization();
+        RegisterRageProfile("uEm0200", 1.05f, 1.20f, 1.05f, 1.20f);
+        SetRange(1.05f, 1.20f);
+        SetAnimRange(1.05f, 1.15f);
+        SetAnimCoupling(0.0f);
+        const uintptr_t top = 0x7FFC2C90u;   // HashUnit(top, kSaltLoco) == 1.0f
+        g_tempoTestNow = 6000;
+        assert(AdmitDirectorMobilization(top, "uEm0200", 1.0f, 600, &r, &reason));
+        assert(std::string(reason) == "director-mobilization-ready");
+        // Тело уже на потолке: приказ его не ускоряет, но и не замедляет.
+        assert(Near(r.stableLoco, 1.20f));
+        assert(Near(r.rageLoco, r.stableLoco));
+        assert(Near(r.effectiveLoco, r.stableLoco));
+        HardResetAllDirectorMobilization();
+    }
 
     std::cout << "MonsterTempo Build012 mobilization: PASS\n";
     return 0;

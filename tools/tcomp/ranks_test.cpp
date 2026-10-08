@@ -32,7 +32,7 @@ IniConfigStub config;
 std::ofstream logFile("/tmp/ranks_test.log");
 
 namespace Runtime {
-ActorDump g_act[32] = {};
+ActorDump g_act[kMaxAct] = {};   // 86.08: размер берём из рантайм-заголовка
 int g_nAct = 0;
 bool KindIsEnemy(const char* kind) { return kind && kind[0] == 'u'; }
 namespace Mem {
@@ -270,11 +270,19 @@ static void TestToughnessKeys()
 {
     FakeIni ini;
     ini.SetBool("species.uEm0100", "ranks", true);
-    // по умолчанию — ваниль: фича приезжает выключенной
+    // 85.96: УСТАРЕВШИЙ АССЕРТ СНЯТ. Здесь стояло «по умолчанию — ваниль: фича
+    // приезжает выключенной», то есть resist/stand == 1.0 на всех ступенях.
+    // Так было до калибровки 85.47 («мини-босс — половина хобгоблина»): теперь
+    // встроенные числа kRankDef дают 1.00/1.35/2.00/2.65/3.30 по горению и
+    // 1.00/1.30/1.95/2.60/3.25 по сбиванию, и ниже в этом же тесте они уже
+    // проверены как калибровка. Ванильным остаётся только НОВИЧОК — это
+    // правило пилота, и оно проверяется явно.
     RanksNumbers n = RanksFromIni(ini, "uEm0100");
-    for (int i = 0; i < kRankSteps; ++i) {
-        assert(std::fabs(n.step[i].resist - 1.0f) < 0.0001f);
-        assert(std::fabs(n.step[i].stand  - 1.0f) < 0.0001f);
+    assert(std::fabs(n.step[0].resist - 1.0f) < 0.0001f);   // новичок = ваниль
+    assert(std::fabs(n.step[0].stand  - 1.0f) < 0.0001f);
+    for (int i = 1; i < kRankSteps; ++i) {
+        assert(n.step[i].resist > 1.0f);                    // ступень что-то даёт
+        assert(n.step[i].stand  > 1.0f);
     }
 
     // заданные значения + зажимы: мусор, попытка ослабить, попытка перекрутить
@@ -707,6 +715,124 @@ static void TestPackSetBookkeeping()
     RegisterPackSets(def);
 }
 
+// 86.06: ПОТОЛОК СТУПЕНИ ЗАДАЁТ НАБОР, И ЭТО ЖЁСТКОЕ ПРАВИЛО, А НЕ СКЛОН.
+//
+// Владелец про поле 86.06: «хобы должны быть поопаснее на высоких рангах
+// пачки». Так и есть — RankPickFor подменяет общие веса [ranks] весами набора
+// места. Но до этого теста правило держалось только статистикой («сброд+солдат
+// больше 60 %»), которая прошла бы и при маленьком, но ненулевом шансе
+// ветерана в сброде. А нулевой вес — это обещание игроку: из сброда старшая
+// ступень не выйдет НИКОГДА. Проверяем именно обещание.
+//
+// Заодно фиксируем, где мини-босс вообще возможен: в сброде и в ватаге его
+// вес ноль, то есть «босс в кустах» исключён МЕСТОМ, а не только пределом
+// minibossPerPack. В патруле 2 % и в охоте 10 % — там он законен.
+static void TestPackSetRankCeiling()
+{
+    FakeIni empty;
+    PackSetsConfig def = PackSetsFromIni(empty);
+    assert(def.enabled && def.count == 4);
+    RegisterPackSets(def);
+    RegisterRanks("uEm0100", RanksFromIni(empty, "uEm0100"));
+
+    const int N = 4096;
+    for (int si = 0; si < def.count; ++si) {
+        // Потолок набора: старшая ступень с ненулевым весом.
+        int ceiling = -1;
+        for (int r = 0; r < kRankSteps; ++r)
+            if (def.set[si].rank[r] > 0.000001f) ceiling = r;
+        assert(ceiling >= 0);                      // набор не может быть мёртвым
+
+        int counts[kRankSteps] = {};
+        for (int i = 0; i < N; ++i) {
+            RankQuery q = Q("uEm0100", 0x10D00000u + (uintptr_t)i * 0x1000u);
+            q.setIndex = si;                       // набор задан прямо, без ячейки
+            int st = -1; float sz = 0, at = 0;
+            assert(RankPickFor(q, &st, &sz, &at));
+            assert(st >= 0 && st <= ceiling);      // вот оно: выше потолка нельзя
+            ++counts[st];
+        }
+        // И обратное: ступени ниже потолка живые, а сам потолок достижим.
+        // Иначе «потолок» оказался бы просто мёртвым набором.
+        assert(counts[ceiling] > 0);
+
+        // Ступень с нулевым весом набора не выпадает НИКОГДА. Это и есть
+        // обещание: «из сброда ветеран не выйдет» — не «почти никогда».
+        for (int r = 0; r < kRankSteps; ++r)
+            if (def.set[si].rank[r] <= 0.000001f) assert(counts[r] == 0);
+
+        std::cout << "  set " << def.set[si].name << ": ceiling="
+                  << (ceiling >= 0 ? RankName(ceiling) : "?")
+                  << " over " << N << " rolls\n";
+    }
+
+    // Сброд отдельно и по имени: потолок — солдат, ветерана и выше не бывает.
+    assert(!std::strcmp(def.set[0].name, "rabble"));
+    assert(def.set[0].rank[2] == 0.0f && def.set[0].rank[3] == 0.0f
+           && def.set[0].rank[4] == 0.0f);
+
+    // Warband наоборот: новичков почти нет, пачка сразу боевая.
+    assert(!std::strcmp(def.set[2].name, "warband"));
+    assert(def.set[2].rank[0] < def.set[2].rank[1]);
+    // Мини-босс закрыт в сброде и в ватаге, открыт в патруле и в охоте.
+    assert(def.set[0].rank[4] == 0.0f && def.set[2].rank[4] == 0.0f);
+    assert(def.set[1].rank[4] > 0.0f  && def.set[3].rank[4] > 0.0f);
+}
+
+// 86.08: учёт цены нашего такта. Живёт в этой фикстуре не по смыслу, а потому,
+// что она единственная в гейте линкует MonsterTempo.cpp (см. syntax_check.sh);
+// monster_tempo_mobilization_test.cpp в гейт не входит.
+//
+// Зачем тест. kMaxAct поднят с 32 до 80 под соседний мод, снимающий лимит
+// врагов (docs/RIFTSTONE_RECON.md), и сразу возник спор: не превратится ли бой
+// на 30+ тел в слайдшоу. Отвечать на него предстоит числом из полевого лога,
+// поэтому сам учёт обязан быть правильным: худший такт должен запоминаться
+// ВМЕСТЕ с числом актёров в нём, иначе число будет нечем прочитать.
+static void TestTickCostAccounting()
+{
+    char buf[200] = {};
+
+    // Худший такт запоминается с его числом актёров, а не с последним.
+    NoteTickCost(500, 4);      // обычный
+    NoteTickCost(9000, 31);    // худший на 31 актёре
+    NoteTickCost(1200, 60);    // позже, но дешевле
+    TickCostSummary(buf, sizeof(buf));
+    assert(std::strstr(buf, "ticks=3"));
+    assert(std::strstr(buf, "cpuWorst=9000us"));
+    assert(std::strstr(buf, "@31 actors"));       // актёры худшего, не последнего
+    // среднее = (500 + 9000 + 1200) / 3 = 3566
+    assert(std::strstr(buf, "cpuAvg=3566us"));
+    // максимум актёров за сессию — отдельно: худший такт мог случиться и на малом
+    assert(std::strstr(buf, "maxActors=60"));
+
+    // Новый худший перезаписывает и цену, и число актёров.
+    NoteTickCost(20000, 74);
+    TickCostSummary(buf, sizeof(buf));
+    assert(std::strstr(buf, "ticks=4"));
+    assert(std::strstr(buf, "cpuWorst=20000us(@74 actors)"));
+    assert(std::strstr(buf, "maxActors=74"));
+    // 86.10: пока тактов без мира не было, «живой» худший равен общему.
+    assert(std::strstr(buf, "cpuWorstLive=20000us(@74 actors)"));
+    assert(std::strstr(buf, "noWorldTicks=0"));
+
+    // 86.10: ТАКТ БЕЗ АКТЁРОВ — ЭТО НЕ БОЙ. Загрузка, меню или разовый ценз
+    // памяти. Поле 86.09: `cpuWorst=15359375us(@0 actors)`, а причина лежала
+    // строкой ниже — `PartyRecon: ... findMs=15406`. Общим худшим такой такт
+    // остаться обязан (это наша работа и её не надо прятать), но цену боя
+    // теперь даёт cpuWorstLive, и он от загрузки не меняется.
+    NoteTickCost(15359375, 0);
+    TickCostSummary(buf, sizeof(buf));
+    assert(std::strstr(buf, "ticks=5"));
+    assert(std::strstr(buf, "cpuWorst=15359375us(@0 actors)"));
+    assert(std::strstr(buf, "cpuWorstLive=20000us(@74 actors)"));
+    assert(std::strstr(buf, "noWorldTicks=1"));
+    // среднее — по ВСЕМ тактам, загрузка из него не выбрасывается:
+    // (500 + 9000 + 1200 + 20000 + 15359375) / 5 = 3078015
+    assert(std::strstr(buf, "cpuAvg=3078015us"));
+
+    std::cout << "  tick cost: " << buf << "\n";
+}
+
 int main()
 {
     TestFlagGates();
@@ -720,6 +846,8 @@ int main()
     TestPackSets();
     TestMinibossPerCell();
     TestPackSetBookkeeping();
+    TestPackSetRankCeiling();
+    TestTickCostAccounting();
     std::cout << "ranks: PASS (флаг вида, встроенные числа, мусор, "
                  "детерминизм, разброс ступеней, поколение жильца, наборы по месту)\n";
     return 0;

@@ -22,6 +22,11 @@ public:
 	// пути (иначе правка не подхватится, и это будет молчаливый no-op).
 	LPCSTR Path() const { return fileName; }
 
+	// 85.97: есть ли файл на диске. Публичный, потому что «конфига нет — это
+	// свежая установка» теперь печатается из Initialize(), а не из конструктора
+	// (см. iniConfig.cpp: конструктор обязан оставаться тривиальным).
+	bool FileMissing() const;
+
 	void removeKey(LPCSTR section, LPCSTR key) const;
 	std::vector<int> getSectionInts(LPCSTR section);
 
