@@ -900,12 +900,19 @@ static const char* kRankNames[kRankSteps] = {
 // 85.93: магическая пара зеркалит физическую — mdef повторяет def, matk
 // повторяет atk. Так ранг читается одинаково обеими школами, и у мага не
 // возникает ощущения, что ступени «не про него».
-static const float kRankDef[kRankSteps][9] = {
-    { 0.34f, 0.95f, 1.03f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f },   // новичок: ваниль целиком
-    { 0.46f, 1.03f, 1.07f, 1.09f, 1.35f, 1.30f, 1.08f, 1.08f, 1.09f },   // солдат
-    { 0.13f, 1.07f, 1.12f, 1.20f, 2.00f, 1.95f, 1.18f, 1.18f, 1.20f },   // ветеран: 1-2 на пачку
-    { 0.05f, 1.12f, 1.18f, 1.35f, 2.65f, 2.60f, 1.32f, 1.32f, 1.35f },   // элита
-    { 0.02f, 1.18f, 1.25f, 1.52f, 3.30f, 3.25f, 1.50f, 1.50f, 1.52f },   // мини-босс: половина хоба
+//
+// 87.6: колонка макс. HP (последняя). Интеграция знания HardPlus дала живое
+// поле макс. HP (docs/DIFFICULTY_ADDRESSES.md §«Живые поля»), и оговорка 85.87
+// «HP мы менять не умеем» снята. Лестница — ровно половина защитной:
+// 1.00/1.05/1.10/1.16/1.22 (решение владельца; тюнится [ranks] rank<N>Hp).
+// Скромнее защиты осознанно: защита в формуле урона нелинейна, HP линейны.
+// Ур-Дракон под лестницей не ходит (список видов в RanksSpeciesAllowed).
+static const float kRankDef[kRankSteps][10] = {
+    { 0.34f, 0.95f, 1.03f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f, 1.00f },   // новичок: ваниль целиком
+    { 0.46f, 1.03f, 1.07f, 1.09f, 1.35f, 1.30f, 1.08f, 1.08f, 1.09f, 1.05f },   // солдат
+    { 0.13f, 1.07f, 1.12f, 1.20f, 2.00f, 1.95f, 1.18f, 1.18f, 1.20f, 1.10f },   // ветеран: 1-2 на пачку
+    { 0.05f, 1.12f, 1.18f, 1.35f, 2.65f, 2.60f, 1.32f, 1.32f, 1.35f, 1.16f },   // элита
+    { 0.02f, 1.18f, 1.25f, 1.52f, 3.30f, 3.25f, 1.50f, 1.50f, 1.52f, 1.22f },   // мини-босс: половина хоба
 };
 static const float kRankDefMax = 3.0f;   // потолок ручки защиты
 
@@ -1032,6 +1039,49 @@ const char* RankName(int step)
     return kRankNames[step];
 }
 
+// 88.0: МОСТ МЕЖДУ ВИДАМИ СЕМЕЙСТВА (линейный, решение владельца).
+//
+// Идея. Ступень новичка = ванильная база своего вида. Верхняя ступень
+// (минибосс) = ванильная база СЛЕДУЮЩЕГО вида семейства. Промежуточные ступени
+// делят разницу поровну. Так минибосс никогда не сильнее следующего вида, а
+// «гап» между видами закрыт без отдельной отсебятины: только ванильные числа.
+//
+// Цели (отношение баз из *_cmn.prp и HP из .rst, docs/ANATOMY_EM0100.md):
+//   гоблин  em0100: атака 250, защита 75, матака 80, мзащита 75, HP 1000
+//   хоб     em0101: атака 410, защита 140, матака 100, мзащита 120, HP 2000
+//   грим    em0102: атака 800, защита 240, матака 400, мзащита 230, HP 6000
+// Гоблин -> хоб: 1.64 / 1.87 / 1.25 / 1.60 / 2.0.
+// Хоб -> грим:   1.95 / 1.71 / 4.00 / 1.92 / 3.0 (матака у хоба не колдует,
+//                аудит 04.10 отмечал выброс, здесь он принят осознанно).
+// Грим в лестницу не входит (нет в RanksSpeciesAllowed): грим — конец цепочки.
+// Greater Goblin (em0103) тоже вне семейства моста — отдельный шаг.
+//
+// Что переписывает. Для видов моста колонки atk/def/matk/mdef/hp берутся
+// ЗДЕСЬ, а не из [ranks] rank<N>Atk.. — иначе общий шаг вида «1.09» одного
+// на всех подменял бы мост. Ключи [ranks] по этим колонкам для них не
+// читаются, для волка (нет моста) действуют как раньше. Цели можно
+// переопределить в [species.<вид>] bridgeAtk / bridgeDef / bridgeMatk /
+// bridgeMdef / bridgeHp: это и есть ручка калибровки.
+// Сопротивления и стойкость к сбиванию моста НЕ касаются (своя ось, 85.47).
+struct RankBridge { const char* kind; float atk, def, matk, mdef, hp; };
+static const RankBridge kRankBridge[] = {
+    { "uEm0100", 1.6400f, 1.8667f, 1.2500f, 1.6000f, 2.0000f },   // гоблин -> хоб
+    { "uEm0101", 1.9512f, 1.7143f, 4.0000f, 1.9167f, 3.0000f },   // хоб -> грим
+};
+
+static const RankBridge* RankBridgeFor(const char* kind)
+{
+    if (!kind) return nullptr;
+    for (const RankBridge& b : kRankBridge)
+        if (!strcmp(b.kind, kind)) return &b;
+    return nullptr;
+}
+
+// Потолки, подняты ради моста (хоб -> грим: атака 1.95, матака 4.00).
+// Прежние 1.80 срезали бы верхнюю ступень хоба ниже базы грима.
+static const float kRankAtkMax  = 2.00f;
+static const float kRankMAtkMax = 4.00f;
+
 static void RanksSanitize(RanksNumbers& n)
 {
     float sum = 0.0f;
@@ -1042,7 +1092,7 @@ static void RanksSanitize(RanksNumbers& n)
         if (st.sizeMin < 0.70f) st.sizeMin = 0.70f;         // предел движка
         if (st.sizeMax > 1.40f) st.sizeMax = 1.40f;         // выше — расходится хитбокс
         if (!(st.atk >= 1.0f)) st.atk = 1.0f;               // ниже ванили не бывает
-        if (st.atk > 1.80f) st.atk = 1.80f;
+        if (st.atk > kRankAtkMax) st.atk = kRankAtkMax;
         // крепость: мусор -> ваниль; ниже ванили не бывает; потолки — выше.
         if (!(st.resist >= 1.0f)) st.resist = 1.0f;
         if (st.resist > kRankResistMax) st.resist = kRankResistMax;
@@ -1053,9 +1103,13 @@ static void RanksSanitize(RanksNumbers& n)
         if (!(st.mdef >= 1.0f)) st.mdef = 1.0f;
         if (st.mdef > kRankDefMax) st.mdef = kRankDefMax;
         if (!(st.matk >= 1.0f)) st.matk = 1.0f;
-        if (st.matk > 1.80f) st.matk = 1.80f;   // как у физической атаки
+        if (st.matk > kRankMAtkMax) st.matk = kRankMAtkMax;
         if (!(st.stand >= 1.0f)) st.stand = 1.0f;
         if (st.stand > kRankStandMax) st.stand = kRankStandMax;
+        // 87.6: HP — те же правила, что у защиты: ранг не ослабляет,
+        // потолок общий (иначе ключом можно было бы сделать «губку урона»).
+        if (!(st.hp >= 1.0f)) st.hp = 1.0f;
+        if (st.hp > kRankDefMax) st.hp = kRankDefMax;
         sum += st.weight;
     }
     if (sum <= 0.0001f) {
@@ -1067,6 +1121,7 @@ static void RanksSanitize(RanksNumbers& n)
             n.step[i].def    = kRankDef[i][6];
             n.step[i].mdef   = kRankDef[i][7];
             n.step[i].matk   = kRankDef[i][8];
+            n.step[i].hp     = kRankDef[i][9];
         }
     }
 }
@@ -1094,6 +1149,7 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
         out.step[i].def     = kRankDef[i][6];
         out.step[i].mdef    = kRankDef[i][7];
         out.step[i].matk    = kRankDef[i][8];
+        out.step[i].hp      = kRankDef[i][9];   // 87.6
     }
 
     // 85.41: ЛЕСТНИЦА — ИНСТРУМЕНТ РАЗМЕРА, а размер менять можно не всем.
@@ -1197,7 +1253,56 @@ RanksNumbers RanksFromIni(RanksIniReader& ini, const char* speciesKind)
             const float raw = ini.Float("ranks", k, out.step[i].stand);
             if (raw >= 1.0f) out.step[i].stand = raw;
         }
+        // 87.6: HP-лестница. Та же защита от бэкфилла нулями, что у защиты
+        // (85.90): значение ниже 1.0 — заведомо мусор (ранг не ослабляет),
+        // берём встроенное и говорим вслух.
+        snprintf(k, sizeof(k), "rank%dHp", i);
+        {
+            const float raw = ini.Float("ranks", k, out.step[i].hp);
+            if (raw < 1.0f) {
+                logFile << "Monster Tempo: ranks " << k << " = " << raw
+                        << " in ini is junk (ranks never weaken) - using builtin "
+                        << out.step[i].hp << ". Delete the line to stop this"
+                        << " message." << std::endl;
+            } else {
+                out.step[i].hp = raw;
+            }
+        }
     }
+    // 88.0: мост семейства. Для видов моста колонки атаки/защиты/матаки/
+    // мзащиты/HP задаёт мост: новичок = база, минибосс = база следующего вида.
+    char bsec[64];
+    snprintf(bsec, sizeof(bsec), "species.%s", speciesKind ? speciesKind : "");
+    if (const RankBridge* br = RankBridgeFor(speciesKind)) {
+        // bridge = off -> вид снова читает колонки [ranks] (прежняя лестница).
+        if (ini.Bool(bsec, "bridge", true)) {
+        char sec[64];
+        snprintf(sec, sizeof(sec), "species.%s", speciesKind);
+        const float tAtk  = ini.Float(sec, "bridgeAtk",  br->atk);
+        const float tDef  = ini.Float(sec, "bridgeDef",  br->def);
+        const float tMAtk = ini.Float(sec, "bridgeMatk", br->matk);
+        const float tMDef = ini.Float(sec, "bridgeMdef", br->mdef);
+        const float tHp   = ini.Float(sec, "bridgeHp",   br->hp);
+        for (int i = 0; i < kRankSteps; ++i) {
+            const float f = (float)i / (float)(kRankSteps - 1);   // 0 .. 1
+            out.step[i].atk  = 1.0f + (tAtk  - 1.0f) * f;
+            out.step[i].def  = 1.0f + (tDef  - 1.0f) * f;
+            out.step[i].matk = 1.0f + (tMAtk - 1.0f) * f;
+            out.step[i].mdef = 1.0f + (tMDef - 1.0f) * f;
+            out.step[i].hp   = 1.0f + (tHp   - 1.0f) * f;
+        }
+        }
+    }
+
+    // 87.71: HP-ступени ОТКАЧЕНЫ. Причина: макс. HP в памяти тела читается
+    // живьём, и база у «грязного» слота бывает чужая (лог 87.7: 1500 -> 3000).
+    // Донор HardPlus множит HP один раз на загрузку всего вида, не на инстанс,
+    // так что безопасного пути у нас сейчас нет. Пока ключ [ranks] hpRanks не
+    // включён в on, HP всех ступеней = 1.00 и тюнер в память HP не пишет.
+    if (!ini.Bool("ranks", "hpRanks", false)) {
+        for (int i = 0; i < kRankSteps; ++i) out.step[i].hp = 1.0f;
+    }
+
     RanksSanitize(out);
     return out;
 }
@@ -1253,6 +1358,16 @@ float RankMAtkOf(const char* kind, int step)
     if (!GetRanks(kind, &n)) return 1.0f;
     if (step < 0 || step >= kRankSteps) return 1.0f;
     return n.step[step].matk;
+}
+
+// 87.6: множитель макс. HP ступени. 1.0 = ваниль — в этом случае тюнер
+// вообще не трогает память (новички живут ровно как раньше).
+float RankHpOf(const char* kind, int step)
+{
+    RanksNumbers n;
+    if (!GetRanks(kind, &n)) return 1.0f;
+    if (step < 0 || step >= kRankSteps) return 1.0f;
+    return n.step[step].hp;
 }
 
 bool RankScaleEnabled(const char* kind)

@@ -833,6 +833,67 @@ static void TestTickCostAccounting()
     std::cout << "  tick cost: " << buf << "\n";
 }
 
+// 88.0: МОСТ СЕМЕЙСТВА. Новичок = ванильная база вида (×1.00), минибосс =
+// ванильная база следующего вида (гоблин -> хоб, хоб -> грим), промежуточные
+// ступени — поровну между ними. Волк моста не имеет и идёт по старой лестнице.
+static void TestFamilyBridge()
+{
+    FakeIni empty;   // только встроенные числа моста
+    const RanksNumbers gob = RanksFromIni(empty, "uEm0100");
+    // новичок — ровно ваниль; минибосс — база хоба 410/250, 140/75, 100/80, 120/75
+    assert(std::fabs(gob.step[0].atk - 1.0f) < 0.0001f);
+    assert(std::fabs(gob.step[4].atk - 1.6400f) < 0.0005f);
+    assert(std::fabs(gob.step[4].def - 1.8667f) < 0.0005f);
+    assert(std::fabs(gob.step[4].matk - 1.25f) < 0.0005f);
+    assert(std::fabs(gob.step[4].mdef - 1.60f) < 0.0005f);
+    assert(std::fabs(gob.step[4].hp - 1.00f) < 0.0005f);   // 87.71: HP откачен, ключ hpRanks=off
+    // линейно: солдат = 1 + (1.64-1)/4
+    assert(std::fabs(gob.step[1].atk - (1.0f + 0.64f / 4.0f)) < 0.0005f);
+    assert(std::fabs(gob.step[2].hp - 1.00f) < 0.0005f);
+    // минибосс гоблин не сильнее базы хоба ни по одной колонке
+    assert(gob.step[4].atk  <= 410.0f / 250.0f + 0.001f);
+    assert(gob.step[4].hp   <= 1.0f + 0.001f);            // HP не пишется
+
+    // хоб: минибосс = база грима (800/410, 240/140, 400/100, 230/120, 6000/2000)
+    // матака 4.00 проходит без срезки (потолок 4.00 поднят ради моста)
+    const RanksNumbers hob = RanksFromIni(empty, "uEm0101");
+    assert(std::fabs(hob.step[4].atk  - 1.9512f) < 0.0005f);   // > прежних 1.80
+    assert(std::fabs(hob.step[4].matk - 4.00f) < 0.0005f);
+    assert(std::fabs(hob.step[4].hp   - 1.00f) < 0.0005f);     // 87.71: HP откачен
+    assert(std::fabs(hob.step[0].atk - 1.0f) < 0.0001f);
+
+    // ini переопределяет цель моста; ключи [ranks] по колонкам моста не читаются
+    FakeIni tuned;
+    tuned.SetFloat("species.uEm0100", "bridgeAtk", 1.30f);
+    tuned.SetFloat("ranks", "rank4Atk", 1.99f);               // игнорируется мостом
+    const RanksNumbers t = RanksFromIni(tuned, "uEm0100");
+    assert(std::fabs(t.step[4].atk - 1.30f) < 0.0005f);
+
+    // bridge = off: вид возвращается к колонкам [ranks] (минибосс 1.52 — прежняя ступень)
+    FakeIni off;
+    off.SetBool("species.uEm0100", "bridge", false);
+    const RanksNumbers gobOffBridge = RanksFromIni(off, "uEm0100");
+    assert(std::fabs(gobOffBridge.step[4].atk - 1.52f) < 0.0005f);
+    assert(std::fabs(gobOffBridge.step[4].hp  - 1.00f) < 0.0005f);   // 87.71: HP откачен
+
+    // волк: моста нет, старая лестница (минибосс 1.52) на месте
+    const RanksNumbers wolf = RanksFromIni(empty, "uEm0200");
+    assert(std::fabs(wolf.step[4].atk - 1.52f) < 0.0005f);
+    // 87.71: HP возвращается ТОЛЬКО по явному ключу hpRanks = on (мост и лестница)
+    FakeIni hpOn;
+    hpOn.SetBool("ranks", "hpRanks", true);
+    const RanksNumbers gobHp = RanksFromIni(hpOn, "uEm0100");
+    assert(std::fabs(gobHp.step[4].hp - 2.00f) < 0.0005f);
+    assert(std::fabs(gobHp.step[2].hp - 1.50f) < 0.0005f);
+    const RanksNumbers hobHp = RanksFromIni(hpOn, "uEm0101");
+    assert(std::fabs(hobHp.step[4].hp - 3.00f) < 0.0005f);
+    // атака/защита от ключа hpRanks не зависят
+    assert(std::fabs(gobHp.step[4].atk - 1.6400f) < 0.0005f);
+    std::cout << "  family bridge: goblin atk " << gob.step[4].atk
+              << " hob atk " << hob.step[4].atk << " matk " << hob.step[4].matk
+              << " (wolf unchanged)\n";
+}
+
 int main()
 {
     TestFlagGates();
@@ -842,6 +903,7 @@ int main()
     TestToughnessKeys();
     TestSummaryKeepsKindName();
     TestScaleDefaultPerSpecies();
+    TestFamilyBridge();
     TestGeneration();
     TestPackSets();
     TestMinibossPerCell();

@@ -10,4 +10,4 @@
  * Правило: поднимать MOD_BUILD_TAG при КАЖДОЙ сборке зипа.
  */
 
-#define MOD_BUILD_TAG "86.18-noscan"
+#define MOD_BUILD_TAG "87.71-hprollback"
