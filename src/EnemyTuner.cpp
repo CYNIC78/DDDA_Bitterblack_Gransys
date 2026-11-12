@@ -462,6 +462,13 @@ struct Touched {
     float rankDefM;        // 85.87: множитель физической защиты от ступени
     float rankMDefM;       // 85.93: магическая защита от ступени
     float rankMAtkM;       // 85.93: магическая атака от ступени
+    // 87.6: макс. HP от ступени. Пишется ОДИН раз на спавн (правило записи из
+    // docs/DIFFICULTY_ADDRESSES.md §«Живые поля»): множитель снимается в
+    // момент выдачи ступени и замораживается вместе с ней (85.56).
+    float rankHpM;         // множитель макс. HP (1.0 = ваниль, не пишем вовсе)
+    int   hpWritten;       // 0 = ещё не писали этому жильцу
+    float hpWroteMax;      // что записали — для сверки при повторном чтении
+    int   hpRevertLogged;  // лимит предупреждений «движок откатил» (не спамить)
     // 85.88: ЗАЩИТА ОТ САМОЗАХВАТА ПРИ ПЕРЕИСПОЛЬЗОВАНИИ СЛОТА.
     float lastWroteH;      // последнее, что МЫ записали в рост этого тела
     float ghostH;          // что осталось в памяти от ПРОШЛОГО жильца слота
@@ -653,6 +660,10 @@ static Touched* RememberTouched(uintptr_t body, float scale)
     t->rankDefM = 1.0f;
     t->rankMDefM = 1.0f;
     t->rankMAtkM = 1.0f;
+    t->rankHpM = 1.0f;     // 87.6: новый жилец — чистый лист
+    t->hpWritten = 0;
+    t->hpWroteMax = 0.0f;
+    t->hpRevertLogged = 0;
     t->lastWroteH = 0.0f;
     t->ghostH = 0.0f;
     t->ghostWait = 0;
@@ -768,6 +779,7 @@ static void EnsureRankIssued(Touched* rec, const char* kind, uintptr_t body)
     rec->rankDefM    = Runtime::Tempo::RankDefOf(kind, step);
     rec->rankMDefM   = Runtime::Tempo::RankMDefOf(kind, step);
     rec->rankMAtkM   = Runtime::Tempo::RankMAtkOf(kind, step);
+    rec->rankHpM     = Runtime::Tempo::RankHpOf(kind, step);   // 87.6
     rec->rankResist  = res;
     rec->rankStand   = stand;
     rec->rankUseScale = Runtime::Tempo::RankScaleEnabled(kind);
@@ -1741,6 +1753,71 @@ static int ApplyRankToughness(uintptr_t body, Touched* rec, uintptr_t base,
     return wrote;
 }
 
+// ---------------------------------------------------------------------------
+// 87.6/87.61: МАКС. HP ПО СТУПЕНИ. Правило записи (см. §«Живые поля» в
+// docs/DIFFICULTY_ADDRESSES.md): абсолютное значение «база × множитель»,
+// ОДИН раз на спавн. Поле — charparam +0xDC, и в копии живого тела это
+// FLOAT (уточнено полем 87.6; «целое + флаговый бит» — видовая таблица
+// параметров, другая структура). Новичок (×1.00) памяти не касается
+// вовсе: ваниль есть ваниль, и трогать его без нужды — только шанс
+// что-нибудь сломать. Ур-Дракон сюда не дойдёт по построению: список
+// видов лестницы (RanksSpeciesAllowed) его не содержит.
+// ---------------------------------------------------------------------------
+static int ApplyRankHp(uintptr_t body, Touched* rec, const char* kind)
+{
+    if (!rec || rec->rankStep < 0) return 0;
+    if (!(rec->rankHpM > 1.0001f)) return 0;   // ванильная ступень: не пишем
+    if (!rec->charParamSearched || !rec->charParamOff) return 0;
+    const uintptr_t base = body + rec->charParamOff;
+
+    // 87.61: ПОЛЕ ЗДЕСЬ — FLOAT. Полевой лог 87.6 показал: видовая строка
+    // печатает «hp 1000» через %.0f — значит лежит именно float 1000.0
+    // (0x447A0000), а не целое 1000 (0x000003E8 дало бы печать ~1е-42).
+    // Целочисленный путь 87.6 поэтому не написал ни разу: 0x447A0000 не
+    // прошёл проверку на здравый смысл и молча выходил. Документированное
+    // «целое + флаговый бит» — это видовая таблица параметров (PROP_SLOT),
+    // другая структура; у charparam-копии тела здесь float без флагов.
+    float hp = 0.0f;
+    if (!SafeRead((const void*)(base + kFldHumanHp), &hp, 4)) return 0;
+
+    // Уже писали этому жильцу. Если движок значение не трогал — уходим
+    // молча и дёшево; если вдруг ОТКАТИЛ — один раз скажем вслух и больше
+    // не дёргаем: с движком не воюем (урок 85.24).
+    if (rec->hpWritten) {
+        if (!NearlyEq(hp, rec->hpWroteMax) && rec->hpRevertLogged < 1) {
+            ++rec->hpRevertLogged;
+            logFile << "EnemyTuner: hp rank [WARN] " << (kind ? kind : "?")
+                    << " 0x" << std::hex << (unsigned)body << std::dec
+                    << " engine reverted maxHP " << rec->hpWroteMax
+                    << " -> " << hp << " (not re-writing)" << std::endl;
+        }
+        return 0;
+    }
+
+    // Здравый смысл: у гоблина/хоба 1000; ноль/мусор/гигант не пишем
+    // (фейл-опен, как всюду в тюнере).
+    if (!(hp >= 1.0f) || hp > 1000000.0f) return 0;
+
+    const float want = hp * rec->rankHpM;
+    if (NearlyEq(want, hp)) { rec->hpWritten = 1; rec->hpWroteMax = hp; return 0; }
+    if (!SafeWrite((void*)(base + kFldHumanHp), &want, 4)) return 0;
+    rec->hpWritten  = 1;
+    rec->hpWroteMax = want;
+
+    // Сверка сразу после записи: либо «движок принял», либо видно глазами.
+    float back = 0.0f;
+    SafeRead((const void*)(base + kFldHumanHp), &back, 4);
+    char ll[240];
+    sprintf_s(ll, "hp rank %s %s(%d) x%.2f max %.0f -> %.0f%s -> 0x%08X",
+              kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
+              rec->rankStep, rec->rankHpM, hp, want,
+              NearlyEq(back, want) ? "" : " [WARN: readback differs!]",
+              (unsigned)body);
+    logFile << "EnemyTuner: " << ll << std::endl;
+    lstrcpynA(s_status, ll, sizeof(s_status));
+    return 1;
+}
+
 static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tuning& t,
                             const char* kind, float spikeAtk, float spikeMAtk)
 {
@@ -2031,10 +2108,10 @@ static int ApplyCombatStats(uintptr_t body, Touched* rec, const EntityCfg::Tunin
             if (setn) sprintf_s(setpart, " set=%s", setn);
             if (rec->rankCapped) lstrcpynA(cappart, " miniboss-capped", sizeof(cappart));
             sprintf_s(ll, "rank %s %s(%d) %s atk x%.2f def x%.2f matk x%.2f"
-                          " mdef x%.2f gen=%u%s%s -> 0x%08X",
+                          " mdef x%.2f hp x%.2f gen=%u%s%s -> 0x%08X",
                       kind ? kind : "?", Runtime::Tempo::RankName(rec->rankStep),
                       rec->rankStep, spart, rec->rankAtk, rec->rankDefM,
-                      rec->rankMAtkM, rec->rankMDefM, rec->gen,
+                      rec->rankMAtkM, rec->rankMDefM, rec->rankHpM, rec->gen,
                       setpart, cappart, (unsigned)body);
             logFile << "EnemyTuner: " << ll << std::endl;
             lstrcpynA(s_status, ll, sizeof(s_status));
@@ -2432,6 +2509,14 @@ static void TickOneBody(uintptr_t body, const char* kind)
     {
         int nC = ApplyCombatStats(body, rec0, t, kind, spikeAtk, spikeMAtk);
         if (nC > 0) s_writes += nC;
+    }
+
+    // --- 87.6: макс. HP по ступени — один раз на спавн -------------------
+    // Внутри все проверки (ступень выдана, множитель > 1, блок найден),
+    // так что здесь просто зовём: новичков и виды вне лестницы не тронет.
+    {
+        int nH = ApplyRankHp(body, rec0, kind);
+        if (nH > 0) s_writes += nH;
     }
 
     // --- DDON Sanctuary: броня и скорость при возврате на спавн --------

@@ -136,6 +136,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
     <ClCompile Include="src\runtime\MonsterTempo.cpp" />
     <ClCompile Include="src\runtime\RuntimeState.cpp" />
     <ClCompile Include="src\runtime\WorldScan.cpp" />
+    <ClCompile Include="src\difficulty\Difficulty.cpp" />
     <ClCompile Include="src\runtime\PartyRecon.cpp" />
     <ClCompile Include="src\runtime\PartyStatus.cpp" />
     <ClCompile Include="src\audio\AudioRedirect.cpp" />
@@ -191,6 +192,7 @@ echo   СТАРЫЙ dinput8.dll нужно убрать или переимен�
   <ItemGroup>
     <!-- Наши заголовки -->
     <ClInclude Include="src\PawnAI.h" />
+    <ClInclude Include="src\difficulty\Difficulty.h" />
     <ClInclude Include="src\pawnai\PawnAI_BusOrchestrator.h" />
     <ClInclude Include="src\pawnai\TacticalSwitch.h" />
     <ClInclude Include="src\pawnai\SmartUtilitarian.h" />

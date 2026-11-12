@@ -23,6 +23,7 @@
 #include "EntityConfig.h"
 #include "ModPaths.h"
 #include "BuildTag.h"
+#include "difficulty/Difficulty.h"
 
 typedef HRESULT(WINAPI *tDirectInput8Create)(HINSTANCE, DWORD, const IID&, LPVOID*, LPUNKNOWN);
 tDirectInput8Create oDirectInput8Create = nullptr;
@@ -61,6 +62,10 @@ void InitHooks()
     // 84.16: read-only прибор статусов партии (PS: строки). Поднимается
     // до UI, работает и без Director; записей не делает.
     Runtime::PartyStatus::Init();
+
+    // 87.0: слой сложности — верифицированные патчи баланса (кап 9999) и
+    // разведзонд воронки предметов (только лог). Поднимается до первых кадров.
+    Difficulty::Init();
 
     // 84.98: музыкальный runtime-эксперимент заморожен compile-time;
     // Audio::Init() оставляет vanilla и НЕ ставит CreateFile-хуки.
@@ -149,6 +154,8 @@ void Unitialize()
     // Потоки сами завершатся после флага. DevTools performs only a guarded
     // four-byte priority rollback before hooks are disabled.
     Hooks::DevTools_Shutdown();
+    // 87.0: только сводка счётчиков зонда (SessionNote) — без хуков и ожиданий.
+    Difficulty::Shutdown();
     // Release synchronized wolf policy before Aggro/Tempo teardown. Both
     // calls are bounded guarded cleanup only: no waits, joins, or allocations.
     MonsterAI::Shutdown();
